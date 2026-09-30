@@ -144,6 +144,10 @@ return function(Context)
         WaitForChild("Plot"):
         WaitForChild("Upgrades")
 
+    local BasketDrop =
+        GameRemotes:
+        WaitForChild("BasketDrop")
+
 
     -- ========================================================
     -- STATES
@@ -189,6 +193,9 @@ return function(Context)
     local disable3DActive = false
     local lowGraphicActive = false
     local fpsBoostActive = false
+
+    local selectedGiftPlayer = nil
+    local giftEggActive = false
 
 
     -- ========================================================
@@ -831,6 +838,242 @@ return function(Context)
             )
     end
 
+    local function GetServerPlayerNames()
+
+    local names = {}
+
+        for _, player in ipairs(
+            Players:GetPlayers()
+        ) do
+
+            if player ~= LocalPlayer then
+
+                table.insert(
+                    names,
+                    player.Name
+                )
+
+            end
+        end
+
+        table.sort(names)
+
+        return names
+    end
+
+
+    local function GetPlayerByName(
+        name
+    )
+
+        if not name then
+            return nil
+        end
+
+        for _, player in ipairs(
+            Players:GetPlayers()
+        ) do
+
+            if player.Name == name then
+                return player
+            end
+
+        end
+
+        return nil
+    end
+
+    local function GetPlayerPlot(
+        player
+    )
+
+        if not player then
+            return nil
+        end
+
+        local plots =
+            workspace:
+            FindFirstChild("Plots")
+
+        if not plots then
+            return nil
+        end
+
+        for _, plot in ipairs(
+            plots:GetChildren()
+        ) do
+
+            local data =
+                plot:
+                FindFirstChild("Data")
+
+            local owner =
+                data
+                and data:
+                    FindFirstChild("Owner")
+
+            if owner then
+
+                local value =
+                    owner.Value
+
+                if value == player
+                    or value == player.Name
+                    or value == player.UserId
+                    or tostring(value)
+                        == tostring(player.UserId)
+                then
+
+                    return plot
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local function GetPlotFrontCFrame(
+        plot
+    )
+
+        if not plot then
+            return nil
+        end
+
+        local base =
+            plot:
+            FindFirstChild("Baseplate")
+            or plot:
+            FindFirstChild("Floor")
+
+        if not base
+            or not base:IsA("BasePart")
+        then
+            return nil
+        end
+
+        local frontPosition =
+            base.Position
+            + base.CFrame.LookVector
+                * (
+                    base.Size.Z / 2
+                    + 6
+                )
+            + Vector3.new(
+                0,
+                3,
+                0
+            )
+
+        return CFrame.new(
+            frontPosition,
+            frontPosition
+                + base.CFrame.LookVector
+        )
+    end
+
+    local function GiftCurrentEgg()
+
+        if not giftEggActive then
+            return false
+        end
+
+        if not selectedGiftPlayer then
+            return false
+        end
+
+        local targetPlayer =
+            GetPlayerByName(
+                selectedGiftPlayer
+            )
+
+        if not targetPlayer then
+            return false
+        end
+
+        local targetPlot =
+            GetPlayerPlot(
+                targetPlayer
+            )
+
+        if not targetPlot then
+            return false
+        end
+
+        local targetCF =
+            GetPlotFrontCFrame(
+                targetPlot
+            )
+
+        if not targetCF then
+            return false
+        end
+
+        local character,
+            humanoid,
+            root =
+            GetCharacterData()
+
+        if not root then
+            return false
+        end
+
+        local basket =
+            LocalPlayer:
+            FindFirstChild("Basket")
+
+        if not basket then
+            return false
+        end
+
+
+        -- Tunggu sebentar jika egg belum muncul di Basket.
+        local waitStarted =
+            os.clock()
+
+        while #basket:GetChildren() == 0
+            and os.clock() - waitStarted < 1.25
+        do
+
+            task.wait(0.05)
+
+        end
+
+
+        if #basket:GetChildren() == 0 then
+            return false
+        end
+
+        local oldCF =
+            root.CFrame
+
+        root.CFrame =
+            targetCF
+
+        task.wait(0.35)
+
+        BasketDrop:
+        FireServer()
+
+        local started =
+            os.clock()
+
+        while os.clock() - started < 2 do
+
+            if #basket:GetChildren() == 0 then
+                break
+            end
+
+            task.wait(0.05)
+        end
+
+        if root.Parent then
+            root.CFrame =
+                oldCF
+        end
+
+        return true
+    end
 
     -- ========================================================
     -- TABS
@@ -876,10 +1119,7 @@ return function(Context)
         selectedEggsFarm,
 
         function(value)
-
-            selectedEggsFarm =
-                value
-
+            selectedEggsFarm = value
         end
     )
 
@@ -892,13 +1132,97 @@ return function(Context)
         selectedRaritiesFarm,
 
         function(value)
+            selectedRaritiesFarm = value
+        end
+    )
 
-            selectedRaritiesFarm =
-                value
+    local GiftPlayerDropdown =
+        FarmSection:AddDropdown(
+            "GiftPlayer",
+            "Player Selection",
+            GetServerPlayerNames(),
+            false,
+            nil,
+
+            function(value)
+
+                selectedGiftPlayer =
+                    value
+
+            end,
+
+            false
+        )
+
+
+    local function RefreshGiftPlayers()
+
+        if GiftPlayerDropdown
+            and GiftPlayerDropdown.SetOptions
+        then
+
+            GiftPlayerDropdown.SetOptions(
+                GetServerPlayerNames(),
+                true
+            )
+
+        end
+    end
+
+
+    Runtime:TrackConnection(
+
+        Players.PlayerAdded:
+        Connect(function()
+
+            task.wait(0.5)
+
+            RefreshGiftPlayers()
+
+        end)
+
+    )
+
+
+    Runtime:TrackConnection(
+
+        Players.PlayerRemoving:
+        Connect(function(player)
+
+            if selectedGiftPlayer
+                == player.Name
+            then
+
+                selectedGiftPlayer =
+                    nil
+            end
+
+            task.wait(0.1)
+
+            RefreshGiftPlayers()
+
+        end)
+
+    )
+
+
+    FarmSection:AddToggle(
+        "GiftEgg",
+        "Gift Egg",
+        false,
+
+        function(state)
+
+            giftEggActive =
+                state
 
         end
     )
 
+
+    -- ========================================================
+    -- AUTO FARM
+    -- ========================================================
 
     FarmSection:AddToggle(
         "AutoFarm",
@@ -1894,7 +2218,7 @@ return function(Context)
                 task.wait(0.15)
             end
 
-
+            
             if targetName
                 == "Volcanic Egg"
             then
@@ -1920,6 +2244,15 @@ return function(Context)
                 end
             end
 
+            if giftEggActive then
+
+                pcall(function()
+
+                    GiftCurrentEgg()
+
+                end)
+
+            end
 
             if plotCenter
                 and root.Parent
