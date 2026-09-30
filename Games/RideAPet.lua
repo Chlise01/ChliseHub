@@ -1307,7 +1307,7 @@ return function(Context)
     local VOLCANO_DIP_POSITION =
         Vector3.new(
             -5102.8427734375,
-            41408.62890625,
+            41411.62890625,
             -3489.114013671875
         )
 
@@ -3661,7 +3661,7 @@ return function(Context)
                     end
 
 
-                    -- BARU setelah teleport + remote, stay 4 detik di Volcano.
+                    -- BARU setelah teleport + remote, stay 6 detik di Volcano.
                     local volcanoStayStarted =
                         os.clock()
 
@@ -3670,7 +3670,7 @@ return function(Context)
                         and autoFarmActive
                         and os.clock()
                             - volcanoStayStarted
-                            < 4
+                            < 6
                     do
 
                         if currentRoot.Parent then
