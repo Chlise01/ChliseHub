@@ -154,6 +154,11 @@ return function(Context)
         WaitForChild("BasketDrop")
 
 
+    local EggPickupRemote =
+        GameRemotes:
+        WaitForChild("EggPickup")
+
+
     local VolcanoData =
         require(
             GameData:
@@ -2977,6 +2982,8 @@ return function(Context)
             local targetModel =
                 nil
 
+            -- Hanya untuk validasi egg fisik di RenderedEggs.
+            -- Pickup sebenarnya lewat EggPickupRemote.
             local targetPrompt =
                 nil
 
@@ -3366,92 +3373,108 @@ return function(Context)
 
             -- ================================================
             -- PICKUP EGG
+            --
+            -- Game asli memakai:
+            -- EggPickup:FireServer(ActiveEggEntry.Name)
             -- ================================================
 
-            local started =
+            local basketCountBefore =
+                #Basket:GetChildren()
+
+
+            local pickupOk,
+                pickupError =
+                pcall(function()
+
+                    EggPickupRemote:
+                    FireServer(
+                        targetObject.Name
+                    )
+
+                end)
+
+
+            if not pickupOk then
+
+                warn(
+                    "[CHLISE HUB] EggPickup failed:",
+                    pickupError
+                )
+
+            end
+
+
+            local pickupStarted =
                 os.clock()
+
+            local pickedUp =
+                false
 
 
             while Runtime:IsCurrent()
                 and autoFarmActive
-                and targetObject.Parent
-                and targetModel
-                and targetModel.Parent
+                and os.clock()
+                    - pickupStarted
+                    < 1.5
             do
 
-                if os.clock()
-                    - started
-                    > 3
+                if #Basket:GetChildren()
+                    > basketCountBefore
                 then
+
+                    pickedUp =
+                        true
+
                     break
                 end
 
 
-                if not targetPrompt
-                    or not targetPrompt.Parent
-                    or not targetPrompt.Enabled
-                then
+                task.wait(0.05)
 
-                    targetPrompt =
-                        GetEggPickupPrompt(
-                            targetModel
-                        )
+            end
 
 
-                    if not targetPrompt then
+            -- Grace period kalau ActiveEgg / RenderedEgg sudah
+            -- hilang lebih dulu tetapi Basket sedikit terlambat.
+            if not pickedUp
+                and (
+                    not targetObject.Parent
+                    or not targetModel
+                    or not targetModel.Parent
+                )
+            then
+
+                local graceStarted =
+                    os.clock()
+
+
+                while Runtime:IsCurrent()
+                    and autoFarmActive
+                    and os.clock()
+                        - graceStarted
+                        < 0.5
+                do
+
+                    if #Basket:GetChildren()
+                        > basketCountBefore
+                    then
+
+                        pickedUp =
+                            true
+
                         break
                     end
 
-                end
 
-
-                if fireproximityprompt then
-
-                    pcall(function()
-
-                        local oldHold =
-                            targetPrompt.HoldDuration
-
-
-                        targetPrompt.HoldDuration =
-                            0
-
-
-                        fireproximityprompt(
-                            targetPrompt
-                        )
-
-
-                        task.delay(
-                            0.05,
-
-                            function()
-
-                                if targetPrompt
-                                    and targetPrompt.Parent
-                                then
-
-                                    targetPrompt.HoldDuration =
-                                        oldHold
-
-                                end
-
-                            end
-                        )
-
-                    end)
+                    task.wait(0.05)
 
                 end
-
-
-                task.wait(0.15)
 
             end
 
 
             -- ================================================
             -- DELAY AFTER PICKUP
-            -- Tunggu Basket / state client selesai replikasi.
             -- ================================================
 
             task.wait(1)
@@ -3459,10 +3482,11 @@ return function(Context)
 
             -- ================================================
             -- GO VOLCANO DIP
-            -- Dip egg yang baru diambil sebelum Gift / balik plot.
             -- ================================================
 
-            if goVolcanoDipActive then
+            if goVolcanoDipActive
+                and pickedUp
+            then
 
                 pcall(function()
 
