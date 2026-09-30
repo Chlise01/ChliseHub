@@ -18,11 +18,13 @@ local function LoadFile(
     local ok, source =
         pcall(function()
 
-            return
-                game:HttpGet(
-                    BASE_URL
-                    .. path
-                )
+            local url =
+    BASE_URL
+    .. path
+    .. "?v="
+    .. tostring(os.time())
+
+return game:HttpGet(url)
 
         end)
 
