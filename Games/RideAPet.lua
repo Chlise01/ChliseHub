@@ -50,6 +50,9 @@ return function(Context)
     local HttpService =
         game:GetService("HttpService")
 
+    local CollectionService =
+        game:GetService("CollectionService")
+
 
     local LocalPlayer =
         Players.LocalPlayer
@@ -155,6 +158,25 @@ return function(Context)
         WaitForChild("BasketDrop")
 
 
+    local VolcanoData =
+        require(
+            GameData:
+            WaitForChild("Volcano")
+        )
+
+
+    local Basket =
+        LocalPlayer:
+        WaitForChild("Basket")
+
+
+    local VolcanoDipRemote =
+        ReplicatedStorage:
+        WaitForChild("packages"):
+        WaitForChild("Net"):
+        WaitForChild("RE/VolcanoDip")
+
+
     -- ========================================================
     -- STATES
     -- ========================================================
@@ -202,6 +224,7 @@ return function(Context)
 
     local selectedGiftPlayer = nil
     local giftEggActive = false
+    local goVolcanoDipActive = false
 
     local autoServerHopActive = false
     local serverHopDelay = 30
@@ -1276,6 +1299,416 @@ return function(Context)
         )
     end
 
+    -- ========================================================
+    -- GO VOLCANO DIP
+    -- ========================================================
+
+    local function HasVolcanoFlight()
+
+        local now =
+            workspace:
+            GetServerTimeNow()
+
+
+        for _, child
+            in ipairs(
+                Basket:
+                GetChildren()
+            )
+        do
+
+            local volcanoUntil =
+                child:
+                GetAttribute(
+                    "VolcanoUntil"
+                )
+
+
+            if type(volcanoUntil)
+                    == "number"
+                and now
+                    < volcanoUntil
+            then
+
+                return true
+
+            end
+
+        end
+
+
+        return false
+    end
+
+
+    local function HasEligibleVolcanoEgg()
+
+        local now =
+            workspace:
+            GetServerTimeNow()
+
+
+        for _, child
+            in ipairs(
+                Basket:
+                GetChildren()
+            )
+        do
+
+            if child:
+                    GetAttribute(
+                        "VolcanoDipped"
+                    )
+                    ~= true
+                and child:
+                    GetAttribute(
+                        "Delivering"
+                    )
+                    ~= true
+            then
+
+                local volcanoUntil =
+                    child:
+                    GetAttribute(
+                        "VolcanoUntil"
+                    )
+
+
+                if type(volcanoUntil)
+                        ~= "number"
+                    or not (
+                        now
+                        < volcanoUntil
+                    )
+                then
+
+                    return true
+
+                end
+
+            end
+
+        end
+
+
+        return false
+    end
+
+
+    local function GetVolcanoPoolPosition(
+        rootPosition
+    )
+
+        local tag =
+            VolcanoData.Tag
+
+
+        if type(tag)
+            ~= "string"
+        then
+            return nil
+        end
+
+
+        local bestPosition =
+            nil
+
+        local bestDistance =
+            math.huge
+
+
+        for _, pool
+            in ipairs(
+                CollectionService:
+                GetTagged(
+                    tag
+                )
+            )
+        do
+
+            if pool:IsA(
+                "BasePart"
+            )
+                and pool:IsDescendantOf(
+                    workspace
+                )
+            then
+
+                local candidate =
+                    pool.Position
+                    + Vector3.new(
+                        0,
+                        math.max(
+                            1,
+                            pool.Size.Y
+                            * 0.5
+                        ),
+                        0
+                    )
+
+
+                local isOver =
+                    false
+
+
+                pcall(function()
+
+                    isOver =
+                        VolcanoData.IsOver(
+                            pool,
+                            candidate
+                        )
+
+                end)
+
+
+                -- Fallback ke center part kalau module game
+                -- memakai volume yang lebih ketat.
+                if not isOver then
+
+                    candidate =
+                        pool.Position
+
+                    pcall(function()
+
+                        isOver =
+                            VolcanoData.IsOver(
+                                pool,
+                                candidate
+                            )
+
+                    end)
+
+                end
+
+
+                if isOver then
+
+                    local distance =
+                        rootPosition
+                        and (
+                            candidate
+                            - rootPosition
+                        ).Magnitude
+                        or 0
+
+
+                    if distance
+                        < bestDistance
+                    then
+
+                        bestDistance =
+                            distance
+
+                        bestPosition =
+                            candidate
+
+                    end
+
+                end
+
+            end
+
+        end
+
+
+        return bestPosition
+    end
+
+
+    local function IsOverVolcanoPool(
+        position
+    )
+
+        if typeof(position)
+            ~= "Vector3"
+        then
+            return false
+        end
+
+
+        local tag =
+            VolcanoData.Tag
+
+
+        if type(tag)
+            ~= "string"
+        then
+            return false
+        end
+
+
+        for _, pool
+            in ipairs(
+                CollectionService:
+                GetTagged(
+                    tag
+                )
+            )
+        do
+
+            if pool:IsA(
+                "BasePart"
+            )
+                and pool:IsDescendantOf(
+                    workspace
+                )
+            then
+
+                local ok,
+                    result =
+                    pcall(
+                        VolcanoData.IsOver,
+                        pool,
+                        position
+                    )
+
+
+                if ok
+                    and result
+                then
+
+                    return true
+
+                end
+
+            end
+
+        end
+
+
+        return false
+    end
+
+
+    local function GoVolcanoDipCurrentEgg()
+
+        if not goVolcanoDipActive then
+            return false
+        end
+
+
+        if #Basket:GetChildren()
+            == 0
+        then
+            return false
+        end
+
+
+        if LocalPlayer:
+                GetAttribute(
+                    "TutorialActive"
+                )
+                == true
+        then
+            return false
+        end
+
+
+        if HasVolcanoFlight()
+            or not HasEligibleVolcanoEgg()
+        then
+            return false
+        end
+
+
+        local _, root =
+            GetCharacterData()
+
+
+        if not root then
+            return false
+        end
+
+
+        local poolPosition =
+            GetVolcanoPoolPosition(
+                root.Position
+            )
+
+
+        if not poolPosition then
+
+            warn(
+                "[CHLISE HUB] Volcano pool not found."
+            )
+
+            return false
+        end
+
+
+        root.CFrame =
+            CFrame.new(
+                poolPosition
+            )
+
+
+        task.wait(0.3)
+
+
+        if not root.Parent
+            or not IsOverVolcanoPool(
+                root.Position
+            )
+        then
+
+            warn(
+                "[CHLISE HUB] Failed to reach volcano pool."
+            )
+
+            return false
+        end
+
+
+        local ok,
+            err =
+            pcall(function()
+
+                VolcanoDipRemote:
+                FireServer()
+
+            end)
+
+
+        if not ok then
+
+            warn(
+                "[CHLISE HUB] VolcanoDip failed:",
+                err
+            )
+
+            return false
+        end
+
+
+        -- Tunggu server mengubah state egg.
+        local started =
+            os.clock()
+
+
+        while os.clock()
+                - started
+                < 2
+        do
+
+            if not HasEligibleVolcanoEgg()
+                or HasVolcanoFlight()
+            then
+
+                return true
+
+            end
+
+
+            task.wait(0.1)
+
+        end
+
+
+        return true
+    end
+
+
     local function GiftCurrentEgg()
 
         if not giftEggActive then
@@ -1882,6 +2315,20 @@ return function(Context)
         function(state)
 
             giftEggActive =
+                state
+
+        end
+    )
+
+
+    FarmSection:AddToggle(
+        "GoVolcanoDip",
+        "Go Volcano Dip",
+        false,
+
+        function(state)
+
+            goVolcanoDipActive =
                 state
 
         end
@@ -3116,6 +3563,22 @@ return function(Context)
 
 
                 task.wait(0.15)
+
+            end
+
+
+            -- ================================================
+            -- GO VOLCANO DIP
+            -- Dip egg yang baru diambil sebelum Gift / balik plot.
+            -- ================================================
+
+            if goVolcanoDipActive then
+
+                pcall(function()
+
+                    GoVolcanoDipCurrentEgg()
+
+                end)
 
             end
 
