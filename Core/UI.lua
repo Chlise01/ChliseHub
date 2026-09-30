@@ -2950,6 +2950,226 @@ function UI.new(
         end
 
 
+
+        -- ====================================================
+        -- BUTTON ROW
+        -- ====================================================
+
+        function Section:AddButtonRow(
+            leftLabel,
+            leftCallback,
+            rightLabel,
+            rightCallback
+        )
+
+            local card =
+                CreateCard(
+                    42
+                )
+
+
+            local leftButton =
+                New(
+                    "TextButton",
+                    {
+                        Parent =
+                            card,
+
+                        BackgroundColor3 =
+                            Theme.Dropdown,
+
+                        BackgroundTransparency =
+                            0.08,
+
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.new(
+                                0,
+                                9,
+                                0,
+                                7
+                            ),
+
+                        Size =
+                            UDim2.new(
+                                0.5,
+                                -12,
+                                1,
+                                -14
+                            ),
+
+                        Font =
+                            Enum.Font.GothamBold,
+
+                        Text =
+                            leftLabel,
+
+                        TextColor3 =
+                            Theme.Text,
+
+                        TextSize =
+                            11,
+
+                        AutoButtonColor =
+                            false
+                    }
+                )
+
+
+            Corner(
+                leftButton,
+                7
+            )
+
+
+            local rightButton =
+                New(
+                    "TextButton",
+                    {
+                        Parent =
+                            card,
+
+                        BackgroundColor3 =
+                            Theme.Dropdown,
+
+                        BackgroundTransparency =
+                            0.08,
+
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.new(
+                                0.5,
+                                3,
+                                0,
+                                7
+                            ),
+
+                        Size =
+                            UDim2.new(
+                                0.5,
+                                -12,
+                                1,
+                                -14
+                            ),
+
+                        Font =
+                            Enum.Font.GothamBold,
+
+                        Text =
+                            rightLabel,
+
+                        TextColor3 =
+                            Theme.Text,
+
+                        TextSize =
+                            11,
+
+                        AutoButtonColor =
+                            false
+                    }
+                )
+
+
+            Corner(
+                rightButton,
+                7
+            )
+
+
+            local function BindButton(
+                button,
+                callback
+            )
+
+                button.MouseEnter:
+                Connect(function()
+
+                    TweenService:
+                    Create(
+                        button,
+                        TweenInfo.new(
+                            0.12
+                        ),
+                        {
+                            BackgroundColor3 =
+                                Color3.fromRGB(
+                                    52,
+                                    40,
+                                    41
+                                )
+                        }
+                    ):
+                    Play()
+
+                end)
+
+
+                button.MouseLeave:
+                Connect(function()
+
+                    TweenService:
+                    Create(
+                        button,
+                        TweenInfo.new(
+                            0.12
+                        ),
+                        {
+                            BackgroundColor3 =
+                                Theme.Dropdown
+                        }
+                    ):
+                    Play()
+
+                end)
+
+
+                button.MouseButton1Click:
+                Connect(function()
+
+                    if type(callback)
+                        == "function"
+                    then
+
+                        task.spawn(
+                            callback
+                        )
+
+                    end
+
+                end)
+
+            end
+
+
+            BindButton(
+                leftButton,
+                leftCallback
+            )
+
+
+            BindButton(
+                rightButton,
+                rightCallback
+            )
+
+
+            return {
+                Instance =
+                    card,
+
+                Left =
+                    leftButton,
+
+                Right =
+                    rightButton
+            }
+        end
+
+
         -- ====================================================
         -- TEXTBOX
         -- ====================================================
