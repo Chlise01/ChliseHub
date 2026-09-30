@@ -3579,14 +3579,9 @@ return function(Context)
 
 
             -- ================================================
-            -- DELAY AFTER SUCCESSFUL PICKUP
-            -- ================================================
-
-            task.wait(3)
-
-
-            -- ================================================
             -- GO VOLCANO DIP
+            -- Setelah pickup sukses, langsung teleport ke Volcano Dip
+            -- tanpa delay tambahan.
             -- Urutan:
             -- 1. Teleport ke Volcano Dip
             -- 2. Tunggu tombol / client recognize area
