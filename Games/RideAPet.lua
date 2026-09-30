@@ -44,6 +44,12 @@ return function(Context)
     local VirtualInputManager =
         game:GetService("VirtualInputManager")
 
+    local TeleportService =
+        game:GetService("TeleportService")
+
+    local HttpService =
+        game:GetService("HttpService")
+
 
     local LocalPlayer =
         Players.LocalPlayer
@@ -196,6 +202,46 @@ return function(Context)
 
     local selectedGiftPlayer = nil
     local giftEggActive = false
+
+    local autoServerHopActive = false
+    local serverHopDelay = 30
+    local noTargetSince = nil
+
+
+    -- ========================================================
+    -- SERVER HOP RUNTIME STATE
+    --
+    -- Tidak masuk named config. Hanya dipakai selama runtime
+    -- executor untuk menghindari server yang baru dikunjungi.
+    -- ========================================================
+
+    local RuntimeState =
+        Runtime:GetState()
+
+    RuntimeState.ServerHop =
+        type(RuntimeState.ServerHop) == "table"
+        and RuntimeState.ServerHop
+        or {}
+
+    local ServerHopState =
+        RuntimeState.ServerHop
+
+    ServerHopState.Visited =
+        type(ServerHopState.Visited) == "table"
+        and ServerHopState.Visited
+        or {}
+
+    -- Jangan sampai state "hopping" lama mengunci script
+    -- ketika module direload di server yang sama.
+    ServerHopState.Hopping = false
+
+    if game.JobId
+        and game.JobId ~= ""
+    then
+        ServerHopState.Visited[
+            game.JobId
+        ] = true
+    end
 
 
     -- ========================================================
@@ -657,83 +703,63 @@ return function(Context)
 
     local function GetLairDoorPosition()
 
-    local volcano =
-        workspace:
-        FindFirstChild(
-            "Volcano"
-        )
+        for _, object
+            in ipairs(
+                workspace:
+                GetDescendants()
+            )
+        do
 
-    if not volcano then
+            local name =
+                object.Name:
+                lower()
+
+
+            if name:find(
+                "liardoor",
+                1,
+                true
+            )
+                or name:find(
+                    "liar_door",
+                    1,
+                    true
+                )
+                or name:find(
+                    "liar door",
+                    1,
+                    true
+                )
+            then
+
+                if object:IsA(
+                    "Model"
+                )
+                then
+
+                    return
+                        object:
+                        GetPivot()
+                        .Position
+
+                end
+
+
+                if object:IsA(
+                    "BasePart"
+                )
+                then
+
+                    return
+                        object.Position
+
+                end
+            end
+        end
+
+
         return nil
     end
-
-
-    local entrance =
-        volcano:
-        FindFirstChild(
-            "VolcanoValidate",
-            true
-        )
-
-
-    if entrance then
-
-        if entrance:IsA(
-            "BasePart"
-        )
-        then
-
-            return
-                entrance.Position
-
-        elseif entrance:IsA(
-            "Model"
-        )
-        then
-
-            return
-                entrance:
-                GetPivot()
-                .Position
-
-        end
-    end
-
-
-    local validate =
-        volcano:
-        FindFirstChild(
-            "VolcanoValidate",
-            true
-        )
-
-
-    if validate then
-
-        if validate:IsA(
-            "BasePart"
-        )
-        then
-
-            return
-                validate.Position
-
-        elseif validate:IsA(
-            "Model"
-        )
-        then
-
-            return
-                validate:
-                GetPivot()
-                .Position
-
-        end
-    end
-
-
-    return nil
-end
 
 
     local function GetCharacterData()
@@ -974,7 +1000,7 @@ end
 
         local frontPosition =
             base.Position
-            - base.CFrame.LookVector
+            + base.CFrame.LookVector
                 * (
                     base.Size.Z / 2
                     + 6
@@ -1042,25 +1068,9 @@ end
             LocalPlayer:
             FindFirstChild("Basket")
 
-        if not basket then
-            return false
-        end
-
-
-        -- Tunggu sebentar jika egg belum muncul di Basket.
-        local waitStarted =
-            os.clock()
-
-        while #basket:GetChildren() == 0
-            and os.clock() - waitStarted < 1.25
-        do
-
-            task.wait(0.05)
-
-        end
-
-
-        if #basket:GetChildren() == 0 then
+        if not basket
+            or #basket:GetChildren() == 0
+        then
             return false
         end
 
@@ -1094,6 +1104,386 @@ end
 
         return true
     end
+
+    -- ========================================================
+    -- SERVER HOP HELPERS
+    -- ========================================================
+
+    local SERVER_HOP_DELAYS = {
+        "10 Seconds",
+        "20 Seconds",
+        "30 Seconds",
+        "45 Seconds",
+        "60 Seconds",
+        "90 Seconds",
+        "120 Seconds"
+    }
+
+
+    local function ParseServerHopDelay(
+        value
+    )
+
+        local number =
+            tonumber(
+                tostring(
+                    value or ""
+                ):
+                match("%d+")
+            )
+
+
+        if not number then
+            return 30
+        end
+
+
+        return
+            math.clamp(
+                number,
+                10,
+                300
+            )
+    end
+
+
+    local function GetPublicServers(
+        cursor
+    )
+
+        local url =
+            "https://games.roblox.com/v1/games/"
+            .. tostring(game.PlaceId)
+            .. "/servers/Public?sortOrder=Asc&limit=100"
+
+
+        if cursor
+            and cursor ~= ""
+        then
+
+            url =
+                url
+                .. "&cursor="
+                .. HttpService:
+                    UrlEncode(
+                        cursor
+                    )
+        end
+
+
+        local requestOk,
+            response =
+            pcall(
+                game.HttpGet,
+                game,
+                url
+            )
+
+
+        if not requestOk
+            or type(response) ~= "string"
+        then
+
+            warn(
+                "[CHLISE HUB] Server list request failed:",
+                response
+            )
+
+            return nil
+        end
+
+
+        local decodeOk,
+            data =
+            pcall(
+                HttpService.JSONDecode,
+                HttpService,
+                response
+            )
+
+
+        if not decodeOk
+            or type(data) ~= "table"
+        then
+
+            warn(
+                "[CHLISE HUB] Invalid server list response."
+            )
+
+            return nil
+        end
+
+
+        return data
+    end
+
+
+    local function FindServerHopTarget()
+
+        local currentJobId =
+            game.JobId
+
+        local cursor =
+            nil
+
+        local pagesChecked =
+            0
+
+        local candidates =
+            {}
+
+
+        repeat
+
+            pagesChecked += 1
+
+
+            local data =
+                GetPublicServers(
+                    cursor
+                )
+
+
+            if not data
+                or type(data.data) ~= "table"
+            then
+                break
+            end
+
+
+            for _, server
+                in ipairs(
+                    data.data
+                )
+            do
+
+                local serverId =
+                    server.id
+
+                local playing =
+                    tonumber(
+                        server.playing
+                    )
+                    or 0
+
+                local maxPlayers =
+                    tonumber(
+                        server.maxPlayers
+                    )
+                    or 0
+
+
+                if serverId
+                    and serverId ~= ""
+                    and serverId ~= currentJobId
+                    and playing < maxPlayers
+                    and not ServerHopState.Visited[
+                        serverId
+                    ]
+                then
+
+                    table.insert(
+                        candidates,
+                        server
+                    )
+                end
+            end
+
+
+            -- Begitu ada beberapa pilihan, tidak perlu
+            -- membanjiri API dengan page berikutnya.
+            if #candidates >= 8 then
+                break
+            end
+
+
+            cursor =
+                data.nextPageCursor
+
+        until not cursor
+            or cursor == ""
+            or pagesChecked >= 8
+
+
+        if #candidates == 0 then
+            return nil
+        end
+
+
+        return
+            candidates[
+                math.random(
+                    1,
+                    #candidates
+                )
+            ]
+    end
+
+
+    local function ResetVisitedServers()
+
+        Utils.ClearTable(
+            ServerHopState.Visited
+        )
+
+
+        if game.JobId
+            and game.JobId ~= ""
+        then
+
+            ServerHopState.Visited[
+                game.JobId
+            ] = true
+        end
+    end
+
+
+    local function ServerHop(
+        reason
+    )
+
+        if ServerHopState.Hopping then
+            return false
+        end
+
+
+        ServerHopState.Hopping =
+            true
+
+
+        if game.JobId
+            and game.JobId ~= ""
+        then
+
+            ServerHopState.Visited[
+                game.JobId
+            ] = true
+        end
+
+
+        local target =
+            FindServerHopTarget()
+
+
+        -- Semua server yang ketemu sudah pernah dikunjungi.
+        -- Mulai pool baru, tapi tetap jangan pilih server saat ini.
+        if not target then
+
+            ResetVisitedServers()
+
+            target =
+                FindServerHopTarget()
+        end
+
+
+        if not target
+            or not target.id
+        then
+
+            ServerHopState.Hopping =
+                false
+
+            warn(
+                "[CHLISE HUB] No available server found."
+            )
+
+            return false
+        end
+
+
+        local targetId =
+            target.id
+
+
+        ServerHopState.Visited[
+            targetId
+        ] = true
+
+
+        print(
+            "[CHLISE HUB] Server Hop:",
+            reason or "Manual",
+            "->",
+            targetId
+        )
+
+
+        local teleportOk,
+            teleportError =
+            pcall(function()
+
+                TeleportService:
+                TeleportToPlaceInstance(
+                    game.PlaceId,
+                    targetId,
+                    LocalPlayer
+                )
+
+            end)
+
+
+        if not teleportOk then
+
+            ServerHopState.Hopping =
+                false
+
+            warn(
+                "[CHLISE HUB] Server Hop failed:",
+                teleportError
+            )
+
+            return false
+        end
+
+
+        -- Jika TeleportService tidak benar-benar memindahkan
+        -- player, izinkan percobaan berikutnya setelah cooldown.
+        local sourceJobId =
+            game.JobId
+
+
+        task.delay(
+            10,
+
+            function()
+
+                if Runtime:IsCurrent()
+                    and game.JobId
+                        == sourceJobId
+                then
+
+                    ServerHopState.Hopping =
+                        false
+                end
+
+            end
+        )
+
+
+        return true
+    end
+
+
+    Runtime:TrackConnection(
+
+        TeleportService.TeleportInitFailed:
+        Connect(function(
+            player
+        )
+
+            if player
+                == LocalPlayer
+            then
+
+                ServerHopState.Hopping =
+                    false
+
+            end
+
+        end)
+
+    )
+
 
     -- ========================================================
     -- TABS
@@ -1253,6 +1643,80 @@ end
 
             autoFarmActive =
                 state
+
+
+            if not state then
+
+                noTargetSince =
+                    nil
+
+            end
+
+        end
+    )
+
+
+    -- ========================================================
+    -- SERVER HOP UI
+    -- ========================================================
+
+    local ServerSection =
+        Window:AddSection(
+            FarmTab,
+            "Server Hop"
+        )
+
+
+    ServerSection:AddButton(
+        "Server Hop",
+
+        function()
+
+            task.spawn(function()
+
+                ServerHop(
+                    "Manual"
+                )
+
+            end)
+
+        end
+    )
+
+
+    ServerSection:AddToggle(
+        "AutoServerHop",
+        "Auto Server Hop",
+        false,
+
+        function(state)
+
+            autoServerHopActive =
+                state
+
+            noTargetSince =
+                nil
+
+        end
+    )
+
+
+    ServerSection:AddDropdown(
+        "ServerHopDelay",
+        "Hop Delay",
+        SERVER_HOP_DELAYS,
+        false,
+        "30 Seconds",
+
+        function(value)
+
+            serverHopDelay =
+                ParseServerHopDelay(
+                    value
+                )
+
+            noTargetSince =
+                nil
 
         end
     )
@@ -1911,6 +2375,11 @@ end
                 or not root
             then
 
+                -- Jangan menghitung waktu no-target ketika
+                -- data game / character belum siap.
+                noTargetSince =
+                    nil
+
                 task.wait(0.5)
                 continue
             end
@@ -1931,11 +2400,6 @@ end
             local bestDistance =
                 math.huge
 
-
-            -- ====================================================
-            -- FIND BEST EGG
-            -- Highest rarity -> nearest
-            -- ====================================================
 
             for _, configObject
                 in ipairs(
@@ -2038,18 +2502,75 @@ end
                 or not targetPosition
             then
 
+                if autoServerHopActive
+                    and autoFarmActive
+                then
+
+                    if not noTargetSince then
+
+                        noTargetSince =
+                            os.clock()
+
+                    end
+
+
+                    local elapsed =
+                        os.clock()
+                        - noTargetSince
+
+
+                    if elapsed
+                        >= serverHopDelay
+                    then
+
+                        noTargetSince =
+                            nil
+
+
+                        task.spawn(function()
+
+                            ServerHop(
+                                "No matching egg for "
+                                .. tostring(
+                                    serverHopDelay
+                                )
+                                .. "s"
+                            )
+
+                        end)
+
+
+                        -- Hindari loop spam sambil teleport diproses.
+                        task.wait(1)
+                        continue
+                    end
+
+                else
+
+                    noTargetSince =
+                        nil
+
+                end
+
+
                 task.wait(0.5)
                 continue
             end
+
+
+            -- Ada target valid yang sesuai filter:
+            -- timer Auto Server Hop harus mulai dari nol lagi.
+            noTargetSince =
+                nil
 
 
             local plotCenter =
                 GetPlotCenter()
 
 
-            -- ====================================================
-            -- VOLCANIC EGG - ENTER
-            -- ====================================================
+            -- ================================================
+            -- VOLCANIC EGG
+            -- ================================================
 
             if targetName
                 == "Volcanic Egg"
@@ -2081,6 +2602,7 @@ end
 
                         firesignal(
                             event.OnClientEvent,
+
                             "Enter The Lair Through Its Door"
                         )
 
@@ -2089,15 +2611,15 @@ end
                 end)
 
 
-                local entrance =
+                local door =
                     GetLairDoorPosition()
 
 
-                if entrance then
+                if door then
 
                     root.CFrame =
                         CFrame.new(
-                            entrance
+                            door
                             + Vector3.new(
                                 0,
                                 3,
@@ -2106,16 +2628,10 @@ end
                         )
 
 
-                    task.wait(0.5)
-
+                    task.wait(0.3)
                 end
-
             end
 
-
-            -- ====================================================
-            -- TELEPORT TO EGG
-            -- ====================================================
 
             root.CFrame =
                 CFrame.new(
@@ -2130,10 +2646,6 @@ end
 
             task.wait(0.1)
 
-
-            -- ====================================================
-            -- PICKUP EGG
-            -- ====================================================
 
             local started =
                 os.clock()
@@ -2242,7 +2754,6 @@ end
 
                                     end
                                 )
-
                             end
                         end
                     end
@@ -2251,45 +2762,7 @@ end
 
 
                 task.wait(0.15)
-
             end
-
-
-            -- ====================================================
-            -- VOLCANIC EGG - EXIT
-            -- ====================================================
-
-            if targetName
-                == "Volcanic Egg"
-            then
-
-                local entrance =
-                    GetLairDoorPosition()
-
-
-                if entrance then
-
-                    root.CFrame =
-                        CFrame.new(
-                            entrance
-                            + Vector3.new(
-                                0,
-                                3,
-                                0
-                            )
-                        )
-
-
-                    task.wait(0.5)
-
-                end
-
-            end
-
-
-            -- ====================================================
-            -- GIFT EGG
-            -- ====================================================
 
             if giftEggActive then
 
@@ -2302,9 +2775,31 @@ end
             end
 
 
-            -- ====================================================
-            -- RETURN TO OWN PLOT
-            -- ====================================================
+            if targetName
+                == "Volcanic Egg"
+            then
+
+                local door =
+                    GetLairDoorPosition()
+
+
+                if door then
+
+                    root.CFrame =
+                        CFrame.new(
+                            door
+                            + Vector3.new(
+                                0,
+                                3,
+                                0
+                            )
+                        )
+
+
+                    task.wait(0.3)
+                end
+            end
+
 
             if plotCenter
                 and root.Parent
