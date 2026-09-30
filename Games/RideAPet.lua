@@ -3661,7 +3661,7 @@ return function(Context)
                     end
 
 
-                    -- BARU setelah teleport + remote, stay 6 detik di Volcano.
+                    -- BARU setelah teleport + remote, stay 10 detik di Volcano.
                     local volcanoStayStarted =
                         os.clock()
 
@@ -3670,7 +3670,7 @@ return function(Context)
                         and autoFarmActive
                         and os.clock()
                             - volcanoStayStarted
-                            < 6
+                            < 10
                     do
 
                         if currentRoot.Parent then
