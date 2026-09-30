@@ -789,86 +789,163 @@ return function(Context)
 
 
     -- ========================================================
-    -- PHYSICAL EGG VALIDATION
-    --
-    -- ActiveEggs kadang masih menyimpan entry walaupun egg fisik
-    -- sudah tidak ada. Jangan teleport hanya berdasarkan data itu.
+    -- RENDERED EGG MATCHING
     -- ========================================================
 
-    local function HasPhysicalEggAt(
-        position,
-        radius
+    local RENDERED_EGG_MAX_DISTANCE =
+        15
+
+
+    local function GetRenderedEggsFolder()
+
+        return
+            workspace:
+            FindFirstChild(
+                "RenderedEggs"
+            )
+
+    end
+
+
+    local function GetEggPickupPrompt(
+        eggModel
     )
 
-        if typeof(position)
-            ~= "Vector3"
+        if not eggModel
+            or not eggModel.Parent
         then
-            return false
+            return nil
         end
 
 
-        radius =
-            tonumber(radius)
-            or 18
+        local pickup =
+            eggModel:
+            FindFirstChild(
+                "Pickup",
+                true
+            )
 
 
-        for _, object
+        if pickup
+            and pickup:IsA(
+                "ProximityPrompt"
+            )
+            and pickup.Enabled
+        then
+
+            return pickup
+
+        end
+
+
+        return nil
+    end
+
+
+    local function FindRenderedEgg(
+        eggName,
+        targetPosition,
+        maxDistance
+    )
+
+        if type(eggName)
+                ~= "string"
+            or eggName == ""
+            or typeof(targetPosition)
+                ~= "Vector3"
+        then
+
+            return nil, nil, math.huge
+
+        end
+
+
+        local renderedEggs =
+            GetRenderedEggsFolder()
+
+
+        if not renderedEggs then
+            return nil, nil, math.huge
+        end
+
+
+        maxDistance =
+            tonumber(maxDistance)
+            or RENDERED_EGG_MAX_DISTANCE
+
+
+        local bestModel =
+            nil
+
+        local bestPrompt =
+            nil
+
+        local bestDistance =
+            math.huge
+
+
+        for _, eggModel
             in ipairs(
-                workspace:
-                GetDescendants()
+                renderedEggs:
+                GetChildren()
             )
         do
 
-            local objectPosition =
-                nil
-
-
-            if object:IsA(
-                "BasePart"
-            )
+            if eggModel:IsA(
+                    "Model"
+                )
+                and eggModel.Name
+                    == eggName
             then
 
-                objectPosition =
-                    object.Position
+                local ok,
+                    modelPosition =
+                    pcall(function()
 
-            elseif object:IsA(
-                "Model"
-            )
-            then
+                        return
+                            eggModel:
+                            GetPivot()
+                            .Position
 
-                objectPosition =
-                    object:
-                    GetPivot()
-                    .Position
-
-            end
+                    end)
 
 
-            if objectPosition
-                and (
-                    objectPosition
-                    - position
-                ).Magnitude
-                    <= radius
-            then
-
-                local prompt =
-                    object:
-                    FindFirstChildOfClass(
-                        "ProximityPrompt"
-                    )
-                    or object:
-                    FindFirstChild(
-                        "ProximityPrompt",
-                        true
-                    )
-
-
-                if prompt
-                    and prompt.Enabled
+                if ok
+                    and typeof(modelPosition)
+                        == "Vector3"
                 then
 
-                    return true
+                    local distance =
+                        (
+                            modelPosition
+                            - targetPosition
+                        ).Magnitude
+
+
+                    if distance
+                        < bestDistance
+                    then
+
+                        local pickup =
+                            GetEggPickupPrompt(
+                                eggModel
+                            )
+
+
+                        if pickup then
+
+                            bestDistance =
+                                distance
+
+                            bestModel =
+                                eggModel
+
+                            bestPrompt =
+                                pickup
+
+                        end
+
+                    end
 
                 end
 
@@ -877,34 +954,57 @@ return function(Context)
         end
 
 
-        return false
+        if not bestModel
+            or bestDistance
+                > maxDistance
+        then
+
+            return nil, nil, bestDistance
+
+        end
+
+
+        return
+            bestModel,
+            bestPrompt,
+            bestDistance
     end
 
 
-    local function WaitForPhysicalEggAt(
-        position,
+    local function WaitForRenderedEgg(
+        eggName,
+        targetPosition,
         timeout,
-        radius
+        maxDistance
     )
+
+        timeout =
+            tonumber(timeout)
+            or 2
+
 
         local started =
             os.clock()
 
 
-        timeout =
-            tonumber(timeout)
-            or 1.5
-
-
         repeat
 
-            if HasPhysicalEggAt(
-                position,
-                radius
-            )
+            local eggModel,
+                pickup =
+                FindRenderedEgg(
+                    eggName,
+                    targetPosition,
+                    maxDistance
+                )
+
+
+            if eggModel
+                and pickup
             then
 
-                return true
+                return
+                    eggModel,
+                    pickup
 
             end
 
@@ -916,7 +1016,7 @@ return function(Context)
             >= timeout
 
 
-        return false
+        return nil, nil
     end
 
 
@@ -2552,6 +2652,12 @@ return function(Context)
             local targetPosition =
                 nil
 
+            local targetModel =
+                nil
+
+            local targetPrompt =
+                nil
+
             local bestRarity =
                 -1
 
@@ -2591,20 +2697,32 @@ return function(Context)
                     end
 
 
-                    -- ActiveEggs dapat berisi posisi stale.
-                    -- Untuk egg biasa, wajib ada egg fisik/prompt
-                    -- sebelum entry boleh ikut pemilihan target.
-                    --
-                    -- Volcanic Egg divalidasi setelah karakter
-                    -- menyentuh VolcanoValidate.
+                    local renderedModel =
+                        nil
+
+                    local renderedPrompt =
+                        nil
+
+
                     if eggName
-                            ~= "Volcanic Egg"
-                        and not HasPhysicalEggAt(
-                            position,
-                            18
-                        )
+                        ~= "Volcanic Egg"
                     then
-                        return
+
+                        renderedModel,
+                            renderedPrompt =
+                            FindRenderedEgg(
+                                eggName,
+                                position,
+                                RENDERED_EGG_MAX_DISTANCE
+                            )
+
+
+                        if not renderedModel
+                            or not renderedPrompt
+                        then
+                            return
+                        end
+
                     end
 
 
@@ -2665,6 +2783,12 @@ return function(Context)
 
                         targetPosition =
                             position
+
+                        targetModel =
+                            renderedModel
+
+                        targetPrompt =
+                            renderedPrompt
 
                     end
 
@@ -2800,8 +2924,6 @@ return function(Context)
                 end
 
 
-                -- Teleport tepat ke volume VolcanoValidate.
-                -- Tidak memakai +3 studs supaya trigger benar-benar kena.
                 root.CFrame =
                     CFrame.new(
                         validatePosition
@@ -2811,19 +2933,20 @@ return function(Context)
                 task.wait(0.45)
 
 
-                -- Setelah melewati validate, baru pastikan egg fisik
-                -- benar-benar ada. Entry stale tidak boleh membuat
-                -- karakter teleport ke posisi kosong.
-                local volcanicReady =
-                    targetObject.Parent
-                    and WaitForPhysicalEggAt(
+                targetModel,
+                    targetPrompt =
+                    WaitForRenderedEgg(
+                        targetName,
                         targetPosition,
-                        1.5,
-                        18
+                        2,
+                        RENDERED_EGG_MAX_DISTANCE
                     )
 
 
-                if not volcanicReady then
+                if not targetObject.Parent
+                    or not targetModel
+                    or not targetPrompt
+                then
 
                     if autoServerHopActive
                         and not noTargetSince
@@ -2858,12 +2981,18 @@ return function(Context)
 
             else
 
-                -- Final validation untuk egg biasa tepat sebelum teleport.
-                if not targetObject.Parent
-                    or not HasPhysicalEggAt(
+                targetModel,
+                    targetPrompt =
+                    FindRenderedEgg(
+                        targetName,
                         targetPosition,
-                        18
+                        RENDERED_EGG_MAX_DISTANCE
                     )
+
+
+                if not targetObject.Parent
+                    or not targetModel
+                    or not targetPrompt
                 then
 
                     if autoServerHopActive
@@ -2906,6 +3035,10 @@ return function(Context)
             task.wait(0.1)
 
 
+            -- ================================================
+            -- PICKUP EGG
+            -- ================================================
+
             local started =
                 os.clock()
 
@@ -2913,6 +3046,8 @@ return function(Context)
             while Runtime:IsCurrent()
                 and autoFarmActive
                 and targetObject.Parent
+                and targetModel
+                and targetModel.Parent
             do
 
                 if os.clock()
@@ -2923,105 +3058,67 @@ return function(Context)
                 end
 
 
-                pcall(function()
+                if not targetPrompt
+                    or not targetPrompt.Parent
+                    or not targetPrompt.Enabled
+                then
 
-                    if not fireproximityprompt then
-                        return
+                    targetPrompt =
+                        GetEggPickupPrompt(
+                            targetModel
+                        )
+
+
+                    if not targetPrompt then
+                        break
                     end
 
+                end
 
-                    for _, object
-                        in ipairs(
-                            workspace:
-                            GetDescendants()
+
+                if fireproximityprompt then
+
+                    pcall(function()
+
+                        local oldHold =
+                            targetPrompt.HoldDuration
+
+
+                        targetPrompt.HoldDuration =
+                            0
+
+
+                        fireproximityprompt(
+                            targetPrompt
                         )
-                    do
-
-                        local position =
-                            nil
 
 
-                        if object:IsA(
-                            "BasePart"
-                        )
-                        then
+                        task.delay(
+                            0.05,
 
-                            position =
-                                object.Position
+                            function()
 
-                        elseif object:IsA(
-                            "Model"
-                        )
-                        then
+                                if targetPrompt
+                                    and targetPrompt.Parent
+                                then
 
-                            position =
-                                object:
-                                GetPivot()
-                                .Position
+                                    targetPrompt.HoldDuration =
+                                        oldHold
 
-                        end
+                                end
 
-
-                        if position
-                            and (
-                                position
-                                - targetPosition
-                            ).Magnitude
-                                < 18
-                        then
-
-                            local prompt =
-                                object:
-                                FindFirstChildOfClass(
-                                    "ProximityPrompt"
-                                )
-                                or object:
-                                FindFirstChild(
-                                    "ProximityPrompt",
-                                    true
-                                )
-
-
-                            if prompt then
-
-                                local oldHold =
-                                    prompt.HoldDuration
-
-
-                                prompt.HoldDuration =
-                                    0
-
-
-                                fireproximityprompt(
-                                    prompt
-                                )
-
-
-                                task.delay(
-                                    0.05,
-
-                                    function()
-
-                                        if prompt
-                                            and prompt.Parent
-                                        then
-
-                                            prompt.HoldDuration =
-                                                oldHold
-
-                                        end
-
-                                    end
-                                )
                             end
-                        end
-                    end
+                        )
 
-                end)
+                    end)
+
+                end
 
 
                 task.wait(0.15)
+
             end
+
 
             -- ================================================
             -- VOLCANIC EGG - EXIT
