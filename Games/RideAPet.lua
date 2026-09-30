@@ -671,7 +671,7 @@ return function(Context)
     local entrance =
         volcano:
         FindFirstChild(
-            "VolcanoEntrance",
+            "VolcanoValidate",
             true
         )
 
