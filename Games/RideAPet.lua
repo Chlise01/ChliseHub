@@ -703,6 +703,115 @@ return function(Context)
 
     local function GetLairDoorPosition()
 
+        local volcano =
+            workspace:
+            FindFirstChild(
+                "Volcano"
+            )
+
+
+        if not volcano then
+            return nil
+        end
+
+
+        -- VolcanoValidate adalah trigger utama yang kita pakai
+        -- untuk masuk / keluar area Volcanic Egg.
+        local validate =
+            volcano:
+            FindFirstChild(
+                "VolcanoValidate",
+                true
+            )
+
+
+        if validate then
+
+            if validate:IsA(
+                "BasePart"
+            )
+            then
+
+                return
+                    validate.Position
+
+            elseif validate:IsA(
+                "Model"
+            )
+            then
+
+                return
+                    validate:
+                    GetPivot()
+                    .Position
+
+            end
+
+        end
+
+
+        -- Fallback kalau struktur map berubah.
+        local entrance =
+            volcano:
+            FindFirstChild(
+                "VolcanoEntrance",
+                true
+            )
+
+
+        if entrance then
+
+            if entrance:IsA(
+                "BasePart"
+            )
+            then
+
+                return
+                    entrance.Position
+
+            elseif entrance:IsA(
+                "Model"
+            )
+            then
+
+                return
+                    entrance:
+                    GetPivot()
+                    .Position
+
+            end
+
+        end
+
+
+        return nil
+    end
+
+
+    -- ========================================================
+    -- PHYSICAL EGG VALIDATION
+    --
+    -- ActiveEggs kadang masih menyimpan entry walaupun egg fisik
+    -- sudah tidak ada. Jangan teleport hanya berdasarkan data itu.
+    -- ========================================================
+
+    local function HasPhysicalEggAt(
+        position,
+        radius
+    )
+
+        if typeof(position)
+            ~= "Vector3"
+        then
+            return false
+        end
+
+
+        radius =
+            tonumber(radius)
+            or 18
+
+
         for _, object
             in ipairs(
                 workspace:
@@ -710,55 +819,104 @@ return function(Context)
             )
         do
 
-            local name =
-                object.Name:
-                lower()
+            local objectPosition =
+                nil
 
 
-            if name:find(
-                "liardoor",
-                1,
-                true
+            if object:IsA(
+                "BasePart"
             )
-                or name:find(
-                    "liar_door",
-                    1,
-                    true
-                )
-                or name:find(
-                    "liar door",
-                    1,
-                    true
-                )
             then
 
-                if object:IsA(
-                    "Model"
-                )
-                then
+                objectPosition =
+                    object.Position
 
-                    return
-                        object:
-                        GetPivot()
-                        .Position
+            elseif object:IsA(
+                "Model"
+            )
+            then
 
-                end
+                objectPosition =
+                    object:
+                    GetPivot()
+                    .Position
 
-
-                if object:IsA(
-                    "BasePart"
-                )
-                then
-
-                    return
-                        object.Position
-
-                end
             end
+
+
+            if objectPosition
+                and (
+                    objectPosition
+                    - position
+                ).Magnitude
+                    <= radius
+            then
+
+                local prompt =
+                    object:
+                    FindFirstChildOfClass(
+                        "ProximityPrompt"
+                    )
+                    or object:
+                    FindFirstChild(
+                        "ProximityPrompt",
+                        true
+                    )
+
+
+                if prompt
+                    and prompt.Enabled
+                then
+
+                    return true
+
+                end
+
+            end
+
         end
 
 
-        return nil
+        return false
+    end
+
+
+    local function WaitForPhysicalEggAt(
+        position,
+        timeout,
+        radius
+    )
+
+        local started =
+            os.clock()
+
+
+        timeout =
+            tonumber(timeout)
+            or 1.5
+
+
+        repeat
+
+            if HasPhysicalEggAt(
+                position,
+                radius
+            )
+            then
+
+                return true
+
+            end
+
+
+            task.wait(0.1)
+
+        until os.clock()
+            - started
+            >= timeout
+
+
+        return false
     end
 
 
@@ -2433,6 +2591,23 @@ return function(Context)
                     end
 
 
+                    -- ActiveEggs dapat berisi posisi stale.
+                    -- Untuk egg biasa, wajib ada egg fisik/prompt
+                    -- sebelum entry boleh ikut pemilihan target.
+                    --
+                    -- Volcanic Egg divalidasi setelah karakter
+                    -- menyentuh VolcanoValidate.
+                    if eggName
+                            ~= "Volcanic Egg"
+                        and not HasPhysicalEggAt(
+                            position,
+                            18
+                        )
+                    then
+                        return
+                    end
+
+
                     local rarity =
                         GetEggRarity(
                             eggName
@@ -2558,18 +2733,12 @@ return function(Context)
             end
 
 
-            -- Ada target valid yang sesuai filter:
-            -- timer Auto Server Hop harus mulai dari nol lagi.
-            noTargetSince =
-                nil
-
-
             local plotCenter =
                 GetPlotCenter()
 
 
             -- ================================================
-            -- VOLCANIC EGG
+            -- VALIDATE TARGET + VOLCANIC ENTRY
             -- ================================================
 
             if targetName
@@ -2602,7 +2771,6 @@ return function(Context)
 
                         firesignal(
                             event.OnClientEvent,
-
                             "Enter The Lair Through Its Door"
                         )
 
@@ -2611,27 +2779,118 @@ return function(Context)
                 end)
 
 
-                local door =
+                local validatePosition =
                     GetLairDoorPosition()
 
 
-                if door then
+                if not validatePosition then
 
-                    root.CFrame =
-                        CFrame.new(
-                            door
-                            + Vector3.new(
-                                0,
-                                3,
-                                0
-                            )
-                        )
+                    if autoServerHopActive
+                        and not noTargetSince
+                    then
+
+                        noTargetSince =
+                            os.clock()
+
+                    end
 
 
-                    task.wait(0.3)
+                    task.wait(0.35)
+                    continue
                 end
+
+
+                -- Teleport tepat ke volume VolcanoValidate.
+                -- Tidak memakai +3 studs supaya trigger benar-benar kena.
+                root.CFrame =
+                    CFrame.new(
+                        validatePosition
+                    )
+
+
+                task.wait(0.45)
+
+
+                -- Setelah melewati validate, baru pastikan egg fisik
+                -- benar-benar ada. Entry stale tidak boleh membuat
+                -- karakter teleport ke posisi kosong.
+                local volcanicReady =
+                    targetObject.Parent
+                    and WaitForPhysicalEggAt(
+                        targetPosition,
+                        1.5,
+                        18
+                    )
+
+
+                if not volcanicReady then
+
+                    if autoServerHopActive
+                        and not noTargetSince
+                    then
+
+                        noTargetSince =
+                            os.clock()
+
+                    end
+
+
+                    if plotCenter
+                        and root.Parent
+                    then
+
+                        root.CFrame =
+                            CFrame.new(
+                                plotCenter.Position
+                                + Vector3.new(
+                                    0,
+                                    5,
+                                    0
+                                )
+                            )
+
+                    end
+
+
+                    task.wait(0.35)
+                    continue
+                end
+
+            else
+
+                -- Final validation untuk egg biasa tepat sebelum teleport.
+                if not targetObject.Parent
+                    or not HasPhysicalEggAt(
+                        targetPosition,
+                        18
+                    )
+                then
+
+                    if autoServerHopActive
+                        and not noTargetSince
+                    then
+
+                        noTargetSince =
+                            os.clock()
+
+                    end
+
+
+                    task.wait(0.25)
+                    continue
+                end
+
             end
 
+
+            -- Sampai sini target memang valid secara fisik.
+            noTargetSince =
+                nil
+
+
+            -- ================================================
+            -- TELEPORT TO EGG
+            -- ================================================
 
             root.CFrame =
                 CFrame.new(
@@ -2764,6 +3023,40 @@ return function(Context)
                 task.wait(0.15)
             end
 
+            -- ================================================
+            -- VOLCANIC EGG - EXIT
+            -- ================================================
+
+            if targetName
+                == "Volcanic Egg"
+            then
+
+                local validatePosition =
+                    GetLairDoorPosition()
+
+
+                if validatePosition
+                    and root.Parent
+                then
+
+                    -- Kembali menyentuh VolcanoValidate untuk keluar.
+                    root.CFrame =
+                        CFrame.new(
+                            validatePosition
+                        )
+
+
+                    task.wait(0.4)
+                end
+
+            end
+
+
+            -- ================================================
+            -- GIFT EGG
+            -- Jalankan setelah keluar dari volcano.
+            -- ================================================
+
             if giftEggActive then
 
                 pcall(function()
@@ -2772,32 +3065,6 @@ return function(Context)
 
                 end)
 
-            end
-
-
-            if targetName
-                == "Volcanic Egg"
-            then
-
-                local door =
-                    GetLairDoorPosition()
-
-
-                if door then
-
-                    root.CFrame =
-                        CFrame.new(
-                            door
-                            + Vector3.new(
-                                0,
-                                3,
-                                0
-                            )
-                        )
-
-
-                    task.wait(0.3)
-                end
             end
 
 
