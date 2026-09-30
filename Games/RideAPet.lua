@@ -657,63 +657,83 @@ return function(Context)
 
     local function GetLairDoorPosition()
 
-        for _, object
-            in ipairs(
-                workspace:
-                GetDescendants()
-            )
-        do
+    local volcano =
+        workspace:
+        FindFirstChild(
+            "Volcano"
+        )
 
-            local name =
-                object.Name:
-                lower()
-
-
-            if name:find(
-                "liardoor",
-                1,
-                true
-            )
-                or name:find(
-                    "liar_door",
-                    1,
-                    true
-                )
-                or name:find(
-                    "liar door",
-                    1,
-                    true
-                )
-            then
-
-                if object:IsA(
-                    "Model"
-                )
-                then
-
-                    return
-                        object:
-                        GetPivot()
-                        .Position
-
-                end
-
-
-                if object:IsA(
-                    "BasePart"
-                )
-                then
-
-                    return
-                        object.Position
-
-                end
-            end
-        end
-
-
+    if not volcano then
         return nil
     end
+
+
+    local entrance =
+        volcano:
+        FindFirstChild(
+            "VolcanoEntrance",
+            true
+        )
+
+
+    if entrance then
+
+        if entrance:IsA(
+            "BasePart"
+        )
+        then
+
+            return
+                entrance.Position
+
+        elseif entrance:IsA(
+            "Model"
+        )
+        then
+
+            return
+                entrance:
+                GetPivot()
+                .Position
+
+        end
+    end
+
+
+    local validate =
+        volcano:
+        FindFirstChild(
+            "VolcanoValidate",
+            true
+        )
+
+
+    if validate then
+
+        if validate:IsA(
+            "BasePart"
+        )
+        then
+
+            return
+                validate.Position
+
+        elseif validate:IsA(
+            "Model"
+        )
+        then
+
+            return
+                validate:
+                GetPivot()
+                .Position
+
+        end
+    end
+
+
+    return nil
+end
 
 
     local function GetCharacterData()
@@ -954,7 +974,7 @@ return function(Context)
 
         local frontPosition =
             base.Position
-            + base.CFrame.LookVector
+            - base.CFrame.LookVector
                 * (
                     base.Size.Z / 2
                     + 6
@@ -1912,6 +1932,11 @@ return function(Context)
                 math.huge
 
 
+            -- ====================================================
+            -- FIND BEST EGG
+            -- Highest rarity -> nearest
+            -- ====================================================
+
             for _, configObject
                 in ipairs(
                     activeEggs:
@@ -2022,9 +2047,9 @@ return function(Context)
                 GetPlotCenter()
 
 
-            -- ================================================
-            -- VOLCANIC EGG
-            -- ================================================
+            -- ====================================================
+            -- VOLCANIC EGG - ENTER
+            -- ====================================================
 
             if targetName
                 == "Volcanic Egg"
@@ -2056,7 +2081,6 @@ return function(Context)
 
                         firesignal(
                             event.OnClientEvent,
-
                             "Enter The Lair Through Its Door"
                         )
 
@@ -2065,15 +2089,15 @@ return function(Context)
                 end)
 
 
-                local door =
+                local entrance =
                     GetLairDoorPosition()
 
 
-                if door then
+                if entrance then
 
                     root.CFrame =
                         CFrame.new(
-                            door
+                            entrance
                             + Vector3.new(
                                 0,
                                 3,
@@ -2082,10 +2106,16 @@ return function(Context)
                         )
 
 
-                    task.wait(0.3)
+                    task.wait(0.5)
+
                 end
+
             end
 
+
+            -- ====================================================
+            -- TELEPORT TO EGG
+            -- ====================================================
 
             root.CFrame =
                 CFrame.new(
@@ -2100,6 +2130,10 @@ return function(Context)
 
             task.wait(0.1)
 
+
+            -- ====================================================
+            -- PICKUP EGG
+            -- ====================================================
 
             local started =
                 os.clock()
@@ -2208,6 +2242,7 @@ return function(Context)
 
                                     end
                                 )
+
                             end
                         end
                     end
@@ -2216,22 +2251,27 @@ return function(Context)
 
 
                 task.wait(0.15)
+
             end
 
-            
+
+            -- ====================================================
+            -- VOLCANIC EGG - EXIT
+            -- ====================================================
+
             if targetName
                 == "Volcanic Egg"
             then
 
-                local door =
+                local entrance =
                     GetLairDoorPosition()
 
 
-                if door then
+                if entrance then
 
                     root.CFrame =
                         CFrame.new(
-                            door
+                            entrance
                             + Vector3.new(
                                 0,
                                 3,
@@ -2240,9 +2280,16 @@ return function(Context)
                         )
 
 
-                    task.wait(0.3)
+                    task.wait(0.5)
+
                 end
+
             end
+
+
+            -- ====================================================
+            -- GIFT EGG
+            -- ====================================================
 
             if giftEggActive then
 
@@ -2253,6 +2300,11 @@ return function(Context)
                 end)
 
             end
+
+
+            -- ====================================================
+            -- RETURN TO OWN PLOT
+            -- ====================================================
 
             if plotCenter
                 and root.Parent
