@@ -1,0 +1,4492 @@
+-- ============================================================
+-- CHLISE HUB
+-- Games/RideAPet.lua
+-- ============================================================
+
+return function(Context)
+
+    -- ========================================================
+    -- CORE
+    -- ========================================================
+
+    local Window =
+        Context.Window
+
+    local Runtime =
+        Context.Runtime
+
+    local Utils =
+        Context.Utils
+
+
+    if not Window then
+        warn("[CHLISE HUB] Window not initialized.")
+        return
+    end
+
+
+    -- ========================================================
+    -- SERVICES
+    -- ========================================================
+
+    local Players =
+        game:GetService("Players")
+
+    local ReplicatedStorage =
+        game:GetService("ReplicatedStorage")
+
+    local RunService =
+        game:GetService("RunService")
+
+    local Lighting =
+        game:GetService("Lighting")
+
+    local VirtualInputManager =
+        game:GetService("VirtualInputManager")
+
+
+    local LocalPlayer =
+        Players.LocalPlayer
+
+
+    -- ========================================================
+    -- GAME MODULES
+    -- ========================================================
+
+    local GameServices =
+        ReplicatedStorage:
+        WaitForChild("GameServices")
+
+    local GameData =
+        ReplicatedStorage:
+        WaitForChild("GameData")
+
+    local Remotes =
+        ReplicatedStorage:
+        WaitForChild("Remotes")
+
+
+    local General =
+        require(
+            GameServices:
+            WaitForChild("General")
+        )
+
+
+    local DayNight =
+        require(
+            GameServices:
+            WaitForChild("DayNight")
+        )
+
+
+    local PetAging =
+        require(
+            GameServices:
+            WaitForChild("PetAging")
+        )
+
+
+    local EggsData =
+        require(
+            GameData:
+            WaitForChild("Eggs")
+        )
+
+
+    local GeneralData =
+        require(
+            GameData:
+            WaitForChild("General")
+        )
+
+
+    local PetData =
+        require(
+            GameData:
+            WaitForChild("Pets")
+        )
+
+
+    local Mutations =
+        require(
+            GameData:
+            WaitForChild("Mutations")
+        )
+
+
+    -- ========================================================
+    -- REMOTES
+    -- ========================================================
+
+    local GameRemotes =
+        Remotes:
+        WaitForChild("Game")
+
+
+    local HatchRemote =
+        GameRemotes:
+        WaitForChild("Hatch")
+
+
+    local RequestPlotEggs =
+        GameRemotes:
+        WaitForChild("RequestPlotEggs")
+
+
+    local FavoritePetRemote =
+        GameRemotes:
+        WaitForChild("FavoritePet")
+
+
+    local UpgradesRemote =
+        GameRemotes:
+        WaitForChild("Plot"):
+        WaitForChild("Upgrades")
+
+
+    -- ========================================================
+    -- STATES
+    -- ========================================================
+
+    local selectedEggsFarm = {}
+    local selectedRaritiesFarm = {}
+
+    local selectedEggsPlace = {}
+    local selectedRaritiesPlace = {}
+
+    local selectedFoods = {}
+
+    local selectedSellRarities = {}
+    local selectedSellPetNames = {}
+
+    local selectedFavoriteRarities = {}
+
+
+    local autoFarmActive = false
+    local placeEggActive = false
+    local autoHatchActive = false
+
+    local autoPlaceBestPetActive = false
+    local autoRideBestPetActive = false
+
+    -- UI/state only.
+    -- Belum ada logic Feed Pet.
+    local autoFeedPetActive = false
+
+    local autoUpdateHatchLuckActive = false
+    local autoMaxHatchLuckActive = false
+
+    local autoSellByRarityActive = false
+    local autoSellByNameActive = false
+
+    local autoFavoriteByRarityActive = false
+    local autoUnfavoriteByRarityActive = false
+
+    local espEggsEnabled = false
+    local espInventoryEnabled = false
+
+    local disable3DActive = false
+    local lowGraphicActive = false
+    local fpsBoostActive = false
+
+
+    -- ========================================================
+    -- MASTER DATA
+    -- ========================================================
+
+    local MASTER_EGGS = {
+        "White Egg",
+        "Brown Egg",
+        "Cracked Egg",
+        "Easter Egg",
+        "Stone Egg",
+        "Leaf Egg",
+        "Mushroom Egg",
+        "Flower Egg",
+        "Slime Egg",
+        "Ice Egg",
+        "Glass Egg",
+        "Golden Egg",
+        "Diamond Egg",
+        "Crystal Egg",
+        "Skull Egg",
+        "Asteroid Egg",
+        "Dominus Egg",
+        "Flaming Egg",
+        "Sinister Egg",
+        "Soul Egg",
+        "Tidal Egg",
+        "Aurora Egg",
+        "Galaxy Egg",
+        "Bloom Egg",
+        "Blackhole Egg",
+        "Solaris Egg",
+        "Cherub Egg",
+        "Volcanic Egg",
+        "Dragon Egg",
+        "Giant Egg"
+    }
+
+
+    local MASTER_RARITIES = {
+        "Common",
+        "Rare",
+        "Epic",
+        "Legendary",
+        "Mythic",
+        "Divine",
+        "Ethereal",
+        "Secret"
+    }
+
+
+    local MASTER_FOODS = {
+        "Apple",
+        "Banana",
+        "Carrot",
+        "Meat",
+        "Golden Apple",
+        "Energy Fruit"
+    }
+
+
+    local SELL_PET_NAMES = {}
+
+
+    do
+
+        for petName
+            in pairs(PetData)
+        do
+
+            if type(petName)
+                == "string"
+            then
+
+                table.insert(
+                    SELL_PET_NAMES,
+                    petName
+                )
+
+            end
+
+        end
+
+
+        table.sort(
+            SELL_PET_NAMES
+        )
+
+    end
+
+
+    local EGG_RARITIES = {
+
+        ["White Egg"] = "Common",
+        ["Brown Egg"] = "Common",
+
+        ["Cracked Egg"] = "Rare",
+        ["Easter Egg"] = "Rare",
+        ["Stone Egg"] = "Rare",
+        ["Leaf Egg"] = "Rare",
+
+        ["Mushroom Egg"] = "Epic",
+        ["Flower Egg"] = "Epic",
+        ["Slime Egg"] = "Epic",
+        ["Ice Egg"] = "Epic",
+
+        ["Glass Egg"] = "Legendary",
+        ["Golden Egg"] = "Legendary",
+
+        ["Diamond Egg"] = "Mythic",
+        ["Crystal Egg"] = "Mythic",
+        ["Skull Egg"] = "Mythic",
+        ["Asteroid Egg"] = "Mythic",
+        ["Dominus Egg"] = "Mythic",
+        ["Flaming Egg"] = "Mythic",
+        ["Sinister Egg"] = "Mythic",
+        ["Soul Egg"] = "Mythic",
+        ["Tidal Egg"] = "Mythic",
+
+        ["Aurora Egg"] = "Divine",
+        ["Galaxy Egg"] = "Divine",
+        ["Bloom Egg"] = "Divine",
+
+        ["Blackhole Egg"] = "Ethereal",
+        ["Solaris Egg"] = "Ethereal",
+        ["Cherub Egg"] = "Ethereal",
+        ["Volcanic Egg"] = "Ethereal",
+        ["Dragon Egg"] = "Ethereal",
+        ["Giant Egg"] = "Ethereal"
+
+    }
+
+
+    local RARITY_PRIORITY = {
+        Common = 1,
+        Rare = 2,
+        Epic = 3,
+        Legendary = 4,
+        Mythic = 5,
+        Divine = 6,
+        Ethereal = 7,
+        Secret = 8
+    }
+
+
+    -- ========================================================
+    -- GAME MESSAGE BYPASS
+    -- ========================================================
+
+    pcall(function()
+
+        if not getgc
+            or not getfenv
+            or not getupvalues
+        then
+            return
+        end
+
+
+        local playerGui =
+            LocalPlayer:
+            FindFirstChild(
+                "PlayerGui"
+            )
+
+
+        local reusable =
+            playerGui
+            and playerGui:
+                FindFirstChild(
+                    "Reusable"
+                )
+
+
+        local gameMessages =
+            reusable
+            and reusable:
+                FindFirstChild(
+                    "GameMessages"
+                )
+
+
+        local handler =
+            gameMessages
+            and gameMessages:
+                FindFirstChild(
+                    "GameMessageHandler"
+                )
+
+
+        if not handler then
+            return
+        end
+
+
+        for _, func
+            in ipairs(getgc())
+        do
+
+            if type(func)
+                == "function"
+                and getfenv(func).script
+                    == handler
+            then
+
+                local upvalues =
+                    getupvalues(func)
+
+
+                for _, value
+                    in pairs(upvalues)
+                do
+
+                    if type(value)
+                        == "table"
+                    then
+
+                        if value.PROMPTEVENTONRETURNEGG
+                            ~= nil
+                        then
+
+                            value.PROMPTEVENTONRETURNEGG =
+                                false
+
+                        end
+
+
+                        if value.STRIKEPICKEDUPEGGALWAYSONSTUDIO
+                            ~= nil
+                        then
+
+                            value.STRIKEPICKEDUPEGGALWAYSONSTUDIO =
+                                true
+
+                        end
+                    end
+                end
+            end
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- HELPERS
+    -- ========================================================
+
+    local function GetCleanPetName(name)
+
+        return tostring(name or "")
+            :gsub(
+                "%[.-%]%s*",
+                ""
+            )
+            :match(
+                "^%s*(.-)%s*$"
+            )
+
+    end
+
+
+    local function GetEggRarity(
+        eggName
+    )
+
+        return
+            EGG_RARITIES[
+                eggName
+            ]
+            or "Common"
+
+    end
+
+
+    local function HasSelection(
+        tbl
+    )
+
+        return
+            type(tbl) == "table"
+            and next(tbl) ~= nil
+
+    end
+
+
+    local function MatchesFilter(
+        name,
+        rarity,
+        nameSelection,
+        raritySelection
+    )
+
+        local nameMatches =
+            not HasSelection(
+                nameSelection
+            )
+            or nameSelection[name]
+                == true
+
+
+        local rarityMatches =
+            not HasSelection(
+                raritySelection
+            )
+            or raritySelection[rarity]
+                == true
+
+
+        return
+            nameMatches
+            and rarityMatches
+
+    end
+
+
+    local function PositionToVector3(
+        value
+    )
+
+        if typeof(value)
+            == "Vector3"
+        then
+            return value
+        end
+
+
+        if typeof(value)
+            == "CFrame"
+        then
+            return value.Position
+        end
+
+
+        if type(value)
+            == "string"
+        then
+
+            local values = {}
+
+
+            for text
+                in string.gmatch(
+                    value,
+                    "[%-?%d%.]+"
+                )
+            do
+
+                local number =
+                    tonumber(text)
+
+
+                if number then
+
+                    table.insert(
+                        values,
+                        number
+                    )
+
+                end
+            end
+
+
+            if #values >= 3 then
+
+                return
+                    Vector3.new(
+                        values[1],
+                        values[2],
+                        values[3]
+                    )
+
+            end
+        end
+
+
+        return nil
+    end
+
+
+    local function GetPlot()
+
+        local ok, result =
+            pcall(function()
+
+                return
+                    General:
+                    GetPlot(
+                        LocalPlayer
+                    )
+
+            end)
+
+
+        if ok then
+            return result
+        end
+
+
+        return nil
+    end
+
+
+    local function GetPlotCenter()
+
+        local plot =
+            GetPlot()
+
+
+        if not plot then
+            return nil
+        end
+
+
+        if plot:IsA("Model") then
+
+            local base =
+                plot:
+                FindFirstChild(
+                    "Baseplate"
+                )
+                or plot:
+                FindFirstChild(
+                    "Floor"
+                )
+
+
+            if base
+                and base:IsA(
+                    "BasePart"
+                )
+            then
+
+                return
+                    base.CFrame
+            end
+
+
+            return
+                plot:GetPivot()
+
+        end
+
+
+        if plot:IsA(
+            "BasePart"
+        )
+        then
+
+            return
+                plot.CFrame
+
+        end
+
+
+        return nil
+    end
+
+
+    local function GetLairDoorPosition()
+
+        for _, object
+            in ipairs(
+                workspace:
+                GetDescendants()
+            )
+        do
+
+            local name =
+                object.Name:
+                lower()
+
+
+            if name:find(
+                "liardoor",
+                1,
+                true
+            )
+                or name:find(
+                    "liar_door",
+                    1,
+                    true
+                )
+                or name:find(
+                    "liar door",
+                    1,
+                    true
+                )
+            then
+
+                if object:IsA(
+                    "Model"
+                )
+                then
+
+                    return
+                        object:
+                        GetPivot()
+                        .Position
+
+                end
+
+
+                if object:IsA(
+                    "BasePart"
+                )
+                then
+
+                    return
+                        object.Position
+
+                end
+            end
+        end
+
+
+        return nil
+    end
+
+
+    local function GetCharacterData()
+
+        local character =
+            LocalPlayer.Character
+
+
+        if not character then
+            return nil
+        end
+
+
+        return
+            character,
+
+            character:
+            FindFirstChildOfClass(
+                "Humanoid"
+            ),
+
+            character:
+            FindFirstChild(
+                "HumanoidRootPart"
+            )
+
+    end
+
+
+    local function GetRarityColor(
+        rarity
+    )
+
+        rarity =
+            string.lower(
+                tostring(
+                    rarity or ""
+                )
+            )
+
+
+        if rarity:find(
+            "legendary"
+        )
+        then
+
+            return
+                Color3.fromRGB(
+                    255,
+                    215,
+                    0
+                )
+
+        elseif rarity:find(
+            "epic"
+        )
+        then
+
+            return
+                Color3.fromRGB(
+                    163,
+                    53,
+                    238
+                )
+
+        elseif rarity:find(
+            "rare"
+        )
+        then
+
+            return
+                Color3.fromRGB(
+                    0,
+                    112,
+                    221
+                )
+
+        elseif rarity:find(
+            "mythic"
+        )
+        then
+
+            return
+                Color3.fromRGB(
+                    255,
+                    0,
+                    0
+                )
+
+        elseif rarity:find(
+            "divine"
+        )
+        then
+
+            return
+                Color3.fromRGB(
+                    0,
+                    255,
+                    255
+                )
+
+        elseif rarity:find(
+            "ethereal"
+        )
+        then
+
+            return
+                Color3.fromRGB(
+                    255,
+                    0,
+                    255
+                )
+
+        end
+
+
+        return
+            Color3.fromRGB(
+                255,
+                255,
+                255
+            )
+    end
+
+
+    -- ========================================================
+    -- TABS
+    -- ========================================================
+
+    local FarmTab =
+        Window:AddTab(
+            "FARM",
+            "◆"
+        )
+
+
+    local ProgressTab =
+        Window:AddTab(
+            "PROGRESS",
+            "▲"
+        )
+
+
+    local ESPTab =
+        Window:AddTab(
+            "ESP",
+            "◎"
+        )
+
+
+    -- ========================================================
+    -- FARM UI
+    -- ========================================================
+
+    local FarmSection =
+        Window:AddSection(
+            FarmTab,
+            "Eggs Farm"
+        )
+
+
+    FarmSection:AddDropdown(
+        "EggsFarm",
+        "Eggs Farm",
+        MASTER_EGGS,
+        true,
+        selectedEggsFarm,
+
+        function(value)
+
+            selectedEggsFarm =
+                value
+
+        end
+    )
+
+
+    FarmSection:AddDropdown(
+        "RaritiesFarm",
+        "Rarities Farm",
+        MASTER_RARITIES,
+        true,
+        selectedRaritiesFarm,
+
+        function(value)
+
+            selectedRaritiesFarm =
+                value
+
+        end
+    )
+
+
+    FarmSection:AddToggle(
+        "AutoFarm",
+        "Auto Farm",
+        false,
+
+        function(state)
+
+            autoFarmActive =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- PLACE EGG UI
+    -- ========================================================
+
+    local PlaceSection =
+        Window:AddSection(
+            FarmTab,
+            "Place Egg"
+        )
+
+
+    PlaceSection:AddDropdown(
+        "EggsPlace",
+        "Eggs Place",
+        MASTER_EGGS,
+        true,
+        selectedEggsPlace,
+
+        function(value)
+
+            selectedEggsPlace =
+                value
+
+        end
+    )
+
+
+    PlaceSection:AddDropdown(
+        "RaritiesPlace",
+        "Rarities Place",
+        MASTER_RARITIES,
+        true,
+        selectedRaritiesPlace,
+
+        function(value)
+
+            selectedRaritiesPlace =
+                value
+
+        end
+    )
+
+
+    PlaceSection:AddToggle(
+        "PlaceEgg",
+        "Place Egg",
+        false,
+
+        function(state)
+
+            placeEggActive =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- HATCH UI
+    -- ========================================================
+
+    local HatchSection =
+        Window:AddSection(
+            FarmTab,
+            "Hatch Egg"
+        )
+
+
+    HatchSection:AddToggle(
+        "AutoHatch",
+        "Auto Hatch",
+        false,
+
+        function(state)
+
+            autoHatchActive =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- PROGRESS / PET SETTINGS
+    -- ========================================================
+
+    local PetSection =
+        Window:AddSection(
+            ProgressTab,
+            "Pet Setting"
+        )
+
+
+    PetSection:AddToggle(
+        "AutoPlaceBestPet",
+        "Auto Place Best Pet",
+        false,
+
+        function(state)
+
+            autoPlaceBestPetActive =
+                state
+
+        end
+    )
+
+
+    PetSection:AddToggle(
+        "AutoRideBestPet",
+        "Auto Ride Best Pet",
+        false,
+
+        function(state)
+
+            autoRideBestPetActive =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- FEED PET
+    -- PLACEHOLDER ONLY
+    -- ========================================================
+
+    local FeedSection =
+        Window:AddSection(
+            ProgressTab,
+            "Feed Pet"
+        )
+
+
+    FeedSection:AddDropdown(
+        "Foods",
+        "Food Selection",
+        MASTER_FOODS,
+        true,
+        selectedFoods,
+
+        function(value)
+
+            selectedFoods =
+                value
+
+        end
+    )
+
+
+    FeedSection:AddToggle(
+        "AutoFeedPet",
+        "Auto Feed Pet",
+        false,
+
+        function(state)
+
+            autoFeedPetActive =
+                state
+
+            -- Belum ada logic Feed Pet.
+
+        end
+    )
+
+
+    -- ========================================================
+    -- UPDATE
+    -- ========================================================
+
+    local UpdateSection =
+        Window:AddSection(
+            ProgressTab,
+            "Update"
+        )
+
+
+    UpdateSection:AddToggle(
+        "AutoUpdateHatchLuck",
+        "Auto Update Hatch Luck",
+        false,
+
+        function(state)
+
+            autoUpdateHatchLuckActive =
+                state
+
+        end
+    )
+
+
+    UpdateSection:AddToggle(
+        "AutoMaxHatchLuck",
+        "Auto Max Hatch Luck",
+        false,
+
+        function(state)
+
+            autoMaxHatchLuckActive =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- SELL
+    -- ========================================================
+
+    local SellSection =
+        Window:AddSection(
+            ProgressTab,
+            "Sell"
+        )
+
+
+    SellSection:AddDropdown(
+        "SellRarities",
+        "Rarity Selection",
+        MASTER_RARITIES,
+        true,
+        selectedSellRarities,
+
+        function(value)
+
+            selectedSellRarities =
+                value
+
+        end
+    )
+
+
+    SellSection:AddToggle(
+        "AutoSellByRarity",
+        "Auto Sell By Rarity",
+        false,
+
+        function(state)
+
+            autoSellByRarityActive =
+                state
+
+        end
+    )
+
+
+    SellSection:AddDropdown(
+        "SellPetNames",
+        "Pet Selection",
+        SELL_PET_NAMES,
+        true,
+        selectedSellPetNames,
+
+        function(value)
+
+            selectedSellPetNames =
+                value
+
+        end
+    )
+
+
+    SellSection:AddToggle(
+        "AutoSellByName",
+        "Auto Sell By Name",
+        false,
+
+        function(state)
+
+            autoSellByNameActive =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- FAVORITE
+    -- ========================================================
+
+    local FavoriteSection =
+        Window:AddSection(
+            ProgressTab,
+            "Favorite"
+        )
+
+
+    FavoriteSection:AddDropdown(
+        "FavoriteRarities",
+        "Rarity Selection",
+        MASTER_RARITIES,
+        true,
+        selectedFavoriteRarities,
+
+        function(value)
+
+            selectedFavoriteRarities =
+                value
+
+        end
+    )
+
+
+    FavoriteSection:AddToggle(
+        "AutoFavoriteByRarity",
+        "Auto Favorite By Rarity",
+        false,
+
+        function(state)
+
+            autoFavoriteByRarityActive =
+                state
+
+        end
+    )
+
+
+    FavoriteSection:AddToggle(
+        "AutoUnfavoriteByRarity",
+        "Auto Unfavorite By Rarity",
+        false,
+
+        function(state)
+
+            autoUnfavoriteByRarityActive =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- ESP
+    -- ========================================================
+
+    local ESPSection =
+        Window:AddSection(
+            ESPTab,
+            "ESP Settings"
+        )
+
+
+    ESPSection:AddToggle(
+        "ESPWorldEggs",
+        "ESP World Eggs",
+        false,
+
+        function(state)
+
+            espEggsEnabled =
+                state
+
+        end
+    )
+
+
+    ESPSection:AddToggle(
+        "ESPInventoryPet",
+        "ESP Inventory Pet",
+        false,
+
+        function(state)
+
+            espInventoryEnabled =
+                state
+
+        end
+    )
+
+
+    -- ========================================================
+    -- PERFORMANCE BACKUPS
+    -- ========================================================
+
+    local lowGraphicBackup =
+        nil
+
+
+    local fpsBackups =
+        {}
+
+
+    local function EnableLowGraphic()
+
+        if not lowGraphicBackup then
+
+            lowGraphicBackup = {
+                GlobalShadows =
+                    Lighting.GlobalShadows,
+
+                FogEnd =
+                    Lighting.FogEnd
+            }
+
+        end
+
+
+        Lighting.GlobalShadows =
+            false
+
+        Lighting.FogEnd =
+            9e9
+
+    end
+
+
+    local function DisableLowGraphic()
+
+        if not lowGraphicBackup then
+            return
+        end
+
+
+        Lighting.GlobalShadows =
+            lowGraphicBackup.GlobalShadows
+
+
+        Lighting.FogEnd =
+            lowGraphicBackup.FogEnd
+
+
+        lowGraphicBackup =
+            nil
+
+    end
+
+
+    local function EnableFPSBoost()
+
+        for _, object
+            in ipairs(
+                workspace:
+                GetDescendants()
+            )
+        do
+
+            if object:IsA(
+                "BasePart"
+            )
+            then
+
+                if not fpsBackups[
+                    object
+                ]
+                then
+
+                    fpsBackups[object] = {
+                        Type = "Material",
+                        Value = object.Material
+                    }
+
+                end
+
+
+                object.Material =
+                    Enum.Material.SmoothPlastic
+
+
+            elseif object:IsA(
+                "ParticleEmitter"
+            )
+                or object:IsA(
+                    "Fire"
+                )
+                or object:IsA(
+                    "Smoke"
+                )
+            then
+
+                if not fpsBackups[
+                    object
+                ]
+                then
+
+                    fpsBackups[object] = {
+                        Type = "Enabled",
+                        Value = object.Enabled
+                    }
+
+                end
+
+
+                object.Enabled =
+                    false
+
+            end
+        end
+
+    end
+
+
+    local function DisableFPSBoost()
+
+        for object, data
+            in pairs(
+                fpsBackups
+            )
+        do
+
+            if object
+                and object.Parent
+            then
+
+                pcall(function()
+
+                    if data.Type
+                        == "Material"
+                    then
+
+                        object.Material =
+                            data.Value
+
+                    elseif data.Type
+                        == "Enabled"
+                    then
+
+                        object.Enabled =
+                            data.Value
+
+                    end
+
+                end)
+
+            end
+        end
+
+
+        table.clear(
+            fpsBackups
+        )
+
+    end
+
+
+    -- ========================================================
+    -- PERFORMANCE UI
+    -- ========================================================
+
+    local PerformanceSection =
+        Window:AddSection(
+            ESPTab,
+            "Performance Settings"
+        )
+
+
+    PerformanceSection:AddToggle(
+        "Disable3D",
+        "Disable 3D Rendering",
+        false,
+
+        function(state)
+
+            disable3DActive =
+                state
+
+
+            RunService:
+            Set3dRenderingEnabled(
+                not state
+            )
+
+        end
+    )
+
+
+    PerformanceSection:AddToggle(
+        "LowGraphic",
+        "Low Graphic",
+        false,
+
+        function(state)
+
+            lowGraphicActive =
+                state
+
+
+            if state then
+
+                EnableLowGraphic()
+
+            else
+
+                DisableLowGraphic()
+
+            end
+
+        end
+    )
+
+
+    PerformanceSection:AddToggle(
+        "FPSBoost",
+        "FPS Boost",
+        false,
+
+        function(state)
+
+            fpsBoostActive =
+                state
+
+
+            if state then
+
+                EnableFPSBoost()
+
+            else
+
+                DisableFPSBoost()
+
+            end
+
+        end
+    )
+
+
+    -- ========================================================
+    -- AUTO FARM
+    -- ========================================================
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoFarmActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            local serverData =
+                ReplicatedStorage:
+                FindFirstChild(
+                    "ServerData"
+                )
+
+
+            local activeEggs =
+                serverData
+                and serverData:
+                    FindFirstChild(
+                        "ActiveEggs"
+                    )
+
+
+            local character,
+                humanoid,
+                root =
+                GetCharacterData()
+
+
+            if not activeEggs
+                or not root
+            then
+
+                task.wait(0.5)
+                continue
+            end
+
+
+            local targetObject =
+                nil
+
+            local targetName =
+                nil
+
+            local targetPosition =
+                nil
+
+            local bestRarity =
+                -1
+
+            local bestDistance =
+                math.huge
+
+
+            for _, configObject
+                in ipairs(
+                    activeEggs:
+                    GetChildren()
+                )
+            do
+
+                pcall(function()
+
+                    local eggName =
+                        configObject:
+                        GetAttribute(
+                            "Egg"
+                        )
+
+
+                    local position =
+                        PositionToVector3(
+                            configObject:
+                            GetAttribute(
+                                "Position"
+                            )
+                        )
+
+
+                    if not eggName
+                        or not position
+                    then
+                        return
+                    end
+
+
+                    local rarity =
+                        GetEggRarity(
+                            eggName
+                        )
+
+
+                    if not MatchesFilter(
+                        eggName,
+                        rarity,
+                        selectedEggsFarm,
+                        selectedRaritiesFarm
+                    )
+                    then
+                        return
+                    end
+
+
+                    local rarityScore =
+                        RARITY_PRIORITY[
+                            rarity
+                        ]
+                        or 0
+
+
+                    local distance =
+                        (
+                            position
+                            - root.Position
+                        ).Magnitude
+
+
+                    if rarityScore
+                        > bestRarity
+
+                        or (
+                            rarityScore
+                                == bestRarity
+
+                            and distance
+                                < bestDistance
+                        )
+                    then
+
+                        bestRarity =
+                            rarityScore
+
+                        bestDistance =
+                            distance
+
+                        targetObject =
+                            configObject
+
+                        targetName =
+                            eggName
+
+                        targetPosition =
+                            position
+
+                    end
+
+                end)
+
+            end
+
+
+            if not targetObject
+                or not targetPosition
+            then
+
+                task.wait(0.5)
+                continue
+            end
+
+
+            local plotCenter =
+                GetPlotCenter()
+
+
+            -- ================================================
+            -- VOLCANIC EGG
+            -- ================================================
+
+            if targetName
+                == "Volcanic Egg"
+            then
+
+                pcall(function()
+
+                    if not firesignal then
+                        return
+                    end
+
+
+                    local reusable =
+                        Remotes:
+                        FindFirstChild(
+                            "Reusable"
+                        )
+
+
+                    local event =
+                        reusable
+                        and reusable:
+                            FindFirstChild(
+                                "GameMessage"
+                            )
+
+
+                    if event then
+
+                        firesignal(
+                            event.OnClientEvent,
+
+                            "Enter The Lair Through Its Door"
+                        )
+
+                    end
+
+                end)
+
+
+                local door =
+                    GetLairDoorPosition()
+
+
+                if door then
+
+                    root.CFrame =
+                        CFrame.new(
+                            door
+                            + Vector3.new(
+                                0,
+                                3,
+                                0
+                            )
+                        )
+
+
+                    task.wait(0.3)
+                end
+            end
+
+
+            root.CFrame =
+                CFrame.new(
+                    targetPosition
+                    + Vector3.new(
+                        0,
+                        3,
+                        0
+                    )
+                )
+
+
+            task.wait(0.1)
+
+
+            local started =
+                os.clock()
+
+
+            while Runtime:IsCurrent()
+                and autoFarmActive
+                and targetObject.Parent
+            do
+
+                if os.clock()
+                    - started
+                    > 3
+                then
+                    break
+                end
+
+
+                pcall(function()
+
+                    if not fireproximityprompt then
+                        return
+                    end
+
+
+                    for _, object
+                        in ipairs(
+                            workspace:
+                            GetDescendants()
+                        )
+                    do
+
+                        local position =
+                            nil
+
+
+                        if object:IsA(
+                            "BasePart"
+                        )
+                        then
+
+                            position =
+                                object.Position
+
+                        elseif object:IsA(
+                            "Model"
+                        )
+                        then
+
+                            position =
+                                object:
+                                GetPivot()
+                                .Position
+
+                        end
+
+
+                        if position
+                            and (
+                                position
+                                - targetPosition
+                            ).Magnitude
+                                < 18
+                        then
+
+                            local prompt =
+                                object:
+                                FindFirstChildOfClass(
+                                    "ProximityPrompt"
+                                )
+                                or object:
+                                FindFirstChild(
+                                    "ProximityPrompt",
+                                    true
+                                )
+
+
+                            if prompt then
+
+                                local oldHold =
+                                    prompt.HoldDuration
+
+
+                                prompt.HoldDuration =
+                                    0
+
+
+                                fireproximityprompt(
+                                    prompt
+                                )
+
+
+                                task.delay(
+                                    0.05,
+
+                                    function()
+
+                                        if prompt
+                                            and prompt.Parent
+                                        then
+
+                                            prompt.HoldDuration =
+                                                oldHold
+
+                                        end
+
+                                    end
+                                )
+                            end
+                        end
+                    end
+
+                end)
+
+
+                task.wait(0.15)
+            end
+
+
+            if targetName
+                == "Volcanic Egg"
+            then
+
+                local door =
+                    GetLairDoorPosition()
+
+
+                if door then
+
+                    root.CFrame =
+                        CFrame.new(
+                            door
+                            + Vector3.new(
+                                0,
+                                3,
+                                0
+                            )
+                        )
+
+
+                    task.wait(0.3)
+                end
+            end
+
+
+            if plotCenter
+                and root.Parent
+            then
+
+                root.CFrame =
+                    CFrame.new(
+                        plotCenter.Position
+                        + Vector3.new(
+                            0,
+                            5,
+                            0
+                        )
+                    )
+
+            end
+
+
+            task.wait(0.5)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- AUTO FARM NO COLLISION
+    -- ========================================================
+
+    Runtime:TrackConnection(
+
+        RunService.Stepped:
+        Connect(function()
+
+            if not autoFarmActive then
+                return
+            end
+
+
+            local character =
+                LocalPlayer.Character
+
+
+            if not character then
+                return
+            end
+
+
+            for _, part
+                in ipairs(
+                    character:
+                    GetDescendants()
+                )
+            do
+
+                if part:IsA(
+                    "BasePart"
+                )
+                then
+
+                    part.CanCollide =
+                        false
+
+                end
+            end
+
+        end)
+
+    )
+
+
+    -- ========================================================
+    -- AUTO HATCH
+    -- ========================================================
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoHatchActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            pcall(function()
+
+                local plot =
+                    GetPlot()
+
+
+                local eggsFolder =
+                    plot
+                    and plot:
+                        FindFirstChild(
+                            "Eggs"
+                        )
+
+
+                if not eggsFolder then
+                    return
+                end
+
+
+                for _, egg
+                    in ipairs(
+                        eggsFolder:
+                        GetChildren()
+                    )
+                do
+
+                    if not autoHatchActive then
+                        break
+                    end
+
+
+                    local eggData =
+                        egg:
+                        FindFirstChild(
+                            "EggData"
+                        )
+
+
+                    local placeTime =
+                        eggData
+                        and eggData:
+                            FindFirstChild(
+                                "PlaceTime"
+                            )
+
+
+                    local eggKey =
+                        egg:
+                        GetAttribute(
+                            "EggKey"
+                        )
+
+
+                    if eggKey
+                        and placeTime
+                        and placeTime.Value > 0
+                    then
+
+                        local eggConfig =
+                            EggsData[
+                                egg.Name
+                            ]
+
+
+                        if eggConfig then
+
+                            local weightObject =
+                                eggData:
+                                FindFirstChild(
+                                    "Weight"
+                                )
+
+
+                            local weight =
+                                weightObject
+                                and tonumber(
+                                    weightObject.Value
+                                )
+                                or 1
+
+
+                            local totalGrowth =
+                                GeneralData:
+                                GrowthTimeFor(
+                                    eggConfig.GrowthTime,
+                                    weight
+                                )
+
+
+                            local elapsed
+
+
+                            if egg:
+                                GetAttribute(
+                                    "FlatGrow"
+                                )
+                                == true
+                            then
+
+                                elapsed =
+                                    workspace:
+                                    GetServerTimeNow()
+                                    - placeTime.Value
+
+                            else
+
+                                elapsed =
+                                    DayNight:
+                                    GrowthElapsed(
+                                        placeTime.Value
+                                    )
+
+                            end
+
+
+                            if totalGrowth
+                                - elapsed
+                                <= 0
+                            then
+
+                                pcall(function()
+
+                                    if not egg:
+                                        HasTag(
+                                            "Hatching"
+                                        )
+                                    then
+
+                                        egg:
+                                        AddTag(
+                                            "Hatching"
+                                        )
+
+                                    end
+
+                                end)
+
+
+                                HatchRemote:
+                                FireServer({
+                                    EggKey =
+                                        eggKey
+                                })
+
+
+                                task.wait(0.5)
+                            end
+                        end
+                    end
+                end
+
+            end)
+
+
+            task.wait(1)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- PLACE EGG
+    -- ========================================================
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not placeEggActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            pcall(function()
+
+                local plot =
+                    GetPlot()
+
+
+                if not plot then
+                    return
+                end
+
+
+                local eggsFolder =
+                    plot:
+                    FindFirstChild(
+                        "Eggs"
+                    )
+
+
+                if eggsFolder
+                    and #eggsFolder:
+                        GetChildren()
+                        >= 10
+                then
+
+                    return
+                end
+
+
+                local character,
+                    humanoid,
+                    root =
+                    GetCharacterData()
+
+
+                if not character
+                    or not humanoid
+                    or not root
+                then
+
+                    return
+                end
+
+
+                local baseplate =
+                    plot:
+                    FindFirstChild(
+                        "Baseplate"
+                    )
+                    or plot:
+                    FindFirstChild(
+                        "Floor"
+                    )
+
+
+                if not baseplate
+                    or not baseplate:
+                        IsA(
+                            "BasePart"
+                        )
+                then
+
+                    return
+                end
+
+
+                for x = 0, 3 do
+
+                    for z = 0, 3 do
+
+                        if not placeEggActive then
+                            return
+                        end
+
+
+                        if eggsFolder
+                            and #eggsFolder:
+                                GetChildren()
+                                >= 10
+                        then
+                            return
+                        end
+
+
+                        local backpack =
+                            LocalPlayer:
+                            FindFirstChild(
+                                "Backpack"
+                            )
+
+
+                        if not backpack then
+                            return
+                        end
+
+
+                        local eggTool =
+                            nil
+
+
+                        for _, tool
+                            in ipairs(
+                                backpack:
+                                GetChildren()
+                            )
+                        do
+
+                            if tool:IsA(
+                                "Tool"
+                            )
+                            then
+
+                                local rarity =
+                                    GetEggRarity(
+                                        tool.Name
+                                    )
+
+
+                                if EGG_RARITIES[
+                                    tool.Name
+                                ]
+                                    and MatchesFilter(
+                                        tool.Name,
+                                        rarity,
+                                        selectedEggsPlace,
+                                        selectedRaritiesPlace
+                                    )
+                                then
+
+                                    eggTool =
+                                        tool
+
+                                    break
+                                end
+                            end
+                        end
+
+
+                        if not eggTool then
+                            return
+                        end
+
+
+                        humanoid:
+                        EquipTool(
+                            eggTool
+                        )
+
+
+                        task.wait(0.15)
+
+
+                        local spawnPosition =
+                            baseplate.CFrame
+                            * CFrame.new(
+                                x * 3.5 - 5.2,
+                                4,
+                                z * 3.5 - 5.2
+                            )
+
+
+                        root.CFrame =
+                            spawnPosition
+
+
+                        task.wait(0.1)
+
+
+                        local camera =
+                            workspace.CurrentCamera
+
+
+                        if camera then
+
+                            local screenPosition,
+                                onScreen =
+                                camera:
+                                WorldToScreenPoint(
+                                    spawnPosition.Position
+                                )
+
+
+                            if onScreen then
+
+                                VirtualInputManager:
+                                SendMouseButtonEvent(
+                                    screenPosition.X,
+                                    screenPosition.Y,
+                                    0,
+                                    true,
+                                    game,
+                                    0
+                                )
+
+
+                                task.wait(0.05)
+
+
+                                VirtualInputManager:
+                                SendMouseButtonEvent(
+                                    screenPosition.X,
+                                    screenPosition.Y,
+                                    0,
+                                    false,
+                                    game,
+                                    0
+                                )
+
+                            end
+                        end
+
+
+                        RequestPlotEggs:
+                        FireServer({
+
+                            CFrame =
+                                spawnPosition,
+
+                            Position =
+                                spawnPosition.Position,
+
+                            Hit =
+                                spawnPosition,
+
+                            Tool =
+                                eggTool,
+
+                            Name =
+                                eggTool.Name,
+
+                            Action =
+                                "Place"
+
+                        })
+
+
+                        if eggTool.Parent
+                            == character
+                        then
+
+                            pcall(function()
+
+                                eggTool:
+                                Activate()
+
+                            end)
+
+                        end
+
+
+                        task.wait(0.4)
+
+                    end
+                end
+
+            end)
+
+
+            task.wait(1)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- PET INCOME
+    -- ========================================================
+
+    local function GetPetIncomeData(
+        pet
+    )
+
+        if not pet then
+            return nil
+        end
+
+
+        local petName =
+            pet:
+            GetAttribute(
+                "PetName"
+            )
+            or pet.Name
+
+
+        local cleanName =
+            GetCleanPetName(
+                petName
+            )
+
+
+        local petConfig =
+            PetData[petName]
+            or PetData[cleanName]
+
+
+        if not petConfig then
+            return nil
+        end
+
+
+        local baseIncome =
+            tonumber(
+                petConfig.Income
+            )
+            or 0
+
+
+        if baseIncome <= 0 then
+            return nil
+        end
+
+
+        local weight =
+            tonumber(
+                pet:
+                GetAttribute(
+                    "Weight"
+                )
+            )
+            or 10
+
+
+        local mutation =
+            pet:
+            GetAttribute(
+                "Mutation"
+            )
+
+
+        local spawnMutation =
+            pet:
+            GetAttribute(
+                "SpawnMutation"
+            )
+
+
+        local mutationMultiplier =
+            tonumber(
+                Mutations:
+                CombinedFactor(
+                    mutation,
+                    spawnMutation
+                )
+            )
+            or 1
+
+
+        local finalIncome =
+            baseIncome
+            * math.max(
+                weight / 10,
+                0
+            )
+            * mutationMultiplier
+
+
+        return {
+
+            Pet =
+                pet,
+
+            Name =
+                cleanName,
+
+            FinalIncome =
+                finalIncome,
+
+            PetKey =
+                pet:
+                GetAttribute(
+                    "PetKey"
+                )
+                or pet.Name
+
+        }
+
+    end
+
+
+    -- ========================================================
+    -- AUTO PLACE BEST PET
+    -- ========================================================
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoPlaceBestPetActive then
+                task.wait(1)
+                continue
+            end
+
+
+            pcall(function()
+
+                local PlacePet =
+                    GameRemotes:
+                    FindFirstChild(
+                        "PlacePet"
+                    )
+
+
+                if not PlacePet then
+                    return
+                end
+
+
+                local plots =
+                    workspace:
+                    FindFirstChild(
+                        "Plots"
+                    )
+
+
+                if not plots then
+                    return
+                end
+
+
+                local myPlot =
+                    nil
+
+
+                for _, plot
+                    in ipairs(
+                        plots:
+                        GetChildren()
+                    )
+                do
+
+                    local data =
+                        plot:
+                        FindFirstChild(
+                            "Data"
+                        )
+
+
+                    local owner =
+                        data
+                        and data:
+                            FindFirstChild(
+                                "Owner"
+                            )
+
+
+                    if owner then
+
+                        local value =
+                            owner.Value
+
+
+                        if value == LocalPlayer
+                            or value == LocalPlayer.Name
+                            or value == LocalPlayer.UserId
+                            or tostring(value)
+                                == tostring(
+                                    LocalPlayer.UserId
+                                )
+                        then
+
+                            myPlot =
+                                plot
+
+                            break
+                        end
+                    end
+                end
+
+
+                if not myPlot then
+                    return
+                end
+
+
+                local maxPetsAllowed =
+                    5
+
+
+                local savedData =
+                    LocalPlayer:
+                    FindFirstChild(
+                        "SavedData"
+                    )
+
+
+                local maxPets =
+                    savedData
+                    and savedData:
+                        FindFirstChild(
+                            "MaxPets"
+                        )
+
+
+                if maxPets then
+
+                    maxPetsAllowed =
+                        tonumber(
+                            maxPets.Value
+                        )
+                        or maxPetsAllowed
+
+                end
+
+
+                local placedPets =
+                    myPlot:
+                    FindFirstChild(
+                        "Pets"
+                    )
+
+
+                local currentCount =
+                    placedPets
+                    and #placedPets:
+                        GetChildren()
+                    or 0
+
+
+                if currentCount
+                    >= maxPetsAllowed
+                then
+                    return
+                end
+
+
+                local baseplate =
+                    myPlot:
+                    FindFirstChild(
+                        "Baseplate"
+                    )
+                    or myPlot:
+                    FindFirstChild(
+                        "Floor"
+                    )
+
+
+                if not baseplate
+                    or not baseplate:
+                        IsA(
+                            "BasePart"
+                        )
+                then
+                    return
+                end
+
+
+                local playerFolder =
+                    LocalPlayer:
+                    FindFirstChild(
+                        "PlayerFolder"
+                    )
+
+
+                local inventory =
+                    playerFolder
+                    and playerFolder:
+                        FindFirstChild(
+                            "Pets"
+                        )
+
+
+                if not inventory then
+
+                    inventory =
+                        LocalPlayer:
+                        FindFirstChild(
+                            "Backpack"
+                        )
+
+                end
+
+
+                if not inventory then
+                    return
+                end
+
+
+                local bestPet =
+                    nil
+
+
+                for _, pet
+                    in ipairs(
+                        inventory:
+                        GetDescendants()
+                    )
+                do
+
+                    local data =
+                        GetPetIncomeData(
+                            pet
+                        )
+
+
+                    if data
+                        and (
+                            not bestPet
+
+                            or data.FinalIncome
+                                > bestPet.FinalIncome
+                        )
+                    then
+
+                        bestPet =
+                            data
+
+                    end
+                end
+
+
+                if not bestPet then
+                    return
+                end
+
+
+                local position =
+                    baseplate.CFrame
+                    * CFrame.new(
+                        math.random(
+                            -4,
+                            4
+                        ),
+                        3,
+                        math.random(
+                            -4,
+                            4
+                        )
+                    )
+
+
+                local vectorValue
+
+
+                if vector
+                    and vector.create
+                then
+
+                    vectorValue =
+                        vector.create(
+                            position.Position.X,
+                            position.Position.Y,
+                            position.Position.Z
+                        )
+
+                else
+
+                    vectorValue =
+                        position.Position
+
+                end
+
+
+                PlacePet:
+                FireServer(
+                    bestPet.PetKey,
+                    vectorValue
+                )
+
+            end)
+
+
+            task.wait(1.25)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- PET SPEED
+    -- ========================================================
+
+    local function GetPetBaseSpeed(
+        petConfig
+    )
+
+        return
+            tonumber(
+                petConfig
+                and (
+                    petConfig.WalkSpeed
+                    or petConfig.Speed
+                    or petConfig.MovementSpeed
+                )
+            )
+            or 0
+
+    end
+
+
+    local function GetPetSpeed(
+        tool
+    )
+
+        if not tool
+            or not tool:IsA(
+                "Tool"
+            )
+        then
+            return nil
+        end
+
+
+        local cleanName =
+            GetCleanPetName(
+                tool.Name
+            )
+
+
+        local petConfig =
+            PetData[tool.Name]
+            or PetData[cleanName]
+
+
+        if not petConfig then
+            return nil
+        end
+
+
+        local baseSpeed =
+            GetPetBaseSpeed(
+                petConfig
+            )
+
+
+        if baseSpeed <= 0 then
+            return nil
+        end
+
+
+        local weight =
+            tonumber(
+                tool:
+                GetAttribute(
+                    "Weight"
+                )
+            )
+            or 10
+
+
+        local mutation =
+            tool:
+            GetAttribute(
+                "Mutation"
+            )
+
+
+        local spawnMutation =
+            tool:
+            GetAttribute(
+                "SpawnMutation"
+            )
+
+
+        local multiplier =
+            tonumber(
+                Mutations:
+                CombinedFactor(
+                    mutation,
+                    spawnMutation
+                )
+            )
+            or 1
+
+
+        return {
+
+            Tool =
+                tool,
+
+            Name =
+                cleanName,
+
+            Weight =
+                weight,
+
+            Mutation =
+                mutation,
+
+            SpawnMutation =
+                spawnMutation,
+
+            MutationMultiplier =
+                multiplier,
+
+            DisplaySpeed =
+                PetAging:
+                DisplaySpeedFor(
+                    baseSpeed,
+                    weight,
+                    multiplier
+                ),
+
+            RealSpeed =
+                PetAging:
+                RealSpeedFor(
+                    baseSpeed,
+                    weight,
+                    multiplier
+                )
+
+        }
+
+    end
+
+
+    -- ========================================================
+    -- AUTO RIDE BEST PET
+    -- ========================================================
+
+    local mountedPetScore =
+        nil
+
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoRideBestPetActive then
+
+                mountedPetScore =
+                    nil
+
+
+                task.wait(1)
+                continue
+            end
+
+
+            pcall(function()
+
+                local character =
+                    LocalPlayer.Character
+
+
+                local backpack =
+                    LocalPlayer:
+                    FindFirstChild(
+                        "Backpack"
+                    )
+
+
+                if not character
+                    or not backpack
+                then
+                    return
+                end
+
+
+                local humanoid =
+                    character:
+                    FindFirstChildOfClass(
+                        "Humanoid"
+                    )
+
+
+                if not humanoid then
+                    return
+                end
+
+
+                local items =
+                    backpack:
+                    GetChildren()
+
+
+                local equipped =
+                    character:
+                    FindFirstChildOfClass(
+                        "Tool"
+                    )
+
+
+                if equipped then
+
+                    table.insert(
+                        items,
+                        equipped
+                    )
+
+                end
+
+
+                local bestPet =
+                    nil
+
+
+                for _, tool
+                    in ipairs(items)
+                do
+
+                    local data =
+                        GetPetSpeed(
+                            tool
+                        )
+
+
+                    if data
+                        and (
+                            not bestPet
+
+                            or data.DisplaySpeed
+                                > bestPet.DisplaySpeed
+                        )
+                    then
+
+                        bestPet =
+                            data
+
+                    end
+                end
+
+
+                if not bestPet then
+                    return
+                end
+
+
+                local isRiding =
+                    LocalPlayer:
+                    GetAttribute(
+                        "IsRiding"
+                    )
+                    == true
+
+
+                if isRiding
+                    and mountedPetScore
+                    and bestPet.DisplaySpeed
+                        <= mountedPetScore
+                            * 1.000000001
+                then
+
+                    return
+                end
+
+
+                local Mounting =
+                    GameRemotes:
+                    FindFirstChild(
+                        "Mounting"
+                    )
+
+
+                if not Mounting then
+                    return
+                end
+
+
+                if isRiding then
+
+                    Mounting:
+                    FireServer()
+
+
+                    task.wait(0.5)
+                end
+
+
+                if bestPet.Tool.Parent
+                    ~= character
+                then
+
+                    humanoid:
+                    EquipTool(
+                        bestPet.Tool
+                    )
+
+
+                    task.wait(0.45)
+                end
+
+
+                if LocalPlayer:
+                    GetAttribute(
+                        "IsRiding"
+                    )
+                    ~= true
+                then
+
+                    Mounting:
+                    FireServer()
+
+
+                    task.wait(0.6)
+                end
+
+
+                mountedPetScore =
+                    bestPet.DisplaySpeed
+
+            end)
+
+
+            task.wait(5)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- AUTO UPDATE HATCH LUCK
+    -- ========================================================
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoUpdateHatchLuckActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            pcall(function()
+
+                if LocalPlayer:
+                    GetAttribute(
+                        "Setting_LuckMultiplier"
+                    )
+                    == false
+                then
+                    return
+                end
+
+
+                UpgradesRemote:
+                FireServer()
+
+            end)
+
+
+            task.wait(0.35)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- AUTO MAX HATCH LUCK
+    -- ========================================================
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoMaxHatchLuckActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            pcall(function()
+
+                if LocalPlayer:
+                    GetAttribute(
+                        "Setting_LuckMultiplier"
+                    )
+                    == false
+                then
+                    return
+                end
+
+
+                local savedData =
+                    LocalPlayer:
+                    FindFirstChild(
+                        "SavedData"
+                    )
+
+
+                if not savedData then
+                    return
+                end
+
+
+                local free =
+                    savedData:
+                    FindFirstChild(
+                        "FreeHatchUpgrades"
+                    )
+
+
+                if free
+                    and tonumber(
+                        free.Value
+                    )
+                    and free.Value > 0
+                then
+
+                    UpgradesRemote:
+                    FireServer(
+                        "MaxFree"
+                    )
+
+                else
+
+                    UpgradesRemote:
+                    FireServer(
+                        "Max"
+                    )
+
+                end
+
+            end)
+
+
+            task.wait(0.75)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- PET INFO
+    -- ========================================================
+
+    local function GetPetInfo(
+        tool
+    )
+
+        if not tool
+            or not tool:IsA(
+                "Tool"
+            )
+        then
+            return nil
+        end
+
+
+        local petName =
+            tool:
+            GetAttribute(
+                "PetName"
+            )
+            or tool.Name
+
+
+        local cleanName =
+            GetCleanPetName(
+                petName
+            )
+
+
+        local config =
+            PetData[petName]
+            or PetData[cleanName]
+
+
+        if not config
+            or type(
+                config.Rarity
+            )
+                ~= "string"
+        then
+            return nil
+        end
+
+
+        return {
+
+            Tool =
+                tool,
+
+            Name =
+                cleanName,
+
+            Rarity =
+                config.Rarity,
+
+            PetKey =
+                tool:
+                GetAttribute(
+                    "PetKey"
+                ),
+
+            Favorited =
+                tool:
+                GetAttribute(
+                    "Favorited"
+                )
+                == true
+
+        }
+
+    end
+
+
+    local function GetAllPetTools()
+
+        local result = {}
+
+
+        local backpack =
+            LocalPlayer:
+            FindFirstChild(
+                "Backpack"
+            )
+
+
+        local character =
+            LocalPlayer.Character
+
+
+        if backpack then
+
+            for _, tool
+                in ipairs(
+                    backpack:
+                    GetChildren()
+                )
+            do
+
+                local info =
+                    GetPetInfo(
+                        tool
+                    )
+
+
+                if info then
+
+                    table.insert(
+                        result,
+                        info
+                    )
+
+                end
+            end
+        end
+
+
+        if character then
+
+            for _, tool
+                in ipairs(
+                    character:
+                    GetChildren()
+                )
+            do
+
+                local info =
+                    GetPetInfo(
+                        tool
+                    )
+
+
+                if info then
+
+                    table.insert(
+                        result,
+                        info
+                    )
+
+                end
+            end
+        end
+
+
+        return result
+    end
+
+
+    -- ========================================================
+    -- AUTO SELL
+    -- ========================================================
+
+    local Dialogue =
+        ReplicatedStorage:
+        WaitForChild(
+            "Dialogue"
+        )
+
+
+    local DialogueSelect =
+        Dialogue:
+        WaitForChild(
+            "Remotes"
+        ):
+        WaitForChild(
+            "DialogueSelect"
+        )
+
+
+    local stalls =
+        workspace:
+        WaitForChild(
+            "Stalls"
+        )
+
+
+    local Richie =
+        stalls:
+        WaitForChild(
+            "Sell"
+        ):
+        WaitForChild(
+            "Richie"
+        )
+
+
+    local function ShouldSell(
+        info
+    )
+
+        if not info
+            or info.Favorited
+        then
+            return false
+        end
+
+
+        local rarityMatch =
+            autoSellByRarityActive
+            and HasSelection(
+                selectedSellRarities
+            )
+            and selectedSellRarities[
+                info.Rarity
+            ]
+                == true
+
+
+        local nameMatch =
+            autoSellByNameActive
+            and HasSelection(
+                selectedSellPetNames
+            )
+            and selectedSellPetNames[
+                info.Name
+            ]
+                == true
+
+
+        return
+            rarityMatch
+            or nameMatch
+    end
+
+
+    local function FindPetToSell()
+
+        for _, info
+            in ipairs(
+                GetAllPetTools()
+            )
+        do
+
+            if ShouldSell(
+                info
+            )
+            then
+                return info
+            end
+        end
+
+
+        return nil
+    end
+
+
+    local function SellPet(
+        tool
+    )
+
+        if not tool
+            or not tool.Parent
+        then
+            return false
+        end
+
+
+        local character,
+            humanoid,
+            root =
+            GetCharacterData()
+
+
+        if not character
+            or not humanoid
+            or not root
+        then
+            return false
+        end
+
+
+        humanoid:
+        UnequipTools()
+
+
+        task.wait(0.15)
+
+
+        humanoid:
+        EquipTool(
+            tool
+        )
+
+
+        local start =
+            os.clock()
+
+
+        while os.clock()
+            - start
+            < 1.5
+        do
+
+            if tool.Parent
+                == character
+            then
+                break
+            end
+
+
+            task.wait(0.05)
+        end
+
+
+        if tool.Parent
+            ~= character
+        then
+            return false
+        end
+
+
+        local richiePart =
+            Richie.PrimaryPart
+            or Richie:
+                FindFirstChildWhichIsA(
+                    "BasePart",
+                    true
+                )
+
+
+        if not richiePart then
+            return false
+        end
+
+
+        local oldCFrame =
+            root.CFrame
+
+
+        root.CFrame =
+            richiePart.CFrame
+            * CFrame.new(
+                0,
+                0,
+                5
+            )
+
+
+        task.wait(0.35)
+
+
+        local prompt =
+            Richie:
+            FindFirstChildWhichIsA(
+                "ProximityPrompt",
+                true
+            )
+
+
+        if prompt
+            and fireproximityprompt
+        then
+
+            pcall(
+                fireproximityprompt,
+                prompt
+            )
+
+
+            task.wait(0.45)
+        end
+
+
+        if not tool.Parent
+            or tool.Parent
+                ~= character
+        then
+
+            root.CFrame =
+                oldCFrame
+
+            return false
+        end
+
+
+        DialogueSelect:
+        FireServer(
+            Richie,
+            "I would like to sell this"
+        )
+
+
+        local sellStart =
+            os.clock()
+
+
+        while os.clock()
+            - sellStart
+            < 3
+        do
+
+            if not tool.Parent then
+
+                if root.Parent then
+                    root.CFrame =
+                        oldCFrame
+                end
+
+
+                return true
+            end
+
+
+            task.wait(0.08)
+        end
+
+
+        if root.Parent then
+            root.CFrame =
+                oldCFrame
+        end
+
+
+        return false
+    end
+
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoSellByRarityActive
+                and not autoSellByNameActive
+            then
+
+                task.wait(0.5)
+                continue
+            end
+
+
+            pcall(function()
+
+                local info =
+                    FindPetToSell()
+
+
+                if info then
+
+                    SellPet(
+                        info.Tool
+                    )
+
+                end
+
+            end)
+
+
+            task.wait(0.6)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- FAVORITE / UNFAVORITE
+    --
+    -- FavoritePet remote adalah TOGGLE.
+    -- ========================================================
+
+    local function ShouldFavorite(
+        info
+    )
+
+        return
+            autoFavoriteByRarityActive
+            and info
+            and not info.Favorited
+            and HasSelection(
+                selectedFavoriteRarities
+            )
+            and selectedFavoriteRarities[
+                info.Rarity
+            ]
+                == true
+
+    end
+
+
+    local function ShouldUnfavorite(
+        info
+    )
+
+        return
+            autoUnfavoriteByRarityActive
+            and info
+            and info.Favorited
+            and HasSelection(
+                selectedFavoriteRarities
+            )
+            and selectedFavoriteRarities[
+                info.Rarity
+            ]
+                == true
+
+    end
+
+
+    local function ToggleFavorite(
+        info,
+        targetState
+    )
+
+        if not info
+            or not info.Tool
+            or not info.Tool.Parent
+            or not info.PetKey
+        then
+            return false
+        end
+
+
+        if (
+            info.Tool:
+            GetAttribute(
+                "Favorited"
+            )
+            == true
+        )
+            == targetState
+        then
+            return true
+        end
+
+
+        FavoritePetRemote:
+        FireServer(
+            info.PetKey
+        )
+
+
+        local started =
+            os.clock()
+
+
+        while os.clock()
+            - started
+            < 2
+        do
+
+            if not info.Tool.Parent then
+                return false
+            end
+
+
+            if (
+                info.Tool:
+                GetAttribute(
+                    "Favorited"
+                )
+                == true
+            )
+                == targetState
+            then
+                return true
+            end
+
+
+            task.wait(0.08)
+        end
+
+
+        return false
+    end
+
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoFavoriteByRarityActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            -- Jangan jalankan dua mode
+            -- secara bersamaan.
+            if autoUnfavoriteByRarityActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            for _, info
+                in ipairs(
+                    GetAllPetTools()
+                )
+            do
+
+                if ShouldFavorite(
+                    info
+                )
+                then
+
+                    ToggleFavorite(
+                        info,
+                        true
+                    )
+
+                    break
+                end
+            end
+
+
+            task.wait(0.3)
+
+        end
+
+    end)
+
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            if not autoUnfavoriteByRarityActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            if autoFavoriteByRarityActive then
+                task.wait(0.5)
+                continue
+            end
+
+
+            for _, info
+                in ipairs(
+                    GetAllPetTools()
+                )
+            do
+
+                if ShouldUnfavorite(
+                    info
+                )
+                then
+
+                    ToggleFavorite(
+                        info,
+                        false
+                    )
+
+                    break
+                end
+            end
+
+
+            task.wait(0.3)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- ESP WORLD EGGS
+    -- ========================================================
+
+    local espFolder =
+        workspace:
+        FindFirstChild(
+            "ChliseESPFolder"
+        )
+
+
+    if not espFolder then
+
+        espFolder =
+            Instance.new(
+                "Folder"
+            )
+
+
+        espFolder.Name =
+            "ChliseESPFolder"
+
+
+        espFolder.Parent =
+            workspace
+
+    end
+
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            task.wait(0.5)
+
+
+            if not espEggsEnabled then
+
+                espFolder:
+                ClearAllChildren()
+
+                continue
+            end
+
+
+            local serverData =
+                ReplicatedStorage:
+                FindFirstChild(
+                    "ServerData"
+                )
+
+
+            local activeEggs =
+                serverData
+                and serverData:
+                    FindFirstChild(
+                        "ActiveEggs"
+                    )
+
+
+            if not activeEggs then
+                continue
+            end
+
+
+            local valid = {}
+
+
+            for _, configObject
+                in ipairs(
+                    activeEggs:
+                    GetChildren()
+                )
+            do
+
+                pcall(function()
+
+                    local eggName =
+                        configObject:
+                        GetAttribute(
+                            "Egg"
+                        )
+
+
+                    local position =
+                        PositionToVector3(
+                            configObject:
+                            GetAttribute(
+                                "Position"
+                            )
+                        )
+
+
+                    if not eggName
+                        or not position
+                    then
+                        return
+                    end
+
+
+                    local key =
+                        tostring(
+                            configObject.Name
+                        )
+
+
+                    valid[key] =
+                        true
+
+
+                    local part =
+                        espFolder:
+                        FindFirstChild(
+                            "ESP_"
+                            .. key
+                        )
+
+
+                    if not part then
+
+                        part =
+                            Instance.new(
+                                "Part"
+                            )
+
+
+                        part.Name =
+                            "ESP_"
+                            .. key
+
+
+                        part.Size =
+                            Vector3.new(
+                                1,
+                                1,
+                                1
+                            )
+
+
+                        part.Transparency =
+                            1
+
+
+                        part.Anchored =
+                            true
+
+
+                        part.CanCollide =
+                            false
+
+
+                        part.Parent =
+                            espFolder
+
+
+                        local billboard =
+                            Instance.new(
+                                "BillboardGui"
+                            )
+
+
+                        billboard.Size =
+                            UDim2.new(
+                                0,
+                                160,
+                                0,
+                                75
+                            )
+
+
+                        billboard.AlwaysOnTop =
+                            true
+
+
+                        billboard.StudsOffset =
+                            Vector3.new(
+                                0,
+                                3,
+                                0
+                            )
+
+
+                        billboard.Parent =
+                            part
+
+
+                        local label =
+                            Instance.new(
+                                "TextLabel"
+                            )
+
+
+                        label.Name =
+                            "Label"
+
+
+                        label.Size =
+                            UDim2.fromScale(
+                                1,
+                                1
+                            )
+
+
+                        label.BackgroundTransparency =
+                            1
+
+
+                        label.TextSize =
+                            12
+
+
+                        label.Font =
+                            Enum.Font.GothamBold
+
+
+                        label.TextStrokeTransparency =
+                            0
+
+
+                        label.Parent =
+                            billboard
+
+                    end
+
+
+                    part.Position =
+                        position
+
+
+                    local label =
+                        part:
+                        FindFirstChild(
+                            "BillboardGui"
+                        )
+                        and part.BillboardGui:
+                            FindFirstChild(
+                                "Label"
+                            )
+
+
+                    if label then
+
+                        local rarity =
+                            GetEggRarity(
+                                eggName
+                            )
+
+
+                        label.TextColor3 =
+                            GetRarityColor(
+                                rarity
+                            )
+
+
+                        label.Text =
+                            eggName
+                            .. "\nRarity: "
+                            .. rarity
+
+                    end
+
+                end)
+
+            end
+
+
+            for _, object
+                in ipairs(
+                    espFolder:
+                    GetChildren()
+                )
+            do
+
+                local key =
+                    object.Name:
+                    gsub(
+                        "^ESP_",
+                        ""
+                    )
+
+
+                if not valid[key] then
+
+                    object:
+                    Destroy()
+
+                end
+            end
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- ESP INVENTORY
+    -- ========================================================
+
+    local function ClearInventoryESP()
+
+        local playerGui =
+            LocalPlayer:
+            FindFirstChild(
+                "PlayerGui"
+            )
+
+
+        if not playerGui then
+            return
+        end
+
+
+        for _, object
+            in ipairs(
+                playerGui:
+                GetDescendants()
+            )
+        do
+
+            if object.Name
+                == "PetESPText"
+            then
+
+                object:
+                Destroy()
+
+            end
+        end
+
+    end
+
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+
+            task.wait(1.5)
+
+
+            if not espInventoryEnabled then
+
+                ClearInventoryESP()
+
+                continue
+            end
+
+
+            local playerGui =
+                LocalPlayer:
+                FindFirstChild(
+                    "PlayerGui"
+                )
+
+
+            local main =
+                playerGui
+                and playerGui:
+                    FindFirstChild(
+                        "MainUI"
+                    )
+
+
+            local inventory =
+                main
+                and main:
+                    FindFirstChild(
+                        "Inventory"
+                    )
+
+
+            if not inventory then
+                continue
+            end
+
+
+            for _, slot
+                in ipairs(
+                    inventory:
+                    GetDescendants()
+                )
+            do
+
+                if slot:IsA(
+                    "GuiObject"
+                )
+                    and slot.Name:
+                        find(
+                            "PetSlot"
+                        )
+                    and not slot:
+                        FindFirstChild(
+                            "PetESPText"
+                        )
+                then
+
+                    local label =
+                        Instance.new(
+                            "TextLabel"
+                        )
+
+
+                    label.Name =
+                        "PetESPText"
+
+
+                    label.Size =
+                        UDim2.fromScale(
+                            1,
+                            1
+                        )
+
+
+                    label.BackgroundTransparency =
+                        0.4
+
+
+                    label.BackgroundColor3 =
+                        Color3.fromRGB(
+                            0,
+                            0,
+                            0
+                        )
+
+
+                    label.TextColor3 =
+                        Color3.fromRGB(
+                            255,
+                            255,
+                            255
+                        )
+
+
+                    label.TextSize =
+                        10
+
+
+                    label.Font =
+                        Enum.Font.GothamBold
+
+
+                    label.TextWrapped =
+                        true
+
+
+                    local petName =
+                        slot:
+                        GetAttribute(
+                            "PetName"
+                        )
+                        or "Pet"
+
+
+                    local price =
+                        slot:
+                        GetAttribute(
+                            "Price"
+                        )
+                        or "0"
+
+
+                    local mutation =
+                        slot:
+                        GetAttribute(
+                            "Mutation"
+                        )
+                        or "Normal"
+
+
+                    label.Text =
+                        tostring(
+                            petName
+                        )
+                        .. "\nHarga: "
+                        .. tostring(
+                            price
+                        )
+                        .. "\nMutasi: "
+                        .. tostring(
+                            mutation
+                        )
+
+
+                    label.Parent =
+                        slot
+
+                end
+            end
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- CLEANUP WHEN SCRIPT GENERATION CHANGES
+    -- ========================================================
+
+    task.spawn(function()
+
+        while Runtime:IsCurrent() do
+            task.wait(1)
+        end
+
+
+        pcall(function()
+
+            RunService:
+            Set3dRenderingEnabled(
+                true
+            )
+
+        end)
+
+
+        pcall(
+            DisableLowGraphic
+        )
+
+
+        pcall(
+            DisableFPSBoost
+        )
+
+
+        pcall(
+            ClearInventoryESP
+        )
+
+    end)
+
+
+    print(
+        "[CHLISE HUB] Ride A Pet loaded."
+    )
+
+end
