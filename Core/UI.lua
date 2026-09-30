@@ -3,26 +3,30 @@
 -- Core/UI.lua
 -- ============================================================
 
+local UI = {}
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+
 local Players =
     game:GetService("Players")
 
 local CoreGui =
     game:GetService("CoreGui")
 
+local UserInputService =
+    game:GetService("UserInputService")
+
 local TweenService =
     game:GetService("TweenService")
 
-local UserInputService =
-    game:GetService("UserInputService")
+local RunService =
+    game:GetService("RunService")
 
 
 local LocalPlayer =
     Players.LocalPlayer
-
-
-local UI = {}
-
-UI.__index = UI
 
 
 -- ============================================================
@@ -32,34 +36,116 @@ UI.__index = UI
 local Theme = {
 
     Accent =
-        Color3.fromRGB(255, 70, 85),
+        Color3.fromRGB(
+            255,
+            75,
+            85
+        ),
 
     AccentSoft =
-        Color3.fromRGB(95, 30, 38),
+        Color3.fromRGB(
+            255,
+            105,
+            113
+        ),
 
-    Background =
-        Color3.fromRGB(8, 11, 10),
+    Main =
+        Color3.fromRGB(
+            8,
+            11,
+            10
+        ),
+
+    Top =
+        Color3.fromRGB(
+            8,
+            10,
+            10
+        ),
 
     Sidebar =
-        Color3.fromRGB(6, 9, 8),
+        Color3.fromRGB(
+            4,
+            7,
+            6
+        ),
 
     Card =
-        Color3.fromRGB(15, 19, 18),
+        Color3.fromRGB(
+            18,
+            23,
+            22
+        ),
 
-    CardHover =
-        Color3.fromRGB(20, 25, 23),
-
-    Stroke =
-        Color3.fromRGB(45, 52, 50),
+    CardStroke =
+        Color3.fromRGB(
+            67,
+            73,
+            72
+        ),
 
     Text =
-        Color3.fromRGB(245, 245, 245),
+        Color3.fromRGB(
+            245,
+            247,
+            248
+        ),
 
-    Muted =
-        Color3.fromRGB(155, 163, 160),
+    SubText =
+        Color3.fromRGB(
+            157,
+            164,
+            168
+        ),
 
-    Disabled =
-        Color3.fromRGB(85, 92, 90)
+    ToggleOff =
+        Color3.fromRGB(
+            57,
+            63,
+            66
+        ),
+
+    ToggleDot =
+        Color3.fromRGB(
+            205,
+            210,
+            213
+        ),
+
+    Dropdown =
+        Color3.fromRGB(
+            38,
+            43,
+            42
+        ),
+
+    DropdownOption =
+        Color3.fromRGB(
+            25,
+            30,
+            29
+        )
+}
+
+
+-- ============================================================
+-- TAB ORDER
+-- ============================================================
+
+local TAB_ORDER = {
+
+    FARM =
+        1,
+
+    PROGRESS =
+        2,
+
+    ESP =
+        3,
+
+    SETTINGS =
+        4
+
 }
 
 
@@ -67,83 +153,196 @@ local Theme = {
 -- HELPERS
 -- ============================================================
 
-local function Create(className, properties)
+local function New(
+    class,
+    properties
+)
 
     local object =
-        Instance.new(className)
+        Instance.new(
+            class
+        )
 
-    for property, value in pairs(properties or {}) do
-        object[property] = value
+
+    for key, value
+        in pairs(
+            properties or {}
+        )
+    do
+
+        object[key] =
+            value
+
     end
+
 
     return object
 end
 
 
-local function AddStroke(
+local function Corner(
+    parent,
+    radius
+)
+
+    return New(
+        "UICorner",
+        {
+            Parent =
+                parent,
+
+            CornerRadius =
+                UDim.new(
+                    0,
+                    radius or 8
+                )
+        }
+    )
+
+end
+
+
+local function Stroke(
     parent,
     color,
     transparency,
     thickness
 )
 
-    local stroke =
-        Create(
-            "UIStroke",
-            {
-                Parent = parent,
-                Color = color or Theme.Stroke,
-                Transparency = transparency or 0,
-                Thickness = thickness or 1
-            }
-        )
+    return New(
+        "UIStroke",
+        {
+            Parent =
+                parent,
 
-    return stroke
+            Color =
+                color
+                or Theme.CardStroke,
+
+            Transparency =
+                transparency
+                or 0,
+
+            Thickness =
+                thickness
+                or 1
+        }
+    )
+
 end
 
 
-local function PointInside(guiObject, point)
+local function CopyTable(
+    value
+)
 
-    if not guiObject
-        or not guiObject.Visible
+    local result = {}
+
+
+    if type(value)
+        ~= "table"
+    then
+        return result
+    end
+
+
+    for key, item
+        in pairs(value)
+    do
+
+        result[key] =
+            item
+
+    end
+
+
+    return result
+end
+
+
+local function ValueEquals(
+    first,
+    second
+)
+
+    if type(first)
+        ~= type(second)
     then
         return false
     end
 
-    local position =
-        guiObject.AbsolutePosition
 
-    local size =
-        guiObject.AbsoluteSize
+    if type(first)
+        ~= "table"
+    then
+        return first
+            == second
+    end
 
-    return
-        point.X >= position.X
-        and point.X <= position.X + size.X
-        and point.Y >= position.Y
-        and point.Y <= position.Y + size.Y
+
+    for key, value
+        in pairs(first)
+    do
+
+        if second[key]
+            ~= value
+        then
+            return false
+        end
+    end
+
+
+    for key, value
+        in pairs(second)
+    do
+
+        if first[key]
+            ~= value
+        then
+            return false
+        end
+    end
+
+
+    return true
 end
 
 
--- ============================================================
--- CONTROL OBJECT
--- ============================================================
-
-local function RegisterControl(
-    window,
-    id,
+local function SetControlMethod(
     control,
-    save
+    callback
 )
 
-    if not id then
-        return
+    return function(
+        first,
+        second,
+        third
+    )
+
+        -- support:
+        --
+        -- control.Set(value, invoke)
+        -- control:Set(value, invoke)
+
+        if first
+            == control
+        then
+
+            return callback(
+                second,
+                third
+            )
+
+        end
+
+
+        return callback(
+            first,
+            second
+        )
+
     end
 
-    control.Save =
-        save ~= false
-
-    window.Controls[id] =
-        control
 end
 
 
@@ -151,35 +350,73 @@ end
 -- WINDOW
 -- ============================================================
 
-function UI.new(config)
+function UI.new(
+    config
+)
 
     config =
         config or {}
 
-    local self =
-        setmetatable({}, UI)
 
-    self.Controls = {}
+    local Window = {
 
-    self.Tabs = {}
+        Controls =
+            {},
 
-    self.ActiveTab = nil
+        Tabs =
+            {},
 
-    self.ActiveDropdown = nil
+        Sections =
+            {},
+
+        CurrentTab =
+            nil,
+
+        OpenDropdown =
+            nil,
+
+        Destroyed =
+            false
+
+    }
 
 
     -- ========================================================
-    -- DESTROY OLD UI
+    -- REMOVE OLD UI
     -- ========================================================
 
-    local old =
-        CoreGui:FindFirstChild(
-            "ChliseHub"
-        )
+    pcall(function()
 
-    if old then
-        old:Destroy()
-    end
+        local old =
+            CoreGui:
+            FindFirstChild(
+                "ChliseHub"
+            )
+
+
+        if old then
+            old:
+            Destroy()
+        end
+
+    end)
+
+
+    pcall(function()
+
+        local old =
+            CoreGui:
+            FindFirstChild(
+                "ChliseHubToggle"
+            )
+
+
+        if old then
+            old:
+            Destroy()
+        end
+
+    end)
 
 
     -- ========================================================
@@ -187,81 +424,226 @@ function UI.new(config)
     -- ========================================================
 
     local ScreenGui =
-        Create(
+        New(
             "ScreenGui",
             {
-                Name = "ChliseHub",
+                Name =
+                    "ChliseHub",
 
-                ResetOnSpawn = false,
+                ResetOnSpawn =
+                    false,
 
-                IgnoreGuiInset = false,
+                IgnoreGuiInset =
+                    false,
 
                 ZIndexBehavior =
                     Enum.ZIndexBehavior.Sibling
             }
         )
 
+
+    pcall(function()
+
+        if syn
+            and syn.protect_gui
+        then
+
+            syn.protect_gui(
+                ScreenGui
+            )
+
+        end
+
+    end)
+
+
     ScreenGui.Parent =
         CoreGui
 
 
+    Window.ScreenGui =
+        ScreenGui
+
+
     -- ========================================================
-    -- MAIN
+    -- TOGGLE GUI
     -- ========================================================
 
-    local Main =
-        Create(
-            "Frame",
+    local ToggleGui =
+        New(
+            "ScreenGui",
             {
-                Name = "Main",
+                Name =
+                    "ChliseHubToggle",
 
-                Parent = ScreenGui,
+                ResetOnSpawn =
+                    false,
 
-                AnchorPoint =
-                    Vector2.new(0.5, 0.5),
+                ZIndexBehavior =
+                    Enum.ZIndexBehavior.Sibling
+            }
+        )
+
+
+    ToggleGui.Parent =
+        CoreGui
+
+
+    local OpenButton =
+        New(
+            "TextButton",
+            {
+                Parent =
+                    ToggleGui,
+
+                BackgroundColor3 =
+                    Theme.Accent,
+
+                BorderSizePixel =
+                    0,
 
                 Position =
                     UDim2.new(
                         0.5,
+                        -23,
                         0,
-                        0.5,
-                        0
+                        15
                     ),
 
                 Size =
                     UDim2.new(
                         0,
-                        config.Width or 500,
+                        46,
                         0,
-                        config.Height or 305
+                        46
                     ),
 
-                BackgroundColor3 =
-                    Theme.Background,
+                Font =
+                    Enum.Font.GothamBold,
 
-                BorderSizePixel = 0,
+                Text =
+                    "CH",
 
-                ClipsDescendants = true
+                TextColor3 =
+                    Color3.new(
+                        1,
+                        1,
+                        1
+                    ),
+
+                TextSize =
+                    14,
+
+                AutoButtonColor =
+                    false,
+
+                Active =
+                    true
             }
         )
 
 
-    Create(
-        "UICorner",
-        {
-            Parent = Main,
-
-            CornerRadius =
-                UDim.new(0, 12)
-        }
+    Corner(
+        OpenButton,
+        23
     )
 
 
-    AddStroke(
-        Main,
-        Theme.Accent,
-        0.1,
+    Stroke(
+        OpenButton,
+        Color3.fromRGB(
+            255,
+            130,
+            135
+        ),
+        0.35,
         1
+    )
+
+
+    -- ========================================================
+    -- MAIN FRAME
+    -- ========================================================
+
+    local Width =
+        tonumber(
+            config.Width
+        )
+        or 500
+
+
+    local Height =
+        tonumber(
+            config.Height
+        )
+        or 305
+
+
+    local MainFrame =
+        New(
+            "Frame",
+            {
+                Name =
+                    "MainFrame",
+
+                Parent =
+                    ScreenGui,
+
+                BackgroundColor3 =
+                    Theme.Main,
+
+                BackgroundTransparency =
+                    0.12,
+
+                BorderSizePixel =
+                    0,
+
+                AnchorPoint =
+                    Vector2.new(
+                        0.5,
+                        0.5
+                    ),
+
+                Position =
+                    UDim2.fromScale(
+                        0.5,
+                        0.5
+                    ),
+
+                Size =
+                    UDim2.fromOffset(
+                        Width,
+                        Height
+                    ),
+
+                ClipsDescendants =
+                    false,
+
+                Active =
+                    true
+            }
+        )
+
+
+    Window.MainFrame =
+        MainFrame
+
+
+    Corner(
+        MainFrame,
+        14
+    )
+
+
+    Stroke(
+        MainFrame,
+        Color3.fromRGB(
+            48,
+            52,
+            55
+        ),
+        0.12,
+        1.2
     )
 
 
@@ -269,12 +651,15 @@ function UI.new(config)
     -- MOBILE SCALE
     -- ========================================================
 
-    local UIScale =
-        Create(
+    local Scale =
+        New(
             "UIScale",
             {
-                Parent = Main,
-                Scale = 1
+                Parent =
+                    MainFrame,
+
+                Scale =
+                    1
             }
         )
 
@@ -284,25 +669,39 @@ function UI.new(config)
         local camera =
             workspace.CurrentCamera
 
+
         if not camera then
             return
         end
 
+
         local viewport =
             camera.ViewportSize
 
-        local scale =
-            math.min(
-                1,
-                viewport.X / 540,
-                viewport.Y / 360
+
+        local xScale =
+            viewport.X
+            / (
+                Width
+                + 30
             )
 
-        UIScale.Scale =
-            math.max(
-                0.68,
-                scale
+
+        local yScale =
+            viewport.Y
+            / (
+                Height
+                + 80
             )
+
+
+        Scale.Scale =
+            math.min(
+                1,
+                xScale,
+                yScale
+            )
+
     end
 
 
@@ -311,54 +710,147 @@ function UI.new(config)
 
     if workspace.CurrentCamera then
 
-        workspace.CurrentCamera
-            :GetPropertyChangedSignal(
-                "ViewportSize"
-            )
-            :Connect(
-                UpdateScale
-            )
+        workspace.CurrentCamera:
+        GetPropertyChangedSignal(
+            "ViewportSize"
+        ):
+        Connect(
+            UpdateScale
+        )
+
     end
 
 
     -- ========================================================
-    -- TOPBAR
+    -- TOP BAR
     -- ========================================================
 
-    local Topbar =
-        Create(
+    local TopBar =
+        New(
             "Frame",
             {
-                Parent = Main,
+                Name =
+                    "TopBar",
+
+                Parent =
+                    MainFrame,
+
+                BackgroundColor3 =
+                    Theme.Top,
+
+                BackgroundTransparency =
+                    0.18,
+
+                BorderSizePixel =
+                    0,
 
                 Size =
                     UDim2.new(
                         1,
                         0,
                         0,
-                        45
+                        42
                     ),
 
-                BackgroundColor3 =
-                    Theme.Background,
+                ZIndex =
+                    20,
 
-                BorderSizePixel = 0
+                Active =
+                    true
+            }
+        )
+
+
+    Corner(
+        TopBar,
+        14
+    )
+
+
+    local TopFill =
+        New(
+            "Frame",
+            {
+                Parent =
+                    TopBar,
+
+                BackgroundColor3 =
+                    Theme.Top,
+
+                BackgroundTransparency =
+                    0.18,
+
+                BorderSizePixel =
+                    0,
+
+                Position =
+                    UDim2.new(
+                        0,
+                        0,
+                        1,
+                        -14
+                    ),
+
+                Size =
+                    UDim2.new(
+                        1,
+                        0,
+                        0,
+                        14
+                    )
+            }
+        )
+
+
+    local TopAccent =
+        New(
+            "Frame",
+            {
+                Parent =
+                    TopBar,
+
+                BackgroundColor3 =
+                    Theme.Accent,
+
+                BorderSizePixel =
+                    0,
+
+                Position =
+                    UDim2.new(
+                        0,
+                        0,
+                        1,
+                        -2
+                    ),
+
+                Size =
+                    UDim2.new(
+                        1,
+                        0,
+                        0,
+                        2
+                    ),
+
+                ZIndex =
+                    22
             }
         )
 
 
     local Title =
-        Create(
+        New(
             "TextLabel",
             {
-                Parent = Topbar,
+                Parent =
+                    TopBar,
 
-                BackgroundTransparency = 1,
+                BackgroundTransparency =
+                    1,
 
                 Position =
                     UDim2.new(
                         0,
-                        13,
+                        14,
                         0,
                         0
                     ),
@@ -366,7 +858,7 @@ function UI.new(config)
                 Size =
                     UDim2.new(
                         1,
-                        -55,
+                        -120,
                         1,
                         0
                     ),
@@ -379,2209 +871,3491 @@ function UI.new(config)
                     or "CHLISE HUB",
 
                 TextColor3 =
-                    Theme.Text,
+                    Theme.AccentSoft,
 
-                TextSize = 18,
+                TextSize =
+                    15,
 
                 TextXAlignment =
-                    Enum.TextXAlignment.Left
+                    Enum.TextXAlignment.Left,
+
+                ZIndex =
+                    23
+            }
+        )
+
+
+    local Version =
+        New(
+            "TextLabel",
+            {
+                Parent =
+                    TopBar,
+
+                BackgroundTransparency =
+                    1,
+
+                Position =
+                    UDim2.new(
+                        1,
+                        -125,
+                        0,
+                        0
+                    ),
+
+                Size =
+                    UDim2.new(
+                        0,
+                        52,
+                        1,
+                        0
+                    ),
+
+                Font =
+                    Enum.Font.Gotham,
+
+                Text =
+                    config.Version
+                    or "v2.0",
+
+                TextColor3 =
+                    Color3.fromRGB(
+                        255,
+                        160,
+                        160
+                    ),
+
+                TextSize =
+                    9,
+
+                TextXAlignment =
+                    Enum.TextXAlignment.Right,
+
+                ZIndex =
+                    23
+            }
+        )
+
+
+    local Minimize =
+        New(
+            "TextButton",
+            {
+                Parent =
+                    TopBar,
+
+                BackgroundTransparency =
+                    1,
+
+                Position =
+                    UDim2.new(
+                        1,
+                        -65,
+                        0,
+                        5
+                    ),
+
+                Size =
+                    UDim2.fromOffset(
+                        30,
+                        30
+                    ),
+
+                Font =
+                    Enum.Font.GothamBold,
+
+                Text =
+                    "−",
+
+                TextColor3 =
+                    Color3.fromRGB(
+                        235,
+                        235,
+                        238
+                    ),
+
+                TextSize =
+                    17,
+
+                AutoButtonColor =
+                    false,
+
+                ZIndex =
+                    24
             }
         )
 
 
     local Close =
-        Create(
-            "TextButton",
-            {
-                Parent = Topbar,
-
-                Position =
-                    UDim2.new(
-                        1,
-                        -40,
-                        0,
-                        7
-                    ),
-
-                Size =
-                    UDim2.new(
-                        0,
-                        30,
-                        0,
-                        30
-                    ),
-
-                BackgroundTransparency = 1,
-
-                Text = "×",
-
-                TextColor3 =
-                    Theme.Muted,
-
-                Font =
-                    Enum.Font.GothamBold,
-
-                TextSize = 22,
-
-                AutoButtonColor = false
-            }
-        )
-
-
-    Close.MouseButton1Click
-        :Connect(
-            function()
-
-                ScreenGui.Enabled =
-                    false
-            end
-        )
-
-
-    local AccentLine =
-        Create(
-            "Frame",
-            {
-                Parent = Main,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        0,
-                        0,
-                        44
-                    ),
-
-                Size =
-                    UDim2.new(
-                        1,
-                        0,
-                        0,
-                        2
-                    ),
-
-                BackgroundColor3 =
-                    Theme.Accent,
-
-                BorderSizePixel = 0
-            }
-        )
-
-
-    -- ========================================================
-    -- SIDEBAR
-    -- ========================================================
-
-    local Sidebar =
-        Create(
-            "Frame",
-            {
-                Parent = Main,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        0,
-                        0,
-                        46
-                    ),
-
-                Size =
-                    UDim2.new(
-                        0,
-                        52,
-                        1,
-                        -46
-                    ),
-
-                BackgroundColor3 =
-                    Theme.Sidebar,
-
-                BorderSizePixel = 0
-            }
-        )
-
-
-    Create(
-        "UIPadding",
-        {
-            Parent = Sidebar,
-
-            PaddingTop =
-                UDim.new(0, 8),
-
-            PaddingBottom =
-                UDim.new(0, 8)
-        }
-    )
-
-
-    Create(
-        "UIListLayout",
-        {
-            Parent = Sidebar,
-
-            FillDirection =
-                Enum.FillDirection.Vertical,
-
-            SortOrder =
-                Enum.SortOrder.LayoutOrder,
-
-            HorizontalAlignment =
-                Enum.HorizontalAlignment.Center,
-
-            Padding =
-                UDim.new(0, 6)
-        }
-    )
-
-
-    -- ========================================================
-    -- CONTENT
-    -- ========================================================
-
-    local Content =
-        Create(
-            "Frame",
-            {
-                Parent = Main,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        52,
-                        0,
-                        46
-                    ),
-
-                Size =
-                    UDim2.new(
-                        1,
-                        -52,
-                        1,
-                        -46
-                    ),
-
-                BackgroundTransparency = 1,
-
-                BorderSizePixel = 0
-            }
-        )
-
-
-    self.ScreenGui =
-        ScreenGui
-
-    self.Main =
-        Main
-
-    self.Sidebar =
-        Sidebar
-
-    self.Content =
-        Content
-
-
-    -- ========================================================
-    -- DRAG WINDOW
-    -- ========================================================
-
-    do
-
-        local dragging = false
-
-        local dragStart
-
-        local startPosition
-
-
-        Topbar.InputBegan
-            :Connect(
-                function(input)
-
-                    if input.UserInputType
-                        == Enum.UserInputType.MouseButton1
-
-                        or input.UserInputType
-                        == Enum.UserInputType.Touch
-                    then
-
-                        dragging = true
-
-                        dragStart =
-                            input.Position
-
-                        startPosition =
-                            Main.Position
-                    end
-                end
-            )
-
-
-        Topbar.InputEnded
-            :Connect(
-                function(input)
-
-                    if input.UserInputType
-                        == Enum.UserInputType.MouseButton1
-
-                        or input.UserInputType
-                        == Enum.UserInputType.Touch
-                    then
-
-                        dragging =
-                            false
-                    end
-                end
-            )
-
-
-        UserInputService
-            .InputChanged
-            :Connect(
-                function(input)
-
-                    if not dragging then
-                        return
-                    end
-
-                    if input.UserInputType
-                        ~= Enum.UserInputType.MouseMovement
-
-                        and input.UserInputType
-                        ~= Enum.UserInputType.Touch
-                    then
-                        return
-                    end
-
-                    local delta =
-                        input.Position
-                        - dragStart
-
-                    Main.Position =
-                        UDim2.new(
-                            startPosition.X.Scale,
-                            startPosition.X.Offset
-                                + delta.X,
-
-                            startPosition.Y.Scale,
-                            startPosition.Y.Offset
-                                + delta.Y
-                        )
-                end
-            )
-
-    end
-
-
-    -- ========================================================
-    -- CLICK OUTSIDE DROPDOWN
-    -- ========================================================
-
-    UserInputService
-        .InputBegan
-        :Connect(
-            function(input)
-
-                if not self.ActiveDropdown then
-                    return
-                end
-
-                if input.UserInputType
-                    ~= Enum.UserInputType.MouseButton1
-
-                    and input.UserInputType
-                    ~= Enum.UserInputType.Touch
-                then
-                    return
-                end
-
-                local point =
-                    input.Position
-
-                local dropdown =
-                    self.ActiveDropdown
-
-                if not PointInside(
-                    dropdown.Button,
-                    point
-                )
-                    and not PointInside(
-                        dropdown.List,
-                        point
-                    )
-                then
-
-                    dropdown:Close()
-
-                    self.ActiveDropdown =
-                        nil
-                end
-            end
-        )
-
-
-    return self
-end
-
-
--- ============================================================
--- TAB
--- ============================================================
-
-function UI:AddTab(
-    id,
-    icon
-)
-
-    local window =
-        self
-
-
-    local Button =
-        Create(
+        New(
             "TextButton",
             {
                 Parent =
-                    window.Sidebar,
+                    TopBar,
 
-                Size =
-                    UDim2.new(
-                        0,
-                        44,
-                        0,
-                        44
-                    ),
-
-                BackgroundTransparency = 1,
-
-                BorderSizePixel = 0,
-
-                Text = "",
-
-                AutoButtonColor = false,
-
-                LayoutOrder =
-                    #window.Tabs + 1
-            }
-        )
-
-
-    local ActiveBar =
-        Create(
-            "Frame",
-            {
-                Parent = Button,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        0,
-                        0.5,
-                        -12
-                    ),
-
-                Size =
-                    UDim2.new(
-                        0,
-                        3,
-                        0,
-                        24
-                    ),
-
-                BackgroundColor3 =
-                    Theme.Accent,
-
-                BorderSizePixel = 0,
-
-                Visible = false
-            }
-        )
-
-
-    local Icon =
-        Create(
-            "TextLabel",
-            {
-                Parent = Button,
-
-                BackgroundTransparency = 1,
-
-                Size =
-                    UDim2.new(
-                        1,
-                        0,
-                        1,
-                        0
-                    ),
-
-                Text =
-                    tostring(icon or "●"),
-
-                Font =
-                    Enum.Font.GothamBold,
-
-                TextColor3 =
-                    Theme.Disabled,
-
-                TextSize = 17
-            }
-        )
-
-
-    local Page =
-        Create(
-            "ScrollingFrame",
-            {
-                Parent =
-                    window.Content,
-
-                Size =
-                    UDim2.new(
-                        1,
-                        0,
-                        1,
-                        0
-                    ),
-
-                BackgroundTransparency = 1,
-
-                BorderSizePixel = 0,
-
-                ScrollBarThickness = 3,
-
-                ScrollBarImageColor3 =
-                    Theme.Accent,
-
-                CanvasSize =
-                    UDim2.new(),
-
-                AutomaticCanvasSize =
-                    Enum.AutomaticSize.Y,
-
-                Visible = false
-            }
-        )
-
-
-    Create(
-        "UIPadding",
-        {
-            Parent = Page,
-
-            PaddingLeft =
-                UDim.new(0, 9),
-
-            PaddingRight =
-                UDim.new(0, 9),
-
-            PaddingTop =
-                UDim.new(0, 9),
-
-            PaddingBottom =
-                UDim.new(0, 9)
-        }
-    )
-
-
-    Create(
-        "UIListLayout",
-        {
-            Parent = Page,
-
-            SortOrder =
-                Enum.SortOrder.LayoutOrder,
-
-            Padding =
-                UDim.new(0, 7)
-        }
-    )
-
-
-    local Tab = {
-
-        ID = id,
-
-        Button = Button,
-
-        Icon = Icon,
-
-        ActiveBar = ActiveBar,
-
-        Page = Page,
-
-        Window = window,
-
-        Sections = {}
-    }
-
-
-    function Tab:SetActive(active)
-
-        Page.Visible =
-            active
-
-        ActiveBar.Visible =
-            active
-
-        Icon.TextColor3 =
-            active
-            and Theme.Accent
-            or Theme.Muted
-
-        Icon.TextSize =
-            active
-            and 20
-            or 17
-    end
-
-
-    Button.MouseButton1Click
-        :Connect(
-            function()
-
-                window:SelectTab(
-                    id
-                )
-            end
-        )
-
-
-    window.Tabs[id] =
-        Tab
-
-
-    if not window.ActiveTab then
-
-        window:SelectTab(
-            id
-        )
-    end
-
-
-    return Tab
-end
-
-
-function UI:SelectTab(id)
-
-    for tabID, tab
-        in pairs(self.Tabs)
-    do
-
-        tab:SetActive(
-            tabID == id
-        )
-    end
-
-    self.ActiveTab =
-        id
-end
-
-
--- ============================================================
--- SECTION
--- ============================================================
-
-local Section = {}
-
-Section.__index =
-    Section
-
-
-function UI:AddSection(
-    tab,
-    title
-)
-
-    local Container =
-        Create(
-            "Frame",
-            {
-                Parent =
-                    tab.Page,
-
-                Size =
-                    UDim2.new(
-                        1,
-                        0,
-                        0,
-                        0
-                    ),
-
-                AutomaticSize =
-                    Enum.AutomaticSize.Y,
-
-                BackgroundTransparency = 1,
-
-                BorderSizePixel = 0,
-
-                LayoutOrder =
-                    #tab.Sections + 1
-            }
-        )
-
-
-    local Header =
-        Create(
-            "TextButton",
-            {
-                Parent = Container,
-
-                Size =
-                    UDim2.new(
-                        1,
-                        0,
-                        0,
-                        34
-                    ),
-
-                BackgroundColor3 =
-                    Color3.fromRGB(
-                        12,
-                        16,
-                        15
-                    ),
-
-                BorderSizePixel = 0,
-
-                AutoButtonColor = false,
-
-                Text = ""
-            }
-        )
-
-
-    AddStroke(
-        Header,
-        Theme.Stroke,
-        0.25,
-        1
-    )
-
-
-    local Label =
-        Create(
-            "TextLabel",
-            {
-                Parent = Header,
-
-                BackgroundTransparency = 1,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        11,
-                        0,
-                        0
-                    ),
-
-                Size =
-                    UDim2.new(
-                        1,
-                        -45,
-                        1,
-                        0
-                    ),
-
-                Font =
-                    Enum.Font.GothamBold,
-
-                Text =
-                    string.upper(
-                        tostring(title)
-                    ),
-
-                TextColor3 =
-                    Theme.Text,
-
-                TextSize = 13,
-
-                TextXAlignment =
-                    Enum.TextXAlignment.Left
-            }
-        )
-
-
-    local Arrow =
-        Create(
-            "TextLabel",
-            {
-                Parent = Header,
-
-                BackgroundTransparency = 1,
+                BackgroundTransparency =
+                    1,
 
                 Position =
                     UDim2.new(
                         1,
                         -35,
                         0,
-                        0
+                        5
                     ),
 
                 Size =
-                    UDim2.new(
-                        0,
+                    UDim2.fromOffset(
                         30,
-                        1,
-                        0
-                    ),
-
-                Font =
-                    Enum.Font.GothamBold,
-
-                Text = "−",
-
-                TextColor3 =
-                    Theme.Muted,
-
-                TextSize = 17
-            }
-        )
-
-
-    local Items =
-        Create(
-            "Frame",
-            {
-                Parent = Container,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        0,
-                        0,
-                        39
-                    ),
-
-                Size =
-                    UDim2.new(
-                        1,
-                        0,
-                        0,
-                        0
-                    ),
-
-                AutomaticSize =
-                    Enum.AutomaticSize.Y,
-
-                BackgroundTransparency = 1
-            }
-        )
-
-
-    Create(
-        "UIListLayout",
-        {
-            Parent = Items,
-
-            SortOrder =
-                Enum.SortOrder.LayoutOrder,
-
-            Padding =
-                UDim.new(0, 5)
-        }
-    )
-
-
-    local section =
-        setmetatable(
-            {
-                Window =
-                    self,
-
-                Tab =
-                    tab,
-
-                Container =
-                    Container,
-
-                Header =
-                    Header,
-
-                Items =
-                    Items,
-
-                Collapsed =
-                    false,
-
-                Count =
-                    0
-            },
-
-            Section
-        )
-
-
-    Header.MouseButton1Click
-        :Connect(
-            function()
-
-                section.Collapsed =
-                    not section.Collapsed
-
-                Items.Visible =
-                    not section.Collapsed
-
-                Arrow.Text =
-                    section.Collapsed
-                    and "+"
-                    or "−"
-            end
-        )
-
-
-    table.insert(
-        tab.Sections,
-        section
-    )
-
-
-    return section
-end
-
-
--- ============================================================
--- BASE ROW
--- ============================================================
-
-function Section:CreateRow(
-    height
-)
-
-    self.Count += 1
-
-
-    local Row =
-        Create(
-            "Frame",
-            {
-                Parent =
-                    self.Items,
-
-                Size =
-                    UDim2.new(
-                        1,
-                        0,
-                        0,
-                        height or 46
-                    ),
-
-                BackgroundColor3 =
-                    Theme.Card,
-
-                BackgroundTransparency =
-                    0.05,
-
-                BorderSizePixel = 0,
-
-                LayoutOrder =
-                    self.Count
-            }
-        )
-
-
-    AddStroke(
-        Row,
-        Theme.Stroke,
-        0.5,
-        1
-    )
-
-
-    return Row
-end
-
-
--- ============================================================
--- TOGGLE
--- ============================================================
-
-function Section:AddToggle(
-    id,
-    text,
-    defaultValue,
-    callback,
-    save
-)
-
-    local Row =
-        self:CreateRow(48)
-
-
-    local Label =
-        Create(
-            "TextLabel",
-            {
-                Parent = Row,
-
-                BackgroundTransparency = 1,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        11,
-                        0,
-                        0
-                    ),
-
-                Size =
-                    UDim2.new(
-                        1,
-                        -78,
-                        1,
-                        0
+                        30
                     ),
 
                 Font =
                     Enum.Font.GothamMedium,
 
                 Text =
-                    tostring(text),
+                    "X",
 
                 TextColor3 =
-                    Theme.Text,
+                    Color3.fromRGB(
+                        235,
+                        235,
+                        238
+                    ),
 
-                TextSize = 12,
+                TextSize =
+                    14,
 
-                TextXAlignment =
-                    Enum.TextXAlignment.Left
+                AutoButtonColor =
+                    false,
+
+                ZIndex =
+                    24
             }
         )
 
 
-    local Toggle =
-        Create(
-            "TextButton",
+    -- ========================================================
+    -- DRAG
+    -- ========================================================
+
+    do
+
+        local dragging =
+            false
+
+        local dragStart =
+            nil
+
+        local startPosition =
+            nil
+
+        local dragInput =
+            nil
+
+
+        TopBar.InputBegan:
+        Connect(function(input)
+
+            if input.UserInputType
+                    == Enum.UserInputType.MouseButton1
+                or input.UserInputType
+                    == Enum.UserInputType.Touch
+            then
+
+                dragging =
+                    true
+
+                dragStart =
+                    input.Position
+
+                startPosition =
+                    MainFrame.Position
+
+
+                input.Changed:
+                Connect(function()
+
+                    if input.UserInputState
+                        == Enum.UserInputState.End
+                    then
+
+                        dragging =
+                            false
+
+                    end
+
+                end)
+
+            end
+
+        end)
+
+
+        TopBar.InputChanged:
+        Connect(function(input)
+
+            if input.UserInputType
+                    == Enum.UserInputType.MouseMovement
+                or input.UserInputType
+                    == Enum.UserInputType.Touch
+            then
+
+                dragInput =
+                    input
+
+            end
+
+        end)
+
+
+        UserInputService.InputChanged:
+        Connect(function(input)
+
+            if not dragging
+                or input
+                    ~= dragInput
+            then
+                return
+            end
+
+
+            local delta =
+                input.Position
+                - dragStart
+
+
+            MainFrame.Position =
+                UDim2.new(
+                    startPosition.X.Scale,
+                    startPosition.X.Offset
+                        + delta.X,
+
+                    startPosition.Y.Scale,
+                    startPosition.Y.Offset
+                        + delta.Y
+                )
+
+        end)
+
+    end
+
+
+    -- ========================================================
+    -- CONTAINER
+    -- ========================================================
+
+    local Container =
+        New(
+            "Frame",
             {
-                Parent = Row,
+                Parent =
+                    MainFrame,
+
+                BackgroundTransparency =
+                    1,
+
+                Position =
+                    UDim2.new(
+                        0,
+                        0,
+                        0,
+                        42
+                    ),
+
+                Size =
+                    UDim2.new(
+                        1,
+                        0,
+                        1,
+                        -42
+                    )
+            }
+        )
+
+
+    -- ========================================================
+    -- ICON SIDEBAR
+    -- ========================================================
+
+    local Sidebar =
+        New(
+            "Frame",
+            {
+                Parent =
+                    Container,
+
+                BackgroundColor3 =
+                    Theme.Sidebar,
+
+                BackgroundTransparency =
+                    0.12,
+
+                BorderSizePixel =
+                    0,
+
+                Size =
+                    UDim2.new(
+                        0,
+                        54,
+                        1,
+                        0
+                    )
+            }
+        )
+
+
+    local SidebarLine =
+        New(
+            "Frame",
+            {
+                Parent =
+                    Sidebar,
+
+                BackgroundColor3 =
+                    Color3.fromRGB(
+                        45,
+                        50,
+                        49
+                    ),
+
+                BackgroundTransparency =
+                    0.55,
+
+                BorderSizePixel =
+                    0,
 
                 Position =
                     UDim2.new(
                         1,
-                        -60,
-                        0.5,
-                        -13
+                        -1,
+                        0,
+                        0
                     ),
 
                 Size =
                     UDim2.new(
                         0,
-                        48,
-                        0,
-                        26
-                    ),
-
-                BackgroundColor3 =
-                    Color3.fromRGB(
-                        27,
-                        32,
-                        31
-                    ),
-
-                BorderSizePixel = 0,
-
-                Text = "",
-
-                AutoButtonColor = false
+                        1,
+                        1,
+                        0
+                    )
             }
         )
 
 
-    local Stroke =
-        AddStroke(
-            Toggle,
-            Theme.Stroke,
-            0.2,
-            1
-        )
-
-
-    local Indicator =
-        Create(
+    local TabHolder =
+        New(
             "Frame",
             {
-                Parent = Toggle,
+                Parent =
+                    Sidebar,
+
+                BackgroundTransparency =
+                    1,
 
                 Position =
                     UDim2.new(
                         0,
-                        4,
                         0,
-                        4
+                        0,
+                        8
                     ),
 
                 Size =
                     UDim2.new(
+                        1,
                         0,
-                        18,
-                        0,
-                        18
-                    ),
-
-                BackgroundColor3 =
-                    Theme.Muted,
-
-                BorderSizePixel = 0
+                        1,
+                        -16
+                    )
             }
         )
 
 
-    local state =
-        defaultValue == true
+    local TabLayout =
+        New(
+            "UIListLayout",
+            {
+                Parent =
+                    TabHolder,
 
+                SortOrder =
+                    Enum.SortOrder.LayoutOrder,
 
-    local function Render(animated)
+                Padding =
+                    UDim.new(
+                        0,
+                        5
+                    ),
 
-        local targetPosition =
-            state
-            and UDim2.new(
-                1,
-                -22,
-                0,
-                4
-            )
-            or UDim2.new(
-                0,
-                4,
-                0,
-                4
-            )
-
-
-        Toggle.BackgroundColor3 =
-            state
-            and Theme.AccentSoft
-            or Color3.fromRGB(
-                27,
-                32,
-                31
-            )
-
-
-        Stroke.Color =
-            state
-            and Theme.Accent
-            or Theme.Stroke
-
-
-        Indicator.BackgroundColor3 =
-            state
-            and Theme.Text
-            or Theme.Muted
-
-
-        if animated then
-
-            TweenService:Create(
-                Indicator,
-                TweenInfo.new(0.14),
-                {
-                    Position =
-                        targetPosition
-                }
-            ):Play()
-
-        else
-
-            Indicator.Position =
-                targetPosition
-
-        end
-    end
-
-
-    local function Set(
-        value,
-        invokeCallback
-    )
-
-        state =
-            value == true
-
-        Render(true)
-
-        if invokeCallback ~= false
-            and callback
-        then
-
-            callback(state)
-        end
-    end
-
-
-    Toggle.MouseButton1Click
-        :Connect(
-            function()
-
-                Set(
-                    not state,
-                    true
-                )
-            end
+                HorizontalAlignment =
+                    Enum.HorizontalAlignment.Center
+            }
         )
 
 
-    Render(false)
+    -- ========================================================
+    -- CONTENT
+    -- ========================================================
+
+    local ContentHolder =
+        New(
+            "Frame",
+            {
+                Parent =
+                    Container,
+
+                BackgroundTransparency =
+                    1,
+
+                Position =
+                    UDim2.new(
+                        0,
+                        63,
+                        0,
+                        8
+                    ),
+
+                Size =
+                    UDim2.new(
+                        1,
+                        -71,
+                        1,
+                        -16
+                    )
+            }
+        )
 
 
-    local Control = {
+    -- ========================================================
+    -- DROPDOWN OVERLAY LAYER
+    -- ========================================================
 
-        Type = "Toggle",
+    local Overlay =
+        New(
+            "Frame",
+            {
+                Parent =
+                    ScreenGui,
 
-        Get =
-            function()
+                BackgroundTransparency =
+                    1,
 
-                return state
-            end,
+                Size =
+                    UDim2.fromScale(
+                        1,
+                        1
+                    ),
 
-        Set =
-            Set
-    }
+                Visible =
+                    true,
+
+                ZIndex =
+                    5000
+            }
+        )
 
 
-    RegisterControl(
-        self.Window,
+    Overlay.Active =
+        false
+
+
+    -- ========================================================
+    -- CLOSE DROPDOWN
+    -- ========================================================
+
+    function Window:CloseDropdown()
+
+        if self.OpenDropdown then
+
+            local dropdown =
+                self.OpenDropdown
+
+
+            self.OpenDropdown =
+                nil
+
+
+            dropdown.Close()
+
+        end
+
+    end
+
+
+    -- ========================================================
+    -- TAB SELECT
+    -- ========================================================
+
+    function Window:SelectTab(
+        id
+    )
+
+        id =
+            tostring(id)
+
+
+        local selected =
+            self.Tabs[id]
+
+
+        if not selected then
+            return
+        end
+
+
+        self:CloseDropdown()
+
+
+        self.CurrentTab =
+            id
+
+
+        for tabId, tab
+            in pairs(
+                self.Tabs
+            )
+        do
+
+            local active =
+                tabId
+                == id
+
+
+            tab.Page.Visible =
+                active
+
+
+            tab.Accent.Visible =
+                active
+
+
+            tab.Icon.TextColor3 =
+                active
+                and Theme.AccentSoft
+                or Color3.fromRGB(
+                    165,
+                    171,
+                    175
+                )
+
+
+            tab.Icon.TextSize =
+                active
+                and 20
+                or 17
+
+
+            tab.Button.BackgroundTransparency =
+                1
+
+        end
+
+    end
+
+
+    -- ========================================================
+    -- ADD TAB
+    -- ========================================================
+
+    function Window:AddTab(
         id,
-        Control,
+        icon
+    )
+
+        id =
+            tostring(id)
+
+
+        if self.Tabs[id] then
+
+            return
+                self.Tabs[id]
+
+        end
+
+
+        local button =
+            New(
+                "TextButton",
+                {
+                    Parent =
+                        TabHolder,
+
+                    BackgroundTransparency =
+                        1,
+
+                    BorderSizePixel =
+                        0,
+
+                    Size =
+                        UDim2.fromOffset(
+                            48,
+                            42
+                        ),
+
+                    Text =
+                        "",
+
+                    AutoButtonColor =
+                        false,
+
+                    LayoutOrder =
+                        TAB_ORDER[id]
+                        or 100
+                }
+            )
+
+
+        local accent =
+            New(
+                "Frame",
+                {
+                    Parent =
+                        button,
+
+                    BackgroundColor3 =
+                        Theme.Accent,
+
+                    BorderSizePixel =
+                        0,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            0,
+                            0.5,
+                            -12
+                        ),
+
+                    Size =
+                        UDim2.fromOffset(
+                            3,
+                            24
+                        ),
+
+                    Visible =
+                        false
+                }
+            )
+
+
+        Corner(
+            accent,
+            2
+        )
+
+
+        local iconLabel =
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        button,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            4,
+                            0,
+                            0
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            1,
+                            -4,
+                            1,
+                            0
+                        ),
+
+                    Font =
+                        Enum.Font.GothamBold,
+
+                    Text =
+                        icon
+                        or "•",
+
+                    TextColor3 =
+                        Color3.fromRGB(
+                            165,
+                            171,
+                            175
+                        ),
+
+                    TextSize =
+                        17
+                }
+            )
+
+
+        local page =
+            New(
+                "ScrollingFrame",
+                {
+                    Parent =
+                        ContentHolder,
+
+                    BackgroundTransparency =
+                        1,
+
+                    BorderSizePixel =
+                        0,
+
+                    Size =
+                        UDim2.fromScale(
+                            1,
+                            1
+                        ),
+
+                    CanvasSize =
+                        UDim2.new(
+                            0,
+                            0,
+                            0,
+                            0
+                        ),
+
+                    AutomaticCanvasSize =
+                        Enum.AutomaticSize.Y,
+
+                    ScrollBarThickness =
+                        2,
+
+                    ScrollBarImageColor3 =
+                        Theme.Accent,
+
+                    ScrollBarImageTransparency =
+                        0.25,
+
+                    Visible =
+                        false
+                }
+            )
+
+
+        local padding =
+            New(
+                "UIPadding",
+                {
+                    Parent =
+                        page,
+
+                    PaddingRight =
+                        UDim.new(
+                            0,
+                            4
+                        ),
+
+                    PaddingBottom =
+                        UDim.new(
+                            0,
+                            10
+                        )
+                }
+            )
+
+
+        local layout =
+            New(
+                "UIListLayout",
+                {
+                    Parent =
+                        page,
+
+                    SortOrder =
+                        Enum.SortOrder.LayoutOrder,
+
+                    Padding =
+                        UDim.new(
+                            0,
+                            7
+                        )
+                }
+            )
+
+
+        local tab = {
+
+            Id =
+                id,
+
+            Button =
+                button,
+
+            Icon =
+                iconLabel,
+
+            Accent =
+                accent,
+
+            Page =
+                page,
+
+            Layout =
+                layout,
+
+            SectionCounter =
+                0
+
+        }
+
+
+        self.Tabs[id] =
+            tab
+
+
+        button.MouseButton1Click:
+        Connect(function()
+
+            self:
+            SelectTab(
+                id
+            )
+
+        end)
+
+
+        -- Fixed default:
+        -- FARM selalu dipilih ketika tersedia.
+
+        if id
+            == "FARM"
+        then
+
+            self:
+            SelectTab(
+                "FARM"
+            )
+
+        elseif not self.CurrentTab then
+
+            self:
+            SelectTab(
+                id
+            )
+
+        end
+
+
+        return tab
+    end
+
+
+    -- ========================================================
+    -- CONTROL REGISTRATION
+    -- ========================================================
+
+    local function RegisterControl(
+        id,
+        control,
         save
     )
 
-
-    return Control
-end
-
-
--- ============================================================
--- CHECKBOX
--- ============================================================
-
-function Section:AddCheckbox(
-    id,
-    text,
-    defaultValue,
-    callback,
-    save
-)
-
-    local Row =
-        self:CreateRow(46)
+        if not id then
+            return control
+        end
 
 
-    Create(
-        "TextLabel",
-        {
-            Parent = Row,
+        control.Id =
+            id
 
-            BackgroundTransparency = 1,
 
-            Position =
-                UDim2.new(
-                    0,
-                    11,
-                    0,
-                    0
-                ),
+        control.Save =
+            save
+            ~= false
 
-            Size =
-                UDim2.new(
-                    1,
-                    -58,
-                    1,
-                    0
-                ),
 
-            Font =
-                Enum.Font.GothamMedium,
+        Window.Controls[id] =
+            control
 
-            Text =
-                tostring(text),
 
-            TextColor3 =
-                Theme.Text,
+        return control
+    end
 
-            TextSize = 12,
 
-            TextXAlignment =
-                Enum.TextXAlignment.Left
-        }
+    function Window:GetControl(
+        id
     )
 
+        return
+            self.Controls[id]
 
-    local Box =
-        Create(
-            "TextButton",
-            {
-                Parent = Row,
-
-                Position =
-                    UDim2.new(
-                        1,
-                        -41,
-                        0.5,
-                        -13
-                    ),
-
-                Size =
-                    UDim2.new(
-                        0,
-                        26,
-                        0,
-                        26
-                    ),
-
-                BackgroundColor3 =
-                    Color3.fromRGB(
-                        24,
-                        29,
-                        28
-                    ),
-
-                BorderSizePixel = 0,
-
-                Font =
-                    Enum.Font.GothamBold,
-
-                Text = "",
-
-                TextSize = 16,
-
-                AutoButtonColor = false
-            }
-        )
+    end
 
 
-    local Stroke =
-        AddStroke(
-            Box,
-            Theme.Stroke,
-            0,
+    function Window:GetControls()
+
+        return
+            self.Controls
+
+    end
+
+
+    -- ========================================================
+    -- ADD SECTION
+    -- ========================================================
+
+    function Window:AddSection(
+        tab,
+        title
+    )
+
+        if type(tab)
+            == "string"
+        then
+
+            tab =
+                self.Tabs[tab]
+
+        end
+
+
+        if not tab then
+            return nil
+        end
+
+
+        tab.SectionCounter +=
             1
-        )
 
 
-    local state =
-        defaultValue == true
+        local sectionOrder =
+            tab.SectionCounter
 
 
-    local function Render()
+        local Section = {
 
-        Box.Text =
-            state
-            and "✓"
-            or ""
+            Window =
+                self,
 
-        Box.TextColor3 =
-            Theme.Text
+            Tab =
+                tab,
 
-        Box.BackgroundColor3 =
-            state
-            and Theme.AccentSoft
-            or Color3.fromRGB(
-                24,
-                29,
-                28
-            )
+            ItemCounter =
+                0,
 
-        Stroke.Color =
-            state
-            and Theme.Accent
-            or Theme.Stroke
-    end
+            Items =
+                {},
 
+            Open =
+                true
 
-    local function Set(
-        value,
-        invokeCallback
-    )
-
-        state =
-            value == true
-
-        Render()
-
-        if invokeCallback ~= false
-            and callback
-        then
-
-            callback(state)
-        end
-    end
-
-
-    Box.MouseButton1Click
-        :Connect(
-            function()
-
-                Set(
-                    not state,
-                    true
-                )
-            end
-        )
-
-
-    Render()
-
-
-    local Control = {
-
-        Type = "Checkbox",
-
-        Get =
-            function()
-
-                return state
-            end,
-
-        Set =
-            Set
-    }
-
-
-    RegisterControl(
-    self.Window,
-    id,
-    Control,
-    save
-    )
-
-
-    return Control
-end
-
-
--- ============================================================
--- BUTTON
--- ============================================================
-
-function Section:AddButton(
-    text,
-    callback
-)
-
-    local Row =
-        self:CreateRow(42)
-
-
-    local Button =
-        Create(
-            "TextButton",
-            {
-                Parent = Row,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        8,
-                        0,
-                        7
-                    ),
-
-                Size =
-                    UDim2.new(
-                        1,
-                        -16,
-                        1,
-                        -14
-                    ),
-
-                BackgroundColor3 =
-                    Theme.AccentSoft,
-
-                BorderSizePixel = 0,
-
-                Font =
-                    Enum.Font.GothamBold,
-
-                Text =
-                    string.upper(
-                        tostring(text)
-                    ),
-
-                TextColor3 =
-                    Theme.Text,
-
-                TextSize = 11,
-
-                AutoButtonColor = false
-            }
-        )
-
-
-    AddStroke(
-        Button,
-        Theme.Accent,
-        0.25,
-        1
-    )
-
-
-    Button.MouseButton1Click
-        :Connect(
-            function()
-
-                if callback then
-                    callback()
-                end
-            end
-        )
-
-
-    return Button
-end
-
-
--- ============================================================
--- TEXTBOX
--- ============================================================
-
-function Section:AddTextbox(
-    id,
-    text,
-    placeholder,
-    callback,
-    save
-)
-
-    local Row =
-        self:CreateRow(56)
-
-
-    Create(
-        "TextLabel",
-        {
-            Parent = Row,
-
-            BackgroundTransparency = 1,
-
-            Position =
-                UDim2.new(
-                    0,
-                    10,
-                    0,
-                    5
-                ),
-
-            Size =
-                UDim2.new(
-                    1,
-                    -20,
-                    0,
-                    18
-                ),
-
-            Font =
-                Enum.Font.GothamMedium,
-
-            Text =
-                tostring(text),
-
-            TextColor3 =
-                Theme.Text,
-
-            TextSize = 11,
-
-            TextXAlignment =
-                Enum.TextXAlignment.Left
         }
-    )
 
 
-    local Box =
-        Create(
-            "TextBox",
-            {
-                Parent = Row,
+        -- ====================================================
+        -- SECTION WRAPPER
+        -- ====================================================
 
-                Position =
-                    UDim2.new(
-                        0,
-                        9,
-                        0,
-                        27
-                    ),
+        local Wrapper =
+            New(
+                "Frame",
+                {
+                    Parent =
+                        tab.Page,
 
-                Size =
-                    UDim2.new(
+                    BackgroundTransparency =
                         1,
-                        -18,
-                        0,
-                        23
-                    ),
 
-                BackgroundColor3 =
-                    Color3.fromRGB(
-                        10,
-                        14,
-                        13
-                    ),
+                    Size =
+                        UDim2.new(
+                            1,
+                            0,
+                            0,
+                            32
+                        ),
 
-                BorderSizePixel = 0,
+                    AutomaticSize =
+                        Enum.AutomaticSize.Y,
 
-                Font =
-                    Enum.Font.Gotham,
-
-                PlaceholderText =
-                    tostring(
-                        placeholder
-                        or ""
-                    ),
-
-                PlaceholderColor3 =
-                    Theme.Disabled,
-
-                Text = "",
-
-                TextColor3 =
-                    Theme.Text,
-
-                TextSize = 11,
-
-                ClearTextOnFocus =
-                    false,
-
-                TextXAlignment =
-                    Enum.TextXAlignment.Left
-            }
-        )
+                    LayoutOrder =
+                        sectionOrder
+                }
+            )
 
 
-    AddStroke(
-        Box,
-        Theme.Stroke,
-        0.3,
-        1
-    )
+        local WrapperLayout =
+            New(
+                "UIListLayout",
+                {
+                    Parent =
+                        Wrapper,
+
+                    SortOrder =
+                        Enum.SortOrder.LayoutOrder,
+
+                    Padding =
+                        UDim.new(
+                            0,
+                            6
+                        )
+                }
+            )
 
 
-    Box.FocusLost
-        :Connect(
-            function()
+        -- ====================================================
+        -- SECTION HEADER
+        -- ====================================================
 
-                if callback then
-                    callback(
-                        Box.Text
-                    )
-                end
-            end
-        )
+        local Header =
+            New(
+                "TextButton",
+                {
+                    Parent =
+                        Wrapper,
 
-
-    local Control = {
-
-        Type = "Textbox",
-
-        Get =
-            function()
-
-                return Box.Text
-            end,
-
-        Set =
-            function(value)
-
-                Box.Text =
-                    tostring(
-                        value
-                        or ""
-                    )
-            end
-    }
-
-
-    RegisterControl(
-    self.Window,
-    id,
-    Control,
-    save
-    )
-
-
-    return Control
-end
-
-
--- ============================================================
--- DROPDOWN
--- ============================================================
-
-function Section:AddDropdown(
-    id,
-    text,
-    options,
-    multi,
-    defaultValue,
-    callback,
-    save
-)
-
-    local window =
-        self.Window
-
-
-    local Row =
-        self:CreateRow(55)
-
-
-    Create(
-        "TextLabel",
-        {
-            Parent = Row,
-
-            BackgroundTransparency = 1,
-
-            Position =
-                UDim2.new(
-                    0,
-                    10,
-                    0,
-                    4
-                ),
-
-            Size =
-                UDim2.new(
-                    1,
-                    -20,
-                    0,
-                    18
-                ),
-
-            Font =
-                Enum.Font.GothamMedium,
-
-            Text =
-                tostring(text),
-
-            TextColor3 =
-                Theme.Text,
-
-            TextSize = 11,
-
-            TextXAlignment =
-                Enum.TextXAlignment.Left
-        }
-    )
-
-
-    local Button =
-        Create(
-            "TextButton",
-            {
-                Parent = Row,
-
-                Position =
-                    UDim2.new(
-                        0,
-                        9,
-                        0,
-                        26
-                    ),
-
-                Size =
-                    UDim2.new(
+                    BackgroundTransparency =
                         1,
-                        -18,
+
+                    Size =
+                        UDim2.new(
+                            1,
+                            0,
+                            0,
+                            30
+                        ),
+
+                    LayoutOrder =
                         0,
-                        24
-                    ),
 
-                BackgroundColor3 =
-                    Color3.fromRGB(
-                        10,
-                        14,
-                        13
-                    ),
+                    AutoButtonColor =
+                        false,
 
-                BorderSizePixel = 0,
+                    Text =
+                        ""
+                }
+            )
 
-                Font =
-                    Enum.Font.Gotham,
 
-                Text = "Select",
+        local HeaderTitle =
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        Header,
 
-                TextColor3 =
-                    Theme.Muted,
+                    BackgroundTransparency =
+                        1,
 
-                TextSize = 11,
+                    Position =
+                        UDim2.new(
+                            0,
+                            2,
+                            0,
+                            0
+                        ),
 
-                TextXAlignment =
-                    Enum.TextXAlignment.Left,
+                    Size =
+                        UDim2.new(
+                            1,
+                            -30,
+                            1,
+                            -2
+                        ),
 
-                AutoButtonColor = false
-            }
+                    Font =
+                        Enum.Font.GothamBold,
+
+                    Text =
+                        string.upper(
+                            tostring(
+                                title or ""
+                            )
+                        ),
+
+                    TextColor3 =
+                        Theme.Text,
+
+                    TextSize =
+                        12,
+
+                    TextXAlignment =
+                        Enum.TextXAlignment.Left
+                }
+            )
+
+
+        local Arrow =
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        Header,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            1,
+                            -22,
+                            0,
+                            0
+                        ),
+
+                    Size =
+                        UDim2.fromOffset(
+                            20,
+                            28
+                        ),
+
+                    Font =
+                        Enum.Font.GothamBold,
+
+                    Text =
+                        "▼",
+
+                    TextColor3 =
+                        Theme.SubText,
+
+                    TextSize =
+                        10
+                }
+            )
+
+
+        local HeaderLine =
+            New(
+                "Frame",
+                {
+                    Parent =
+                        Header,
+
+                    BackgroundColor3 =
+                        Theme.Accent,
+
+                    BackgroundTransparency =
+                        0.08,
+
+                    BorderSizePixel =
+                        0,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            0,
+                            1,
+                            -2
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            1,
+                            0,
+                            0,
+                            2
+                        )
+                }
+            )
+
+
+        local ItemsHolder =
+            New(
+                "Frame",
+                {
+                    Parent =
+                        Wrapper,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Size =
+                        UDim2.new(
+                            1,
+                            0,
+                            0,
+                            0
+                        ),
+
+                    AutomaticSize =
+                        Enum.AutomaticSize.Y,
+
+                    LayoutOrder =
+                        1
+                }
+            )
+
+
+        local ItemsLayout =
+            New(
+                "UIListLayout",
+                {
+                    Parent =
+                        ItemsHolder,
+
+                    SortOrder =
+                        Enum.SortOrder.LayoutOrder,
+
+                    Padding =
+                        UDim.new(
+                            0,
+                            6
+                        )
+                }
+            )
+
+
+        Section.Wrapper =
+            Wrapper
+
+        Section.ItemsHolder =
+            ItemsHolder
+
+
+        Header.MouseButton1Click:
+        Connect(function()
+
+            Section.Open =
+                not Section.Open
+
+
+            ItemsHolder.Visible =
+                Section.Open
+
+
+            Arrow.Text =
+                Section.Open
+                and "▼"
+                or "▲"
+
+
+            self:
+            CloseDropdown()
+
+        end)
+
+
+        -- ====================================================
+        -- CARD CREATOR
+        -- ====================================================
+
+        local function CreateCard(
+            height
         )
 
+            Section.ItemCounter +=
+                1
 
-    AddStroke(
-        Button,
-        Theme.Stroke,
-        0.3,
-        1
-    )
 
-
-    local List =
-        Create(
-            "ScrollingFrame",
-            {
-                Parent =
-                    window.ScreenGui,
-
-                Size =
-                    UDim2.new(
-                        0,
-                        220,
-                        0,
-                        120
-                    ),
-
-                BackgroundColor3 =
-                    Color3.fromRGB(
-                        10,
-                        14,
-                        13
-                    ),
-
-                BorderSizePixel = 0,
-
-                Visible = false,
-
-                ZIndex = 100,
-
-                ScrollBarThickness = 2,
-
-                CanvasSize =
-                    UDim2.new(),
-
-                AutomaticCanvasSize =
-                    Enum.AutomaticSize.Y
-            }
-        )
-
-
-    AddStroke(
-        List,
-        Theme.Stroke,
-        0,
-        1
-    )
-
-
-    Create(
-        "UIListLayout",
-        {
-            Parent = List,
-
-            SortOrder =
-                Enum.SortOrder.LayoutOrder
-        }
-    )
-
-
-    local selected =
-        multi
-        and {}
-        or nil
-
-
-    if multi
-        and type(defaultValue)
-            == "table"
-    then
-
-        for key, value
-            in pairs(defaultValue)
-        do
-
-            if value then
-                selected[key] = true
-            end
-        end
-
-    elseif not multi then
-
-        selected =
-            defaultValue
-    end
-
-
-    local function UpdateText()
-
-        if multi then
-
-            local names = {}
-
-            for name, enabled
-                in pairs(selected)
-            do
-
-                if enabled then
-                    table.insert(
-                        names,
-                        name
-                    )
-                end
-            end
-
-            table.sort(names)
-
-            if #names == 0 then
-
-                Button.Text =
-                    "  Select"
-
-            elseif #names == 1 then
-
-                Button.Text =
-                    "  " .. names[1]
-
-            else
-
-                Button.Text =
-                    "  "
-                    .. tostring(#names)
-                    .. " selected"
-            end
-
-        else
-
-            Button.Text =
-                "  "
-                .. tostring(
-                    selected
-                    or "Select"
-                )
-
-        end
-    end
-
-
-    local Dropdown = {}
-
-
-    function Dropdown:Close()
-
-        List.Visible =
-            false
-    end
-
-
-    function Dropdown:Open()
-
-        if window.ActiveDropdown
-            and window.ActiveDropdown
-                ~= Dropdown
-        then
-
-            window.ActiveDropdown
-                :Close()
-        end
-
-
-        local pos =
-            Button.AbsolutePosition
-
-        local size =
-            Button.AbsoluteSize
-
-
-        List.Position =
-            UDim2.fromOffset(
-                pos.X,
-                pos.Y
-                    + size.Y
-                    + 3
-            )
-
-
-        List.Size =
-            UDim2.fromOffset(
-                size.X,
-                120
-            )
-
-
-        List.Visible =
-            true
-
-
-        window.ActiveDropdown =
-            Dropdown
-    end
-
-
-    Dropdown.Button =
-        Button
-
-    Dropdown.List =
-        List
-
-
-    Button.MouseButton1Click
-        :Connect(
-            function()
-
-                if List.Visible then
-
-                    Dropdown:Close()
-
-                    window.ActiveDropdown =
-                        nil
-
-                else
-
-                    Dropdown:Open()
-
-                end
-            end
-        )
-
-
-    local function RebuildOptions()
-
-        for _, child
-            in ipairs(
-                List:GetChildren()
-            )
-        do
-
-            if child:IsA(
-                "TextButton"
-            )
-            then
-                child:Destroy()
-            end
-        end
-
-
-        for index, option
-            in ipairs(options or {})
-        do
-
-            local Option =
-                Create(
-                    "TextButton",
+            local card =
+                New(
+                    "Frame",
                     {
-                        Parent = List,
+                        Parent =
+                            ItemsHolder,
+
+                        BackgroundColor3 =
+                            Theme.Card,
+
+                        BackgroundTransparency =
+                            0.20,
+
+                        BorderSizePixel =
+                            0,
 
                         Size =
                             UDim2.new(
                                 1,
                                 0,
                                 0,
+                                height or 48
+                            ),
+
+                        LayoutOrder =
+                            Section.ItemCounter
+                    }
+                )
+
+
+            Corner(
+                card,
+                9
+            )
+
+
+            Stroke(
+                card,
+                Theme.CardStroke,
+                0.56,
+                1
+            )
+
+
+            table.insert(
+                Section.Items,
+                card
+            )
+
+
+            return card
+        end
+
+
+        local function CreateText(
+            card,
+            label
+        )
+
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        card,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            12,
+                            0,
+                            7
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            0.68,
+                            0,
+                            0,
+                            18
+                        ),
+
+                    Font =
+                        Enum.Font.GothamBold,
+
+                    Text =
+                        label,
+
+                    TextColor3 =
+                        Theme.Text,
+
+                    TextSize =
+                        12,
+
+                    TextXAlignment =
+                        Enum.TextXAlignment.Left
+                }
+            )
+
+
+            return New(
+                "TextLabel",
+                {
+                    Parent =
+                        card,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            12,
+                            0,
+                            25
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            0.68,
+                            0,
+                            0,
+                            15
+                        ),
+
+                    Font =
+                        Enum.Font.Gotham,
+
+                    Text =
+                        "Status: Nonaktif / Aktif",
+
+                    TextColor3 =
+                        Theme.SubText,
+
+                    TextSize =
+                        9,
+
+                    TextXAlignment =
+                        Enum.TextXAlignment.Left
+                }
+            )
+
+        end
+
+
+        -- ====================================================
+        -- TOGGLE
+        -- ====================================================
+
+        function Section:AddToggle(
+            id,
+            label,
+            default,
+            callback,
+            save
+        )
+
+            local card =
+                CreateCard(
+                    48
+                )
+
+
+            local sub =
+                CreateText(
+                    card,
+                    label
+                )
+
+
+            local box =
+                New(
+                    "TextButton",
+                    {
+                        Parent =
+                            card,
+
+                        BackgroundColor3 =
+                            Theme.ToggleOff,
+
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.new(
+                                1,
+                                -51,
+                                0,
+                                12
+                            ),
+
+                        Size =
+                            UDim2.fromOffset(
+                                40,
+                                24
+                            ),
+
+                        Text =
+                            "",
+
+                        AutoButtonColor =
+                            false
+                    }
+                )
+
+
+            Corner(
+                box,
+                12
+            )
+
+
+            local indicator =
+                New(
+                    "Frame",
+                    {
+                        Parent =
+                            box,
+
+                        BackgroundColor3 =
+                            Theme.ToggleDot,
+
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.fromOffset(
+                                3,
+                                3
+                            ),
+
+                        Size =
+                            UDim2.fromOffset(
+                                18,
+                                18
+                            )
+                    }
+                )
+
+
+            Corner(
+                indicator,
+                9
+            )
+
+
+            local state =
+                default == true
+
+
+            local control = {}
+
+
+            local function Render(
+                instant
+            )
+
+                sub.Text =
+                    state
+                    and "Status: Aktif"
+                    or "Status: Nonaktif"
+
+
+                local boxColor =
+                    state
+                    and Theme.Accent
+                    or Theme.ToggleOff
+
+
+                local position =
+                    state
+                    and UDim2.new(
+                        1,
+                        -21,
+                        0,
+                        3
+                    )
+                    or UDim2.fromOffset(
+                        3,
+                        3
+                    )
+
+
+                local dotColor =
+                    state
+                    and Color3.new(
+                        1,
+                        1,
+                        1
+                    )
+                    or Theme.ToggleDot
+
+
+                if instant then
+
+                    box.BackgroundColor3 =
+                        boxColor
+
+                    indicator.Position =
+                        position
+
+                    indicator.BackgroundColor3 =
+                        dotColor
+
+                else
+
+                    TweenService:
+                    Create(
+                        box,
+                        TweenInfo.new(
+                            0.16
+                        ),
+                        {
+                            BackgroundColor3 =
+                                boxColor
+                        }
+                    ):
+                    Play()
+
+
+                    TweenService:
+                    Create(
+                        indicator,
+                        TweenInfo.new(
+                            0.16
+                        ),
+                        {
+                            Position =
+                                position,
+
+                            BackgroundColor3 =
+                                dotColor
+                        }
+                    ):
+                    Play()
+
+                end
+
+            end
+
+
+            control.Get =
+                function()
+                    return state
+                end
+
+
+            control.Set =
+                SetControlMethod(
+                    control,
+
+                    function(
+                        value,
+                        invoke
+                    )
+
+                        local newState =
+                            value == true
+
+
+                        local changed =
+                            state
+                            ~= newState
+
+
+                        state =
+                            newState
+
+
+                        Render(
+                            not changed
+                        )
+
+
+                        if invoke
+                                ~= false
+                            and type(callback)
+                                == "function"
+                        then
+
+                            callback(
+                                state
+                            )
+
+                        end
+
+
+                        return state
+
+                    end
+                )
+
+
+            box.MouseButton1Click:
+            Connect(function()
+
+                control.Set(
+                    not state,
+                    true
+                )
+
+            end)
+
+
+            Render(
+                true
+            )
+
+
+            return RegisterControl(
+                id,
+                control,
+                save
+            )
+        end
+
+
+        -- ====================================================
+        -- CHECKBOX
+        -- ====================================================
+
+        function Section:AddCheckbox(
+            id,
+            label,
+            default,
+            callback,
+            save
+        )
+
+            local card =
+                CreateCard(
+                    44
+                )
+
+
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        card,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            12,
+                            0,
+                            0
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            1,
+                            -58,
+                            1,
+                            0
+                        ),
+
+                    Font =
+                        Enum.Font.GothamBold,
+
+                    Text =
+                        label,
+
+                    TextColor3 =
+                        Theme.Text,
+
+                    TextSize =
+                        12,
+
+                    TextXAlignment =
+                        Enum.TextXAlignment.Left
+                }
+            )
+
+
+            local box =
+                New(
+                    "TextButton",
+                    {
+                        Parent =
+                            card,
+
+                        BackgroundColor3 =
+                            Color3.fromRGB(
+                                24,
+                                28,
                                 28
                             ),
 
-                        BackgroundColor3 =
-                            Theme.Card,
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.new(
+                                1,
+                                -39,
+                                0.5,
+                                -10
+                            ),
+
+                        Size =
+                            UDim2.fromOffset(
+                                20,
+                                20
+                            ),
+
+                        Text =
+                            "",
+
+                        AutoButtonColor =
+                            false
+                    }
+                )
+
+
+            Corner(
+                box,
+                4
+            )
+
+
+            local boxStroke =
+                Stroke(
+                    box,
+                    Color3.fromRGB(
+                        100,
+                        106,
+                        108
+                    ),
+                    0.25,
+                    1.2
+                )
+
+
+            local check =
+                New(
+                    "TextLabel",
+                    {
+                        Parent =
+                            box,
 
                         BackgroundTransparency =
-                            0.15,
+                            1,
 
-                        BorderSizePixel = 0,
+                        Size =
+                            UDim2.fromScale(
+                                1,
+                                1
+                            ),
+
+                        Font =
+                            Enum.Font.GothamBold,
+
+                        Text =
+                            "✓",
+
+                        TextColor3 =
+                            Color3.new(
+                                1,
+                                1,
+                                1
+                            ),
+
+                        TextSize =
+                            14,
+
+                        Visible =
+                            false
+                    }
+                )
+
+
+            local state =
+                default == true
+
+
+            local control = {}
+
+
+            local function Render()
+
+                check.Visible =
+                    state
+
+
+                box.BackgroundColor3 =
+                    state
+                    and Theme.Accent
+                    or Color3.fromRGB(
+                        24,
+                        28,
+                        28
+                    )
+
+
+                boxStroke.Color =
+                    state
+                    and Theme.AccentSoft
+                    or Color3.fromRGB(
+                        100,
+                        106,
+                        108
+                    )
+
+            end
+
+
+            control.Get =
+                function()
+                    return state
+                end
+
+
+            control.Set =
+                SetControlMethod(
+                    control,
+
+                    function(
+                        value,
+                        invoke
+                    )
+
+                        state =
+                            value == true
+
+
+                        Render()
+
+
+                        if invoke
+                                ~= false
+                            and type(callback)
+                                == "function"
+                        then
+
+                            callback(
+                                state
+                            )
+
+                        end
+
+
+                        return state
+
+                    end
+                )
+
+
+            box.MouseButton1Click:
+            Connect(function()
+
+                control.Set(
+                    not state,
+                    true
+                )
+
+            end)
+
+
+            Render()
+
+
+            return RegisterControl(
+                id,
+                control,
+                save
+            )
+        end
+
+
+        -- ====================================================
+        -- BUTTON
+        -- ====================================================
+
+        function Section:AddButton(
+            label,
+            callback
+        )
+
+            local card =
+                CreateCard(
+                    42
+                )
+
+
+            local button =
+                New(
+                    "TextButton",
+                    {
+                        Parent =
+                            card,
+
+                        BackgroundColor3 =
+                            Theme.Dropdown,
+
+                        BackgroundTransparency =
+                            0.08,
+
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.new(
+                                0,
+                                9,
+                                0,
+                                7
+                            ),
+
+                        Size =
+                            UDim2.new(
+                                1,
+                                -18,
+                                1,
+                                -14
+                            ),
+
+                        Font =
+                            Enum.Font.GothamBold,
+
+                        Text =
+                            label,
+
+                        TextColor3 =
+                            Theme.Text,
+
+                        TextSize =
+                            11,
+
+                        AutoButtonColor =
+                            false
+                    }
+                )
+
+
+            Corner(
+                button,
+                7
+            )
+
+
+            button.MouseEnter:
+            Connect(function()
+
+                TweenService:
+                Create(
+                    button,
+                    TweenInfo.new(
+                        0.12
+                    ),
+                    {
+                        BackgroundColor3 =
+                            Color3.fromRGB(
+                                52,
+                                40,
+                                41
+                            )
+                    }
+                ):
+                Play()
+
+            end)
+
+
+            button.MouseLeave:
+            Connect(function()
+
+                TweenService:
+                Create(
+                    button,
+                    TweenInfo.new(
+                        0.12
+                    ),
+                    {
+                        BackgroundColor3 =
+                            Theme.Dropdown
+                    }
+                ):
+                Play()
+
+            end)
+
+
+            button.MouseButton1Click:
+            Connect(function()
+
+                if type(callback)
+                    == "function"
+                then
+
+                    task.spawn(
+                        callback
+                    )
+
+                end
+
+            end)
+
+
+            return button
+        end
+
+
+        -- ====================================================
+        -- TEXTBOX
+        -- ====================================================
+
+        function Section:AddTextbox(
+            id,
+            label,
+            placeholder,
+            callback,
+            save
+        )
+
+            local card =
+                CreateCard(
+                    48
+                )
+
+
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        card,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            12,
+                            0,
+                            0
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            0.44,
+                            0,
+                            1,
+                            0
+                        ),
+
+                    Font =
+                        Enum.Font.GothamBold,
+
+                    Text =
+                        label,
+
+                    TextColor3 =
+                        Theme.Text,
+
+                    TextSize =
+                        12,
+
+                    TextXAlignment =
+                        Enum.TextXAlignment.Left
+                }
+            )
+
+
+            local textbox =
+                New(
+                    "TextBox",
+                    {
+                        Parent =
+                            card,
+
+                        BackgroundColor3 =
+                            Theme.Dropdown,
+
+                        BackgroundTransparency =
+                            0.10,
+
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.new(
+                                0.48,
+                                0,
+                                0,
+                                8
+                            ),
+
+                        Size =
+                            UDim2.new(
+                                0.49,
+                                0,
+                                0,
+                                32
+                            ),
+
+                        Font =
+                            Enum.Font.Gotham,
+
+                        PlaceholderText =
+                            placeholder
+                            or "",
+
+                        PlaceholderColor3 =
+                            Theme.SubText,
+
+                        Text =
+                            "",
+
+                        TextColor3 =
+                            Theme.Text,
+
+                        TextSize =
+                            11,
+
+                        ClearTextOnFocus =
+                            false
+                    }
+                )
+
+
+            Corner(
+                textbox,
+                7
+            )
+
+
+            Stroke(
+                textbox,
+                Theme.CardStroke,
+                0.65,
+                1
+            )
+
+
+            local state =
+                ""
+
+
+            local control = {}
+
+
+            control.Get =
+                function()
+                    return state
+                end
+
+
+            control.Set =
+                SetControlMethod(
+                    control,
+
+                    function(
+                        value,
+                        invoke
+                    )
+
+                        state =
+                            tostring(
+                                value or ""
+                            )
+
+
+                        textbox.Text =
+                            state
+
+
+                        if invoke
+                                ~= false
+                            and type(callback)
+                                == "function"
+                        then
+
+                            callback(
+                                state
+                            )
+
+                        end
+
+
+                        return state
+
+                    end
+                )
+
+
+            textbox.FocusLost:
+            Connect(function()
+
+                state =
+                    textbox.Text
+
+
+                if type(callback)
+                    == "function"
+                then
+
+                    callback(
+                        state
+                    )
+
+                end
+
+            end)
+
+
+            return RegisterControl(
+                id,
+                control,
+                save
+            )
+        end
+
+
+        -- ====================================================
+        -- DROPDOWN
+        -- ====================================================
+
+        function Section:AddDropdown(
+            id,
+            label,
+            options,
+            multi,
+            default,
+            callback,
+            save
+        )
+
+            options =
+                CopyTable(
+                    options
+                )
+
+
+            local card =
+                CreateCard(
+                    48
+                )
+
+
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        card,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            12,
+                            0,
+                            7
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            0.49,
+                            0,
+                            0,
+                            18
+                        ),
+
+                    Font =
+                        Enum.Font.GothamBold,
+
+                    Text =
+                        label,
+
+                    TextColor3 =
+                        Theme.Text,
+
+                    TextSize =
+                        12,
+
+                    TextXAlignment =
+                        Enum.TextXAlignment.Left
+                }
+            )
+
+
+            New(
+                "TextLabel",
+                {
+                    Parent =
+                        card,
+
+                    BackgroundTransparency =
+                        1,
+
+                    Position =
+                        UDim2.new(
+                            0,
+                            12,
+                            0,
+                            25
+                        ),
+
+                    Size =
+                        UDim2.new(
+                            0.49,
+                            0,
+                            0,
+                            15
+                        ),
+
+                    Font =
+                        Enum.Font.Gotham,
+
+                    Text =
+                        multi
+                        and "Select Option"
+                        or "Select Option",
+
+                    TextColor3 =
+                        Theme.SubText,
+
+                    TextSize =
+                        9,
+
+                    TextXAlignment =
+                        Enum.TextXAlignment.Left
+                }
+            )
+
+
+            local mainButton =
+                New(
+                    "TextButton",
+                    {
+                        Parent =
+                            card,
+
+                        BackgroundColor3 =
+                            Theme.Dropdown,
+
+                        BackgroundTransparency =
+                            0.10,
+
+                        BorderSizePixel =
+                            0,
+
+                        Position =
+                            UDim2.new(
+                                0.53,
+                                0,
+                                0,
+                                8
+                            ),
+
+                        Size =
+                            UDim2.new(
+                                0.44,
+                                0,
+                                0,
+                                32
+                            ),
 
                         Font =
                             Enum.Font.Gotham,
 
                         Text =
-                            "  "
-                            .. tostring(
-                                option
-                            ),
+                            "Select...  ▼",
 
                         TextColor3 =
                             Theme.Text,
 
-                        TextSize = 11,
+                        TextSize =
+                            10,
 
-                        TextXAlignment =
-                            Enum.TextXAlignment.Left,
-
-                        LayoutOrder =
-                            index,
-
-                        ZIndex = 101,
-
-                        AutoButtonColor = false
+                        AutoButtonColor =
+                            false
                     }
                 )
 
 
-            Option.MouseButton1Click
-                :Connect(
+            Corner(
+                mainButton,
+                7
+            )
+
+
+            local Popup =
+                New(
+                    "ScrollingFrame",
+                    {
+                        Parent =
+                            ScreenGui,
+
+                        BackgroundColor3 =
+                            Color3.fromRGB(
+                                12,
+                                16,
+                                15
+                            ),
+
+                        BackgroundTransparency =
+                            0.03,
+
+                        BorderSizePixel =
+                            0,
+
+                        Size =
+                            UDim2.fromOffset(
+                                0,
+                                0
+                            ),
+
+                        CanvasSize =
+                            UDim2.new(
+                                0,
+                                0,
+                                0,
+                                0
+                            ),
+
+                        AutomaticCanvasSize =
+                            Enum.AutomaticSize.Y,
+
+                        ScrollBarThickness =
+                            2,
+
+                        ScrollBarImageColor3 =
+                            Theme.Accent,
+
+                        ScrollBarImageTransparency =
+                            0.2,
+
+                        Visible =
+                            false,
+
+                        ZIndex =
+                            10000
+                    }
+                )
+
+
+            Corner(
+                Popup,
+                7
+            )
+
+
+            Stroke(
+                Popup,
+                Theme.Accent,
+                0.55,
+                1
+            )
+
+
+            local PopupLayout =
+                New(
+                    "UIListLayout",
+                    {
+                        Parent =
+                            Popup,
+
+                        SortOrder =
+                            Enum.SortOrder.LayoutOrder
+                    }
+                )
+
+
+            local state
+
+
+            if multi then
+
+                state =
+                    type(default)
+                        == "table"
+                    and CopyTable(
+                        default
+                    )
+                    or {}
+
+            else
+
+                state =
+                    default
+
+            end
+
+
+            local control = {
+
+                OptionButtons =
+                    {},
+
+                Open =
+                    false
+
+            }
+
+
+            local function UpdateText()
+
+                if multi then
+
+                    local selected = {}
+
+
+                    for _, option
+                        in ipairs(options)
+                    do
+
+                        if state[option]
+                            == true
+                        then
+
+                            table.insert(
+                                selected,
+                                option
+                            )
+
+                        end
+                    end
+
+
+                    if #selected == 0 then
+
+                        mainButton.Text =
+                            "Select...  ▼"
+
+                    elseif #selected == 1 then
+
+                        mainButton.Text =
+                            tostring(
+                                selected[1]
+                            )
+                            .. "  ▼"
+
+                    else
+
+                        mainButton.Text =
+                            tostring(
+                                selected[1]
+                            )
+                            .. " (+"
+                            .. tostring(
+                                #selected - 1
+                            )
+                            .. ")  ▼"
+
+                    end
+
+                else
+
+                    mainButton.Text =
+                        state ~= nil
+                        and (
+                            tostring(
+                                state
+                            )
+                            .. "  ▼"
+                        )
+                        or "Select...  ▼"
+
+                end
+
+            end
+
+
+            local function StyleOptions()
+
+                for option, button
+                    in pairs(
+                        control.OptionButtons
+                    )
+                do
+
+                    local selected
+
+
+                    if multi then
+
+                        selected =
+                            state[option]
+                            == true
+
+                    else
+
+                        selected =
+                            state
+                            == option
+
+                    end
+
+
+                    button.BackgroundColor3 =
+                        selected
+                        and Theme.Accent
+                        or Theme.DropdownOption
+
+
+                    button.BackgroundTransparency =
+                        selected
+                        and 0.25
+                        or 0.40
+
+
+                    button.TextColor3 =
+                        selected
+                        and Color3.new(
+                            1,
+                            1,
+                            1
+                        )
+                        or Color3.fromRGB(
+                            195,
+                            200,
+                            202
+                        )
+
+                end
+
+            end
+
+
+            local function Render()
+
+                UpdateText()
+                StyleOptions()
+
+            end
+
+
+            local function ClosePopup()
+
+                if not control.Open then
+
+                    Popup.Visible =
+                        false
+
+                    return
+                end
+
+
+                control.Open =
+                    false
+
+
+                TweenService:
+                Create(
+                    Popup,
+                    TweenInfo.new(
+                        0.14
+                    ),
+                    {
+                        Size =
+                            UDim2.fromOffset(
+                                mainButton.AbsoluteSize.X,
+                                0
+                            )
+                    }
+                ):
+                Play()
+
+
+                task.delay(
+                    0.14,
+
                     function()
+
+                        if not control.Open then
+
+                            Popup.Visible =
+                                false
+
+                        end
+
+                    end
+                )
+
+            end
+
+
+            local function OpenPopup()
+
+                if Window.OpenDropdown
+                    and Window.OpenDropdown
+                        ~= control
+                then
+
+                    Window:
+                    CloseDropdown()
+
+                end
+
+
+                local absolutePosition =
+                    mainButton.AbsolutePosition
+
+
+                local absoluteSize =
+                    mainButton.AbsoluteSize
+
+
+                local height =
+                    math.min(
+                        math.max(
+                            #options * 28,
+                            28
+                        ),
+                        140
+                    )
+
+
+                Popup.Position =
+                    UDim2.fromOffset(
+                        absolutePosition.X,
+                        absolutePosition.Y
+                            + absoluteSize.Y
+                            + 4
+                    )
+
+
+                Popup.Size =
+                    UDim2.fromOffset(
+                        absoluteSize.X,
+                        0
+                    )
+
+
+                Popup.Visible =
+                    true
+
+
+                control.Open =
+                    true
+
+
+                Window.OpenDropdown =
+                    control
+
+
+                TweenService:
+                Create(
+                    Popup,
+                    TweenInfo.new(
+                        0.14
+                    ),
+                    {
+                        Size =
+                            UDim2.fromOffset(
+                                absoluteSize.X,
+                                height
+                            )
+                    }
+                ):
+                Play()
+
+            end
+
+
+            control.Close =
+                ClosePopup
+
+
+            local function RebuildOptions()
+
+                for _, child
+                    in ipairs(
+                        Popup:GetChildren()
+                    )
+                do
+
+                    if child:IsA(
+                        "TextButton"
+                    )
+                    then
+
+                        child:
+                        Destroy()
+
+                    end
+
+                end
+
+
+                table.clear(
+                    control.OptionButtons
+                )
+
+
+                for index, option
+                    in ipairs(options)
+                do
+
+                    local button =
+                        New(
+                            "TextButton",
+                            {
+                                Parent =
+                                    Popup,
+
+                                BackgroundColor3 =
+                                    Theme.DropdownOption,
+
+                                BackgroundTransparency =
+                                    0.4,
+
+                                BorderSizePixel =
+                                    0,
+
+                                Size =
+                                    UDim2.new(
+                                        1,
+                                        0,
+                                        0,
+                                        28
+                                    ),
+
+                                LayoutOrder =
+                                    index,
+
+                                Font =
+                                    Enum.Font.Gotham,
+
+                                Text =
+                                    "   "
+                                    .. tostring(
+                                        option
+                                    ),
+
+                                TextColor3 =
+                                    Color3.fromRGB(
+                                        195,
+                                        200,
+                                        202
+                                    ),
+
+                                TextSize =
+                                    10,
+
+                                TextXAlignment =
+                                    Enum.TextXAlignment.Left,
+
+                                AutoButtonColor =
+                                    false,
+
+                                ZIndex =
+                                    10001
+                            }
+                        )
+
+
+                    control.OptionButtons[
+                        option
+                    ] =
+                        button
+
+
+                    button.MouseButton1Click:
+                    Connect(function()
 
                         if multi then
 
-                            selected[option] =
-                                not selected[option]
+                            if state[option]
+                                == true
+                            then
 
-                            UpdateText()
+                                state[option] =
+                                    nil
 
-                            if callback then
+                            else
+
+                                state[option] =
+                                    true
+
+                            end
+
+
+                            Render()
+
+
+                            if type(callback)
+                                == "function"
+                            then
+
                                 callback(
-                                    selected
+                                    CopyTable(
+                                        state
+                                    )
                                 )
+
                             end
 
                         else
 
-                            selected =
+                            state =
                                 option
 
-                            UpdateText()
 
-                            Dropdown:Close()
+                            Render()
 
-                            window.ActiveDropdown =
-                                nil
 
-                            if callback then
+                            ClosePopup()
+
+
+                            if Window.OpenDropdown
+                                == control
+                            then
+
+                                Window.OpenDropdown =
+                                    nil
+
+                            end
+
+
+                            if type(callback)
+                                == "function"
+                            then
+
                                 callback(
-                                    selected
+                                    state
                                 )
+
                             end
 
                         end
+
+                    end)
+
+                end
+
+
+                Render()
+
+            end
+
+
+            control.Get =
+                function()
+
+                    if multi then
+
+                        return
+                            CopyTable(
+                                state
+                            )
+
+                    end
+
+
+                    return state
+
+                end
+
+
+            control.Set =
+                SetControlMethod(
+                    control,
+
+                    function(
+                        value,
+                        invoke
+                    )
+
+                        if multi then
+
+                            state =
+                                type(value)
+                                    == "table"
+                                and CopyTable(
+                                    value
+                                )
+                                or {}
+
+                        else
+
+                            state =
+                                value
+
+                        end
+
+
+                        Render()
+
+
+                        if invoke
+                                ~= false
+                            and type(callback)
+                                == "function"
+                        then
+
+                            if multi then
+
+                                callback(
+                                    CopyTable(
+                                        state
+                                    )
+                                )
+
+                            else
+
+                                callback(
+                                    state
+                                )
+
+                            end
+
+                        end
+
+
+                        return
+                            control.Get()
+
                     end
                 )
-        end
-    end
 
 
-    RebuildOptions()
+            control.SetOptions =
+                SetControlMethod(
+                    control,
 
-    UpdateText()
+                    function(
+                        newOptions,
+                        preserve
+                    )
+
+                        options =
+                            type(newOptions)
+                                == "table"
+                            and CopyTable(
+                                newOptions
+                            )
+                            or {}
 
 
-    local Control = {
+                        if preserve
+                            == false
+                        then
 
-        Type =
-            multi
-            and "MultiDropdown"
-            or "Dropdown",
+                            if multi then
 
-        Get =
-            function()
+                                state =
+                                    {}
 
-                if multi then
+                            else
 
-                    local copy = {}
+                                state =
+                                    nil
 
-                    for key, value
-                        in pairs(selected)
-                    do
-                        copy[key] =
-                            value
+                            end
+
+                        else
+
+                            if multi then
+
+                                local allowed = {}
+
+
+                                for _, option
+                                    in ipairs(options)
+                                do
+
+                                    allowed[option] =
+                                        true
+
+                                end
+
+
+                                for key
+                                    in pairs(
+                                        state
+                                    )
+                                do
+
+                                    if not allowed[
+                                        key
+                                    ]
+                                    then
+
+                                        state[key] =
+                                            nil
+
+                                    end
+
+                                end
+
+                            else
+
+                                local found =
+                                    false
+
+
+                                for _, option
+                                    in ipairs(options)
+                                do
+
+                                    if option
+                                        == state
+                                    then
+
+                                        found =
+                                            true
+
+                                        break
+                                    end
+
+                                end
+
+
+                                if not found then
+
+                                    state =
+                                        nil
+
+                                end
+
+                            end
+
+                        end
+
+
+                        RebuildOptions()
+
+
+                        return
+                            control.Get()
+
                     end
+                )
 
-                    return copy
 
-                else
+            mainButton.MouseButton1Click:
+            Connect(function()
 
-                    return selected
-                end
-            end,
+                if control.Open then
 
-        Set =
-            function(
-                value,
-                invokeCallback
-            )
+                    ClosePopup()
 
-                if multi then
 
-                    selected = {}
-
-                    if type(value)
-                        == "table"
+                    if Window.OpenDropdown
+                        == control
                     then
 
-                        for key, enabled
-                            in pairs(value)
-                        do
+                        Window.OpenDropdown =
+                            nil
 
-                            if enabled then
-                                selected[key] =
-                                    true
-                            end
-                        end
                     end
 
                 else
 
-                    selected =
-                        value
+                    OpenPopup()
+
                 end
 
+            end)
 
-                UpdateText()
+
+            RebuildOptions()
 
 
-                if invokeCallback ~= false
-                    and callback
-                then
-
-                    callback(
-                        selected
-                    )
-                end
-            end,
-
-        SetOptions =
-            function(
-                newOptions
+            return RegisterControl(
+                id,
+                control,
+                save
             )
-
-                options =
-                    newOptions
-                    or {}
-
-                RebuildOptions()
-            end
-    }
+        end
 
 
-    RegisterControl(
-    window,
-    id,
-    Control,
-    save
+        return Section
+    end
+
+
+    -- ========================================================
+    -- OUTSIDE CLICK CLOSE DROPDOWN
+    -- ========================================================
+
+    UserInputService.InputBegan:
+    Connect(function(
+        input,
+        processed
     )
 
-
-    return Control
-end
-
-
--- ============================================================
--- CONTROL ACCESS
--- ============================================================
-
-function UI:GetControl(id)
-
-    return
-        self.Controls[id]
-end
+        if processed then
+            return
+        end
 
 
-function UI:GetControls()
+        if input.UserInputType
+                ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType
+                ~= Enum.UserInputType.Touch
+        then
+            return
+        end
 
-    return
-        self.Controls
-end
+
+        local dropdown =
+            Window.OpenDropdown
 
 
--- ============================================================
--- DESTROY
--- ============================================================
+        if not dropdown
+            or not dropdown.Open
+        then
+            return
+        end
 
-function UI:Destroy()
 
-    if self.ScreenGui then
-        self.ScreenGui:Destroy()
+        task.defer(function()
+
+            if Window.OpenDropdown
+                == dropdown
+                and dropdown.Open
+            then
+
+                Window:
+                CloseDropdown()
+
+            end
+
+        end)
+
+    end)
+
+
+    -- ========================================================
+    -- VISIBILITY
+    -- ========================================================
+
+    local visible =
+        true
+
+
+    local function SetVisible(
+        value
+    )
+
+        visible =
+            value
+
+
+        MainFrame.Visible =
+            visible
+
+
+        Window:
+        CloseDropdown()
+
     end
+
+
+    Minimize.MouseButton1Click:
+    Connect(function()
+
+        SetVisible(
+            false
+        )
+
+    end)
+
+
+    OpenButton.MouseButton1Click:
+    Connect(function()
+
+        SetVisible(
+            not visible
+        )
+
+    end)
+
+
+    -- ========================================================
+    -- DRAG OPEN BUTTON
+    -- ========================================================
+
+    do
+
+        local dragging =
+            false
+
+        local startInput =
+            nil
+
+        local startPosition =
+            nil
+
+
+        OpenButton.InputBegan:
+        Connect(function(input)
+
+            if input.UserInputType
+                    == Enum.UserInputType.MouseButton1
+                or input.UserInputType
+                    == Enum.UserInputType.Touch
+            then
+
+                dragging =
+                    true
+
+                startInput =
+                    input.Position
+
+                startPosition =
+                    OpenButton.Position
+
+            end
+
+        end)
+
+
+        UserInputService.InputChanged:
+        Connect(function(input)
+
+            if not dragging then
+                return
+            end
+
+
+            if input.UserInputType
+                    ~= Enum.UserInputType.MouseMovement
+                and input.UserInputType
+                    ~= Enum.UserInputType.Touch
+            then
+                return
+            end
+
+
+            local delta =
+                input.Position
+                - startInput
+
+
+            OpenButton.Position =
+                UDim2.new(
+                    startPosition.X.Scale,
+                    startPosition.X.Offset
+                        + delta.X,
+
+                    startPosition.Y.Scale,
+                    startPosition.Y.Offset
+                        + delta.Y
+                )
+
+        end)
+
+
+        UserInputService.InputEnded:
+        Connect(function(input)
+
+            if input.UserInputType
+                    == Enum.UserInputType.MouseButton1
+                or input.UserInputType
+                    == Enum.UserInputType.Touch
+            then
+
+                dragging =
+                    false
+
+            end
+
+        end)
+
+    end
+
+
+    -- ========================================================
+    -- DESTROY
+    -- ========================================================
+
+    function Window:Destroy()
+
+        if self.Destroyed then
+            return
+        end
+
+
+        self.Destroyed =
+            true
+
+
+        self:
+        CloseDropdown()
+
+
+        pcall(function()
+
+            ScreenGui:
+            Destroy()
+
+        end)
+
+
+        pcall(function()
+
+            ToggleGui:
+            Destroy()
+
+        end)
+
+    end
+
+
+    Close.MouseButton1Click:
+    Connect(function()
+
+        Window:
+        Destroy()
+
+    end)
+
+
+    return Window
 end
 
 
