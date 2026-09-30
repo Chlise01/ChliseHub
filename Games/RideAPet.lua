@@ -3353,7 +3353,6 @@ return function(Context)
 
             -- ================================================
             -- TELEPORT TO EGG
-            -- Langsung teleport lalu trigger pickup tanpa delay.
             -- ================================================
 
             root.CFrame =
@@ -3367,14 +3366,37 @@ return function(Context)
                 )
 
 
-            task.wait(0.1)
+            -- Jangan pakai delay tetap sebelum pickup.
+            -- Tunggu sebentar hanya sampai prompt benar-benar Enabled
+            -- setelah posisi karakter berpindah.
+            local promptReadyStarted =
+                os.clock()
+
+
+            while Runtime:IsCurrent()
+                and autoFarmActive
+                and os.clock()
+                    - promptReadyStarted
+                    < 0.6
+            do
+
+                if targetPrompt
+                    and targetPrompt.Parent
+                    and targetPrompt.Enabled
+                then
+
+                    break
+
+                end
+
+
+                task.wait(0.03)
+
+            end
 
 
             -- ================================================
             -- PICKUP EGG
-            --
-            -- Gunakan ProximityPrompt "Pickup" milik RenderedEggs.
-            -- Tidak scan Workspace dan tidak spam prompt.
             -- ================================================
 
             local basketCountBefore =
@@ -3384,50 +3406,67 @@ return function(Context)
                 false
 
 
-            if targetPrompt
-                and targetPrompt.Parent
-                and targetPrompt.Enabled
-                and fireproximityprompt
-            then
+            local function TriggerPickupPrompt(
+                prompt
+            )
 
-                pcall(function()
+                if not prompt
+                    or not prompt.Parent
+                    or not prompt.Enabled
+                    or not fireproximityprompt
+                then
 
-                    local oldHold =
-                        targetPrompt.HoldDuration
+                    return false
 
-
-                    targetPrompt.HoldDuration =
-                        0
-
-
-                    fireproximityprompt(
-                        targetPrompt
-                    )
+                end
 
 
-                    task.delay(
-                        0.05,
+                local ok =
+                    pcall(function()
 
-                        function()
+                        local oldHold =
+                            prompt.HoldDuration
 
-                            if targetPrompt
-                                and targetPrompt.Parent
-                            then
 
-                                targetPrompt.HoldDuration =
-                                    oldHold
+                        prompt.HoldDuration =
+                            0
+
+
+                        fireproximityprompt(
+                            prompt
+                        )
+
+
+                        task.delay(
+                            0.05,
+
+                            function()
+
+                                if prompt
+                                    and prompt.Parent
+                                then
+
+                                    prompt.HoldDuration =
+                                        oldHold
+
+                                end
 
                             end
+                        )
 
-                        end
-                    )
+                    end)
 
-                end)
 
+                return ok
             end
 
 
-            -- Tunggu Basket benar-benar menerima egg.
+            TriggerPickupPrompt(
+                targetPrompt
+            )
+
+
+            -- Tunggu Basket sebagai konfirmasi utama.
             local pickupStarted =
                 os.clock()
 
@@ -3447,6 +3486,7 @@ return function(Context)
                         true
 
                     break
+
                 end
 
 
@@ -3455,8 +3495,7 @@ return function(Context)
             end
 
 
-            -- Jika prompt pertama belum masuk, refresh prompt target
-            -- lalu coba SATU KALI lagi. Tetap tanpa spam.
+            -- Retry SATU KALI kalau pickup pertama miss.
             if not pickedUp
                 and targetModel
                 and targetModel.Parent
@@ -3468,81 +3507,79 @@ return function(Context)
                     )
 
 
-                if targetPrompt
-                    and targetPrompt.Parent
-                    and targetPrompt.Enabled
-                    and fireproximityprompt
-                then
-
-                    pcall(function()
-
-                        local oldHold =
-                            targetPrompt.HoldDuration
+                local retryReadyStarted =
+                    os.clock()
 
 
-                        targetPrompt.HoldDuration =
-                            0
+                while Runtime:IsCurrent()
+                    and autoFarmActive
+                    and os.clock()
+                        - retryReadyStarted
+                        < 0.5
+                do
 
+                    if targetPrompt
+                        and targetPrompt.Parent
+                        and targetPrompt.Enabled
+                    then
 
-                        fireproximityprompt(
-                            targetPrompt
-                        )
-
-
-                        task.delay(
-                            0.05,
-
-                            function()
-
-                                if targetPrompt
-                                    and targetPrompt.Parent
-                                then
-
-                                    targetPrompt.HoldDuration =
-                                        oldHold
-
-                                end
-
-                            end
-                        )
-
-                    end)
-
-
-                    local retryStarted =
-                        os.clock()
-
-
-                    while Runtime:IsCurrent()
-                        and autoFarmActive
-                        and os.clock()
-                            - retryStarted
-                            < 1
-                    do
-
-                        if #Basket:GetChildren()
-                            > basketCountBefore
-                        then
-
-                            pickedUp =
-                                true
-
-                            break
-                        end
-
-
-                        task.wait(0.05)
+                        break
 
                     end
+
+
+                    task.wait(0.03)
+
+                end
+
+
+                TriggerPickupPrompt(
+                    targetPrompt
+                )
+
+
+                local retryStarted =
+                    os.clock()
+
+
+                while Runtime:IsCurrent()
+                    and autoFarmActive
+                    and os.clock()
+                        - retryStarted
+                        < 1.5
+                do
+
+                    if #Basket:GetChildren()
+                        > basketCountBefore
+                    then
+
+                        pickedUp =
+                            true
+
+                        break
+
+                    end
+
+
+                    task.wait(0.05)
 
                 end
 
             end
 
 
+            -- Kalau egg benar-benar belum keambil, jangan lanjut Volcano / plot.
+            -- Biarkan loop Auto Farm mencoba target lagi.
+            if not pickedUp then
+
+                task.wait(0.2)
+                continue
+
+            end
+
+
             -- ================================================
-            -- DELAY AFTER PICKUP
-            -- Total 3 detik sebelum lanjut ke Volcano Dip.
+            -- DELAY AFTER SUCCESSFUL PICKUP
             -- ================================================
 
             task.wait(3)
@@ -3554,34 +3591,54 @@ return function(Context)
 
             if goVolcanoDipActive then
 
-                -- Force teleport langsung di flow Auto Farm.
-                -- Jadi kalau toggle ON, bagian ini pasti dijalankan
-                -- sebelum Gift / return-to-plot.
+                -- Ambil return ke-3 dengan benar: HumanoidRootPart.
                 local currentCharacter,
+                    currentHumanoid,
                     currentRoot =
                     GetCharacterData()
 
 
                 if currentCharacter
                     and currentRoot
+                    and currentRoot.Parent
                 then
 
-                    currentCharacter:
-                    PivotTo(
+                    -- Teleport langsung dan eksplisit ke koordinat Volcano Dip.
+                    currentRoot.CFrame =
                         CFrame.new(
                             VOLCANO_DIP_POSITION
                         )
-                    )
 
 
-                    task.wait(0.35)
+                    -- Pastikan tetap di sana saat client memunculkan tombol.
+                    task.wait(0.5)
 
 
+                    if currentRoot.Parent then
+
+                        currentRoot.CFrame =
+                            CFrame.new(
+                                VOLCANO_DIP_POSITION
+                            )
+
+                    end
+
+
+                    local buttonReady =
+                        WaitForVolcanoDipButton(
+                            3
+                        )
+
+
+                    -- Kalau tombol muncul, fire remote normal.
+                    -- Kalau tombol belum terdeteksi tetapi kita sudah membawa egg
+                    -- dan berada di koordinat yang benar, tetap coba remote sekali.
                     local dipOk,
                         dipError =
                         pcall(function()
 
-                            return GoVolcanoDipCurrentEgg()
+                            VolcanoDipRemote:
+                            FireServer()
 
                         end)
 
@@ -3589,16 +3646,50 @@ return function(Context)
                     if not dipOk then
 
                         warn(
-                            "[CHLISE HUB] Go Volcano Dip error:",
+                            "[CHLISE HUB] VolcanoDip remote failed:",
                             dipError
                         )
+
+                    elseif not buttonReady then
+
+                        warn(
+                            "[CHLISE HUB] Volcano Dip button not detected; remote was still attempted."
+                        )
+
+                    end
+
+
+                    -- Tetap di Volcano Dip selama 4 detik.
+                    local volcanoStayStarted =
+                        os.clock()
+
+
+                    while Runtime:IsCurrent()
+                        and autoFarmActive
+                        and os.clock()
+                            - volcanoStayStarted
+                            < 4
+                    do
+
+                        if currentRoot.Parent then
+
+                            -- Jaga karakter tetap di titik dip selama proses.
+                            currentRoot.CFrame =
+                                CFrame.new(
+                                    VOLCANO_DIP_POSITION
+                                )
+
+                        end
+
+
+                        task.wait(0.1)
 
                     end
 
                 else
 
                     warn(
-                        "[CHLISE HUB] Go Volcano Dip skipped: character/root missing."
+                        "[CHLISE HUB] Volcano Dip skipped: HumanoidRootPart missing."
                     )
 
                 end
