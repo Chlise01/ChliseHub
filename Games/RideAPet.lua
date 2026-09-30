@@ -50,10 +50,6 @@ return function(Context)
     local HttpService =
         game:GetService("HttpService")
 
-    local CollectionService =
-        game:GetService("CollectionService")
-
-
     local LocalPlayer =
         Players.LocalPlayer
 
@@ -1303,6 +1299,14 @@ return function(Context)
     -- GO VOLCANO DIP
     -- ========================================================
 
+    local VOLCANO_DIP_POSITION =
+        Vector3.new(
+            251.93020629882812,
+            40317.7421875,
+            813.4071044921875
+        )
+
+
     local function HasVolcanoFlight()
 
         local now =
@@ -1395,186 +1399,71 @@ return function(Context)
     end
 
 
-    local function GetVolcanoPoolPosition(
-        rootPosition
+    local function WaitForVolcanoDipButton(
+        timeout
     )
 
-        local tag =
-            VolcanoData.Tag
+        timeout =
+            tonumber(timeout)
+            or 2
 
 
-        if type(tag)
-            ~= "string"
-        then
-            return nil
+        local playerGui =
+            LocalPlayer:
+            FindFirstChild(
+                "PlayerGui"
+            )
+
+
+        local main =
+            playerGui
+            and playerGui:
+                FindFirstChild(
+                    "Main"
+                )
+
+
+        local actionsHolder =
+            main
+            and main:
+                FindFirstChild(
+                    "ActionsHolder"
+                )
+
+
+        local button =
+            actionsHolder
+            and actionsHolder:
+                FindFirstChild(
+                    "DropEggVolcanoButton"
+                )
+
+
+        if not button then
+
+            return false
+
         end
 
 
-        local bestPosition =
-            nil
-
-        local bestDistance =
-            math.huge
+        local started =
+            os.clock()
 
 
-        for _, pool
-            in ipairs(
-                CollectionService:
-                GetTagged(
-                    tag
-                )
-            )
-        do
+        repeat
 
-            if pool:IsA(
-                "BasePart"
-            )
-                and pool:IsDescendantOf(
-                    workspace
-                )
-            then
+            if button.Visible then
 
-                local candidate =
-                    pool.Position
-                    + Vector3.new(
-                        0,
-                        math.max(
-                            1,
-                            pool.Size.Y
-                            * 0.5
-                        ),
-                        0
-                    )
-
-
-                local isOver =
-                    false
-
-
-                pcall(function()
-
-                    isOver =
-                        VolcanoData.IsOver(
-                            pool,
-                            candidate
-                        )
-
-                end)
-
-
-                -- Fallback ke center part kalau module game
-                -- memakai volume yang lebih ketat.
-                if not isOver then
-
-                    candidate =
-                        pool.Position
-
-                    pcall(function()
-
-                        isOver =
-                            VolcanoData.IsOver(
-                                pool,
-                                candidate
-                            )
-
-                    end)
-
-                end
-
-
-                if isOver then
-
-                    local distance =
-                        rootPosition
-                        and (
-                            candidate
-                            - rootPosition
-                        ).Magnitude
-                        or 0
-
-
-                    if distance
-                        < bestDistance
-                    then
-
-                        bestDistance =
-                            distance
-
-                        bestPosition =
-                            candidate
-
-                    end
-
-                end
+                return true
 
             end
 
-        end
 
+            task.wait(0.05)
 
-        return bestPosition
-    end
-
-
-    local function IsOverVolcanoPool(
-        position
-    )
-
-        if typeof(position)
-            ~= "Vector3"
-        then
-            return false
-        end
-
-
-        local tag =
-            VolcanoData.Tag
-
-
-        if type(tag)
-            ~= "string"
-        then
-            return false
-        end
-
-
-        for _, pool
-            in ipairs(
-                CollectionService:
-                GetTagged(
-                    tag
-                )
-            )
-        do
-
-            if pool:IsA(
-                "BasePart"
-            )
-                and pool:IsDescendantOf(
-                    workspace
-                )
-            then
-
-                local ok,
-                    result =
-                    pcall(
-                        VolcanoData.IsOver,
-                        pool,
-                        position
-                    )
-
-
-                if ok
-                    and result
-                then
-
-                    return true
-
-                end
-
-            end
-
-        end
+        until os.clock()
+            - started
+            >= timeout
 
 
         return false
@@ -1623,10 +1512,13 @@ return function(Context)
         end
 
 
-        if #Basket:GetChildren()
-            == 0
+        if not WaitForBasketEgg(
+            1.5
+        )
         then
+
             return false
+
         end
 
 
@@ -1636,14 +1528,18 @@ return function(Context)
                 )
                 == true
         then
+
             return false
+
         end
 
 
         if HasVolcanoFlight()
             or not HasEligibleVolcanoEgg()
         then
+
             return false
+
         end
 
 
@@ -1652,46 +1548,36 @@ return function(Context)
 
 
         if not root then
+
             return false
+
         end
 
 
-        local poolPosition =
-            GetVolcanoPoolPosition(
-                root.Position
-            )
-
-
-        if not poolPosition then
-
-            warn(
-                "[CHLISE HUB] Volcano pool not found."
-            )
-
-            return false
-        end
-
-
+        -- Teleport langsung ke koordinat Volcano Dip yang sudah
+        -- diverifikasi manual. Tidak ditambah 3 studs.
         root.CFrame =
             CFrame.new(
-                poolPosition
+                VOLCANO_DIP_POSITION
             )
 
 
-        task.wait(0.3)
+        task.wait(0.25)
 
 
-        if not root.Parent
-            or not IsOverVolcanoPool(
-                root.Position
-            )
+        -- Pastikan game sendiri sudah menganggap kita berada
+        -- di area Volcano Dip dengan menunggu tombol resminya muncul.
+        if not WaitForVolcanoDipButton(
+            2
+        )
         then
 
             warn(
-                "[CHLISE HUB] Failed to reach volcano pool."
+                "[CHLISE HUB] Volcano Dip button did not appear."
             )
 
             return false
+
         end
 
 
@@ -1713,11 +1599,12 @@ return function(Context)
             )
 
             return false
+
         end
 
 
-        -- Tetap berada di area Volcano Dip selama 4 detik
-        -- supaya proses mutate punya waktu selesai.
+        -- Tetap di lokasi Volcano Dip selama 4 detik agar
+        -- proses mutate selesai, baik berhasil maupun gagal.
         task.wait(4)
 
 
