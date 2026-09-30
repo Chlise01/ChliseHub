@@ -1306,9 +1306,9 @@ return function(Context)
 
     local VOLCANO_DIP_POSITION =
         Vector3.new(
-            251.93020629882812,
-            40317.7421875,
-            813.4071044921875
+            -5102.8427734375,
+            41408.62890625,
+            -3489.114013671875
         )
 
 
@@ -3587,11 +3587,15 @@ return function(Context)
 
             -- ================================================
             -- GO VOLCANO DIP
+            -- Urutan:
+            -- 1. Teleport ke Volcano Dip
+            -- 2. Tunggu tombol / client recognize area
+            -- 3. Fire VolcanoDip remote
+            -- 4. Stay 4 detik DI VOLCANO
             -- ================================================
 
             if goVolcanoDipActive then
 
-                -- Ambil return ke-3 dengan benar: HumanoidRootPart.
                 local currentCharacter,
                     currentHumanoid,
                     currentRoot =
@@ -3603,17 +3607,18 @@ return function(Context)
                     and currentRoot.Parent
                 then
 
-                    -- Teleport langsung dan eksplisit ke koordinat Volcano Dip.
+                    -- TELEPORT DULU ke titik Volcano Dip.
                     currentRoot.CFrame =
                         CFrame.new(
                             VOLCANO_DIP_POSITION
                         )
 
 
-                    -- Pastikan tetap di sana saat client memunculkan tombol.
                     task.wait(0.5)
 
 
+                    -- Kunci lagi posisi setelah teleport supaya karakter
+                    -- benar-benar settle di titik Volcano Dip.
                     if currentRoot.Parent then
 
                         currentRoot.CFrame =
@@ -3630,9 +3635,6 @@ return function(Context)
                         )
 
 
-                    -- Kalau tombol muncul, fire remote normal.
-                    -- Kalau tombol belum terdeteksi tetapi kita sudah membawa egg
-                    -- dan berada di koordinat yang benar, tetap coba remote sekali.
                     local dipOk,
                         dipError =
                         pcall(function()
@@ -3659,7 +3661,7 @@ return function(Context)
                     end
 
 
-                    -- Tetap di Volcano Dip selama 4 detik.
+                    -- BARU setelah teleport + remote, stay 4 detik di Volcano.
                     local volcanoStayStarted =
                         os.clock()
 
@@ -3673,7 +3675,6 @@ return function(Context)
 
                         if currentRoot.Parent then
 
-                            -- Jaga karakter tetap di titik dip selama proses.
                             currentRoot.CFrame =
                                 CFrame.new(
                                     VOLCANO_DIP_POSITION
