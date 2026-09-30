@@ -1,84 +1,165 @@
 -- ============================================================
+
 -- CHLISE HUB
+
 -- Universal.lua
+
 -- ============================================================
+
+
 
 return function(Context)
 
+
+
     -- ========================================================
+
     -- CORE
+
     -- ========================================================
+
+
 
     local UI =
+
         Context.UI
 
+
+
     local Config =
+
         Context.Config
 
+
+
     local Runtime =
+
         Context.Runtime
 
 
+
+
+
     -- ========================================================
+
     -- SERVICES
+
     -- ========================================================
+
+
 
     local Players =
+
         game:GetService("Players")
 
+
+
     local VirtualUser =
+
         game:GetService("VirtualUser")
 
 
+
+
+
     local LocalPlayer =
+
         Players.LocalPlayer
 
 
-    -- ========================================================
-    -- WINDOW
+
+
+
     -- ========================================================
 
+    -- WINDOW
+
+    -- ========================================================
+
+
+
     local Window =
+
         UI.new({
+
             Title = "CHLISE HUB",
+
             Width = 500,
+
             Height = 305
+
         })
 
 
+
+
+
     Context.Window =
+
         Window
 
 
-    -- ========================================================
-    -- CONFIG MANAGER
+
+
+
     -- ========================================================
 
+    -- CONFIG MANAGER
+
+    -- ========================================================
+
+
+
     local ConfigManager =
+
         Config.new(
+
             Window,
+
             Runtime
+
         )
+
+
+
 
 
     Context.ConfigManager =
+
         ConfigManager
 
 
-    -- ========================================================
-    -- SETTINGS TAB
+
+
+
     -- ========================================================
 
+    -- SETTINGS TAB
+
+    -- ========================================================
+
+
+
     local SettingsTab =
+
         Window:AddTab(
+
             "SETTINGS",
+
             "⚙"
+
         )
 
 
+
+
+
     -- ========================================================
+
     -- CONFIG SECTION
+
     -- ========================================================
+
 
     local ConfigSection =
         Window:AddSection(
@@ -102,29 +183,18 @@ return function(Context)
         nil
 
 
-    -- Tidak disimpan ke config.
+    -- Dideklarasikan lebih dulu karena dipakai callback
+    -- Create Config / RefreshConfigList sebelum dropdown dibuat.
     local ConfigList =
-        ConfigSection:AddDropdown(
-            "ConfigList",
-            "Config List",
-            ConfigManager:List(),
-            false,
-            nil,
-
-            function(value)
-
-                selectedConfig =
-                    value
-
-            end,
-
-            false
-        )
+        nil
 
 
     -- ========================================================
+
     -- REFRESH CONFIG LIST
+
     -- ========================================================
+
 
     local function RefreshConfigList(
         preferred
@@ -191,6 +261,7 @@ return function(Context)
 
                 break
             end
+
         end
 
 
@@ -210,14 +281,19 @@ return function(Context)
                 )
 
             end
+
         end
 
     end
 
 
     -- ========================================================
+
     -- CREATE CONFIG
+    -- Langsung di bawah Save Name.
+
     -- ========================================================
+
 
     ConfigSection:AddButton(
         "Create Config",
@@ -290,10 +366,39 @@ return function(Context)
 
 
     -- ========================================================
-    -- LOAD CONFIG
+
+    -- CONFIG LIST
+
     -- ========================================================
 
-    ConfigSection:AddButton(
+
+    ConfigList =
+        ConfigSection:AddDropdown(
+            "ConfigList",
+            "Config List",
+            ConfigManager:List(),
+            false,
+            nil,
+
+            function(value)
+
+                selectedConfig =
+                    value
+
+            end,
+
+            false
+        )
+
+
+    -- ========================================================
+
+    -- LOAD + OVERWRITE
+
+    -- ========================================================
+
+
+    ConfigSection:AddButtonRow(
         "Load Config",
 
         function()
@@ -330,15 +435,9 @@ return function(Context)
                 selectedConfig
             )
 
-        end
-    )
+        end,
 
 
-    -- ========================================================
-    -- OVERWRITE CONFIG
-    -- ========================================================
-
-    ConfigSection:AddButton(
         "Overwrite Config",
 
         function()
@@ -385,10 +484,13 @@ return function(Context)
 
 
     -- ========================================================
-    -- DELETE CONFIG
+
+    -- DELETE + SET AUTOLOAD
+
     -- ========================================================
 
-    ConfigSection:AddButton(
+
+    ConfigSection:AddButtonRow(
         "Delete Config",
 
         function()
@@ -447,15 +549,9 @@ return function(Context)
                 deleting
             )
 
-        end
-    )
+        end,
 
 
-    -- ========================================================
-    -- SET AUTOLOAD
-    -- ========================================================
-
-    ConfigSection:AddButton(
         "Set As Autoload",
 
         function()
@@ -485,8 +581,12 @@ return function(Context)
 
 
     -- ========================================================
+
     -- CLEAR AUTOLOAD
+    -- Sisa satu tombol, jadi full width.
+
     -- ========================================================
+
 
     ConfigSection:AddButton(
         "Clear Autoload",
@@ -507,151 +607,299 @@ return function(Context)
 
 
     -- ========================================================
+
     -- SCRIPT SETTINGS
+
     -- ========================================================
 
+
+
     local ScriptSection =
+
         Window:AddSection(
+
             SettingsTab,
+
             "Setting Script"
+
         )
 
 
-    -- ========================================================
-    -- AUTO EXECUTE
-    --
-    -- Disimpan ke settings.json.
-    -- BUKAN bagian dari file config user.
+
+
+
     -- ========================================================
 
+    -- AUTO EXECUTE
+
+    --
+
+    -- Disimpan ke settings.json.
+
+    -- BUKAN bagian dari file config user.
+
+    -- ========================================================
+
+
+
     local savedAutoExecute =
+
         ConfigManager:
+
         GetAutoExecute()
 
 
+
+
+
     ScriptSection:AddCheckbox(
+
         "AutoExecute",
+
         "Auto Execute",
+
         savedAutoExecute,
+
+
 
         function(state)
 
+
+
             ConfigManager:
+
             SetAutoExecute(
+
                 state
+
             )
+
+
 
         end,
 
+
+
         false
+
     )
 
 
-    -- ========================================================
-    -- ANTI AFK
-    --
-    -- Disimpan ke settings.json.
+
+
+
     -- ========================================================
 
+    -- ANTI AFK
+
+    --
+
+    -- Disimpan ke settings.json.
+
+    -- ========================================================
+
+
+
     local antiAFKEnabled =
+
         ConfigManager:
+
         GetSetting(
+
             "AntiAFK",
+
             false
+
         )
+
         == true
 
 
+
+
+
     ScriptSection:AddCheckbox(
+
         "AntiAFK",
+
         "Anti AFK",
+
         antiAFKEnabled,
+
+
 
         function(state)
 
+
+
             antiAFKEnabled =
+
                 state
+
+
+
 
 
             ConfigManager:
+
             SetSetting(
+
                 "AntiAFK",
+
                 state
+
             )
+
+
 
         end,
 
+
+
         false
+
     )
 
 
+
+
+
     -- ========================================================
+
     -- ANTI AFK CONNECTION
+
     -- ========================================================
+
+
 
     Runtime:TrackConnection(
 
+
+
         LocalPlayer.Idled:
+
         Connect(function()
 
+
+
             if not antiAFKEnabled then
+
                 return
+
             end
+
+
+
 
 
             pcall(function()
 
+
+
                 local camera =
+
                     workspace.CurrentCamera
 
 
+
+
+
                 VirtualUser:
+
                 Button2Down(
+
                     Vector2.new(
+
                         0,
+
                         0
+
                     ),
 
+
+
                     camera
+
                     and camera.CFrame
+
                     or CFrame.new()
+
                 )
+
+
+
 
 
                 task.wait(0.5)
 
 
+
+
+
                 VirtualUser:
+
                 Button2Up(
+
                     Vector2.new(
+
                         0,
+
                         0
+
                     ),
 
+
+
                     camera
+
                     and camera.CFrame
+
                     or CFrame.new()
+
                 )
+
+
 
             end)
 
+
+
         end)
 
+
+
     )
 
 
+
+
+
     -- ========================================================
+
     -- INITIAL CONFIG LIST
+
     -- ========================================================
+
+
 
     RefreshConfigList(
+
         ConfigManager:
+
         GetAutoload()
+
     )
+
+
+
 
 
     print(
+
         "[CHLISE HUB] Universal loaded."
+
     )
+
+
 
 end
