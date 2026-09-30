@@ -293,6 +293,16 @@ function Config:ApplySnapshot(
         self.Window:GetControls()
 
 
+    -- ========================================================
+    -- PHASE 1
+    --
+    -- Terapkan SEMUA value lebih dulu TANPA callback.
+    --
+    -- Ini penting untuk autoload:
+    -- filter/dropdown/toggle harus sudah berada pada state config
+    -- sebelum feature seperti AutoFarm mulai menjalankan logic.
+    -- ========================================================
+
     for id, value
         in pairs(data)
     do
@@ -309,8 +319,45 @@ function Config:ApplySnapshot(
             pcall(
                 control.Set,
                 value,
-                invokeCallbacks ~= false
+                false
             )
+
+        end
+
+    end
+
+
+    -- ========================================================
+    -- PHASE 2
+    --
+    -- Setelah seluruh state control sinkron, baru jalankan
+    -- callback masing-masing control.
+    --
+    -- Manual Load dan Autoload sekarang memakai flow yang sama.
+    -- ========================================================
+
+    if invokeCallbacks ~= false then
+
+        for id, value
+            in pairs(data)
+        do
+
+            local control =
+                controls[id]
+
+
+            if control
+                and type(control.Set)
+                    == "function"
+            then
+
+                pcall(
+                    control.Set,
+                    value,
+                    true
+                )
+
+            end
 
         end
 
