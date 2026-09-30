@@ -1512,50 +1512,18 @@ return function(Context)
         end
 
 
-        if not WaitForBasketEgg(
-            1.5
-        )
-        then
-
-            return false
-
-        end
-
-
-        if LocalPlayer:
-                GetAttribute(
-                    "TutorialActive"
-                )
-                == true
-        then
-
-            return false
-
-        end
-
-
-        if HasVolcanoFlight()
-            or not HasEligibleVolcanoEgg()
-        then
-
-            return false
-
-        end
-
-
         local _, root =
             GetCharacterData()
 
 
         if not root then
-
             return false
-
         end
 
 
-        -- Teleport langsung ke koordinat Volcano Dip yang sudah
-        -- diverifikasi manual. Tidak ditambah 3 studs.
+        -- LANGSUNG teleport ke titik Volcano Dip setelah pickup.
+        -- Jangan blok teleport hanya karena state Basket / attribute
+        -- belum selesai direplikasi.
         root.CFrame =
             CFrame.new(
                 VOLCANO_DIP_POSITION
@@ -1565,16 +1533,20 @@ return function(Context)
         task.wait(0.25)
 
 
-        -- Pastikan game sendiri sudah menganggap kita berada
-        -- di area Volcano Dip dengan menunggu tombol resminya muncul.
+        -- Setelah sudah berada di atas volcano, tunggu game
+        -- memunculkan tombol Volcano Dip. Tombol ini menjadi
+        -- validasi utama bahwa egg siap diproses.
         if not WaitForVolcanoDipButton(
-            2
+            3
         )
         then
 
             warn(
                 "[CHLISE HUB] Volcano Dip button did not appear."
             )
+
+            -- Tetap diam sebentar agar mudah dilihat saat testing.
+            task.wait(0.75)
 
             return false
 
@@ -1603,8 +1575,8 @@ return function(Context)
         end
 
 
-        -- Tetap di lokasi Volcano Dip selama 4 detik agar
-        -- proses mutate selesai, baik berhasil maupun gagal.
+        -- Tetap di Volcano Dip selama 4 detik,
+        -- baik mutate berhasil maupun gagal.
         task.wait(4)
 
 
@@ -3492,18 +3464,11 @@ return function(Context)
 
             if goVolcanoDipActive then
 
-                if WaitForBasketEgg(
-                    1.5
-                )
-                then
+                pcall(function()
 
-                    pcall(function()
+                    GoVolcanoDipCurrentEgg()
 
-                        GoVolcanoDipCurrentEgg()
-
-                    end)
-
-                end
+                end)
 
             end
 
