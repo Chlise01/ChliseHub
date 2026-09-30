@@ -1512,46 +1512,52 @@ return function(Context)
 
     local function GoVolcanoDipCurrentEgg()
 
-        if not goVolcanoDipActive then
-            return false
-        end
-
-
-        local _, root =
+        local character,
+            root =
             GetCharacterData()
 
 
-        if not root then
-            return false
-        end
-
-
-        -- LANGSUNG teleport ke titik Volcano Dip setelah pickup.
-        -- Jangan blok teleport hanya karena state Basket / attribute
-        -- belum selesai direplikasi.
-        root.CFrame =
-            CFrame.new(
-                VOLCANO_DIP_POSITION
-            )
-
-
-        task.wait(0.25)
-
-
-        -- Setelah sudah berada di atas volcano, tunggu game
-        -- memunculkan tombol Volcano Dip. Tombol ini menjadi
-        -- validasi utama bahwa egg siap diproses.
-        if not WaitForVolcanoDipButton(
-            3
-        )
+        if not character
+            or not root
         then
 
             warn(
-                "[CHLISE HUB] Volcano Dip button did not appear."
+                "[CHLISE HUB] Volcano Dip: character/root missing."
             )
 
-            -- Tetap diam sebentar agar mudah dilihat saat testing.
-            task.wait(0.75)
+            return false
+
+        end
+
+
+        -- Force teleport seluruh character ke koordinat Volcano Dip.
+        -- PivotTo lebih tegas daripada hanya mengubah HRP.CFrame.
+        character:
+        PivotTo(
+            CFrame.new(
+                VOLCANO_DIP_POSITION
+            )
+        )
+
+
+        -- Beri waktu posisi tereplikasi dan tombol game muncul.
+        task.wait(0.5)
+
+
+        local buttonReady =
+            WaitForVolcanoDipButton(
+                3
+            )
+
+
+        if not buttonReady then
+
+            warn(
+                "[CHLISE HUB] Volcano Dip: button did not appear."
+            )
+
+            -- Tetap stay sebentar di titik volcano saat testing.
+            task.wait(1)
 
             return false
 
@@ -1571,7 +1577,7 @@ return function(Context)
         if not ok then
 
             warn(
-                "[CHLISE HUB] VolcanoDip failed:",
+                "[CHLISE HUB] VolcanoDip remote failed:",
                 err
             )
 
@@ -1580,8 +1586,7 @@ return function(Context)
         end
 
 
-        -- Tetap di Volcano Dip selama 4 detik,
-        -- baik mutate berhasil maupun gagal.
+        -- Tetap di atas Volcano Dip selama 4 detik.
         task.wait(4)
 
 
@@ -2982,8 +2987,8 @@ return function(Context)
             local targetModel =
                 nil
 
-            -- Hanya untuk validasi egg fisik di RenderedEggs.
-            -- Pickup sebenarnya lewat EggPickupRemote.
+            -- Prompt fisik milik egg di RenderedEggs.
+            -- Dipakai langsung untuk pickup tanpa scan Workspace.
             local targetPrompt =
                 nil
 
@@ -3347,14 +3352,8 @@ return function(Context)
 
 
             -- ================================================
-            -- DELAY BEFORE PICKUP
-            -- ================================================
-
-            task.wait(1)
-
-
-            -- ================================================
             -- TELEPORT TO EGG
+            -- Langsung teleport lalu trigger pickup tanpa delay.
             -- ================================================
 
             root.CFrame =
@@ -3374,41 +3373,63 @@ return function(Context)
             -- ================================================
             -- PICKUP EGG
             --
-            -- Game asli memakai:
-            -- EggPickup:FireServer(ActiveEggEntry.Name)
+            -- Gunakan ProximityPrompt "Pickup" milik RenderedEggs.
+            -- Tidak scan Workspace dan tidak spam prompt.
             -- ================================================
 
             local basketCountBefore =
                 #Basket:GetChildren()
 
+            local pickedUp =
+                false
 
-            local pickupOk,
-                pickupError =
+
+            if targetPrompt
+                and targetPrompt.Parent
+                and targetPrompt.Enabled
+                and fireproximityprompt
+            then
+
                 pcall(function()
 
-                    EggPickupRemote:
-                    FireServer(
-                        targetObject.Name
+                    local oldHold =
+                        targetPrompt.HoldDuration
+
+
+                    targetPrompt.HoldDuration =
+                        0
+
+
+                    fireproximityprompt(
+                        targetPrompt
+                    )
+
+
+                    task.delay(
+                        0.05,
+
+                        function()
+
+                            if targetPrompt
+                                and targetPrompt.Parent
+                            then
+
+                                targetPrompt.HoldDuration =
+                                    oldHold
+
+                            end
+
+                        end
                     )
 
                 end)
 
-
-            if not pickupOk then
-
-                warn(
-                    "[CHLISE HUB] EggPickup failed:",
-                    pickupError
-                )
-
             end
 
 
+            -- Tunggu Basket benar-benar menerima egg.
             local pickupStarted =
                 os.clock()
-
-            local pickedUp =
-                false
 
 
             while Runtime:IsCurrent()
@@ -3434,39 +3455,85 @@ return function(Context)
             end
 
 
-            -- Grace period kalau ActiveEgg / RenderedEgg sudah
-            -- hilang lebih dulu tetapi Basket sedikit terlambat.
+            -- Jika prompt pertama belum masuk, refresh prompt target
+            -- lalu coba SATU KALI lagi. Tetap tanpa spam.
             if not pickedUp
-                and (
-                    not targetObject.Parent
-                    or not targetModel
-                    or not targetModel.Parent
-                )
+                and targetModel
+                and targetModel.Parent
             then
 
-                local graceStarted =
-                    os.clock()
+                targetPrompt =
+                    GetEggPickupPrompt(
+                        targetModel
+                    )
 
 
-                while Runtime:IsCurrent()
-                    and autoFarmActive
-                    and os.clock()
-                        - graceStarted
-                        < 0.5
-                do
+                if targetPrompt
+                    and targetPrompt.Parent
+                    and targetPrompt.Enabled
+                    and fireproximityprompt
+                then
 
-                    if #Basket:GetChildren()
-                        > basketCountBefore
-                    then
+                    pcall(function()
 
-                        pickedUp =
-                            true
+                        local oldHold =
+                            targetPrompt.HoldDuration
 
-                        break
+
+                        targetPrompt.HoldDuration =
+                            0
+
+
+                        fireproximityprompt(
+                            targetPrompt
+                        )
+
+
+                        task.delay(
+                            0.05,
+
+                            function()
+
+                                if targetPrompt
+                                    and targetPrompt.Parent
+                                then
+
+                                    targetPrompt.HoldDuration =
+                                        oldHold
+
+                                end
+
+                            end
+                        )
+
+                    end)
+
+
+                    local retryStarted =
+                        os.clock()
+
+
+                    while Runtime:IsCurrent()
+                        and autoFarmActive
+                        and os.clock()
+                            - retryStarted
+                            < 1
+                    do
+
+                        if #Basket:GetChildren()
+                            > basketCountBefore
+                        then
+
+                            pickedUp =
+                                true
+
+                            break
+                        end
+
+
+                        task.wait(0.05)
+
                     end
-
-
-                    task.wait(0.05)
 
                 end
 
@@ -3475,24 +3542,66 @@ return function(Context)
 
             -- ================================================
             -- DELAY AFTER PICKUP
+            -- Total 3 detik sebelum lanjut ke Volcano Dip.
             -- ================================================
 
-            task.wait(1)
+            task.wait(3)
 
 
             -- ================================================
             -- GO VOLCANO DIP
             -- ================================================
 
-            if goVolcanoDipActive
-                and pickedUp
-            then
+            if goVolcanoDipActive then
 
-                pcall(function()
+                -- Force teleport langsung di flow Auto Farm.
+                -- Jadi kalau toggle ON, bagian ini pasti dijalankan
+                -- sebelum Gift / return-to-plot.
+                local currentCharacter,
+                    currentRoot =
+                    GetCharacterData()
 
-                    GoVolcanoDipCurrentEgg()
 
-                end)
+                if currentCharacter
+                    and currentRoot
+                then
+
+                    currentCharacter:
+                    PivotTo(
+                        CFrame.new(
+                            VOLCANO_DIP_POSITION
+                        )
+                    )
+
+
+                    task.wait(0.35)
+
+
+                    local dipOk,
+                        dipError =
+                        pcall(function()
+
+                            return GoVolcanoDipCurrentEgg()
+
+                        end)
+
+
+                    if not dipOk then
+
+                        warn(
+                            "[CHLISE HUB] Go Volcano Dip error:",
+                            dipError
+                        )
+
+                    end
+
+                else
+
+                    warn(
+                        "[CHLISE HUB] Go Volcano Dip skipped: character/root missing."
+                    )
+
+                end
 
             end
 
