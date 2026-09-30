@@ -1581,6 +1581,41 @@ return function(Context)
     end
 
 
+    local function WaitForBasketEgg(
+        timeout
+    )
+
+        timeout =
+            tonumber(timeout)
+            or 1.5
+
+
+        local started =
+            os.clock()
+
+
+        repeat
+
+            if #Basket:GetChildren()
+                > 0
+            then
+
+                return true
+
+            end
+
+
+            task.wait(0.05)
+
+        until os.clock()
+            - started
+            >= timeout
+
+
+        return false
+    end
+
+
     local function GoVolcanoDipCurrentEgg()
 
         if not goVolcanoDipActive then
@@ -1681,28 +1716,9 @@ return function(Context)
         end
 
 
-        -- Tunggu server mengubah state egg.
-        local started =
-            os.clock()
-
-
-        while os.clock()
-                - started
-                < 2
-        do
-
-            if not HasEligibleVolcanoEgg()
-                or HasVolcanoFlight()
-            then
-
-                return true
-
-            end
-
-
-            task.wait(0.1)
-
-        end
+        -- Tetap berada di area Volcano Dip selama 4 detik
+        -- supaya proses mutate punya waktu selesai.
+        task.wait(4)
 
 
         return true
@@ -3465,6 +3481,13 @@ return function(Context)
 
 
             -- ================================================
+            -- DELAY BEFORE PICKUP
+            -- ================================================
+
+            task.wait(1)
+
+
+            -- ================================================
             -- TELEPORT TO EGG
             -- ================================================
 
@@ -3568,17 +3591,32 @@ return function(Context)
 
 
             -- ================================================
+            -- DELAY AFTER PICKUP
+            -- Tunggu Basket / state client selesai replikasi.
+            -- ================================================
+
+            task.wait(1)
+
+
+            -- ================================================
             -- GO VOLCANO DIP
             -- Dip egg yang baru diambil sebelum Gift / balik plot.
             -- ================================================
 
             if goVolcanoDipActive then
 
-                pcall(function()
+                if WaitForBasketEgg(
+                    1.5
+                )
+                then
 
-                    GoVolcanoDipCurrentEgg()
+                    pcall(function()
 
-                end)
+                        GoVolcanoDipCurrentEgg()
+
+                    end)
+
+                end
 
             end
 
