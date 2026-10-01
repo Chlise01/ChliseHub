@@ -113,6 +113,13 @@ return function(Context)
         )
 
 
+    local RebirthsData =
+        require(
+            GameData:
+            WaitForChild("Rebirths")
+        )
+
+
     local Mutations =
         require(
             GameData:
@@ -154,6 +161,11 @@ return function(Context)
         WaitForChild("BasketDrop")
 
 
+    local RebirthRemote =
+        GameRemotes:
+        WaitForChild("Rebirth")
+
+
     local EggPickupRemote =
         GameRemotes:
         WaitForChild("EggPickup")
@@ -169,6 +181,21 @@ return function(Context)
     local Basket =
         LocalPlayer:
         WaitForChild("Basket")
+
+
+    local SavedData =
+        LocalPlayer:
+        WaitForChild("SavedData")
+
+
+    local CashValue =
+        SavedData:
+        WaitForChild("Cash")
+
+
+    local RebirthsValue =
+        SavedData:
+        WaitForChild("Rebirths")
 
 
     local VolcanoDipRemote =
@@ -209,6 +236,7 @@ return function(Context)
 
     local autoUpdateHatchLuckActive = false
     local autoMaxHatchLuckActive = false
+    local autoRebirthActive = false
 
     local autoSellByRarityActive = false
     local autoSellByNameActive = false
@@ -1067,6 +1095,279 @@ return function(Context)
             FindFirstChild(
                 "HumanoidRootPart"
             )
+
+    end
+
+
+    -- ========================================================
+    -- REBIRTH HELPERS
+    -- Mengikuti syarat client game:
+    -- - belum mencapai cap
+    -- - Cash >= cost rebirth berikutnya
+    -- - punya pet requirement untuk tier berikutnya
+    -- ========================================================
+
+    local function OwnsRequiredRebirthPet(
+        requiredPet
+    )
+
+        if type(requiredPet)
+            ~= "string"
+            or requiredPet == ""
+        then
+
+            return false
+
+        end
+
+
+        local function ScanTools(
+            container
+        )
+
+            if not container then
+                return false
+            end
+
+
+            for _, child
+                in ipairs(
+                    container:
+                    GetChildren()
+                )
+            do
+
+                if child:IsA("Tool")
+                    and child:
+                        GetAttribute(
+                            "PetKey"
+                        )
+                then
+
+                    local cleanName =
+                        GetCleanPetName(
+                            child.Name
+                        )
+
+
+                    local petName =
+                        child:
+                        GetAttribute(
+                            "PetName"
+                        )
+
+
+                    if cleanName
+                            == requiredPet
+                        or GetCleanPetName(
+                            petName
+                        )
+                            == requiredPet
+                    then
+
+                        return true
+
+                    end
+
+                end
+
+            end
+
+
+            return false
+        end
+
+
+        if ScanTools(
+            LocalPlayer:
+            FindFirstChild(
+                "Backpack"
+            )
+        )
+        then
+
+            return true
+
+        end
+
+
+        local character =
+            LocalPlayer.Character
+
+
+        if ScanTools(
+            character
+        )
+        then
+
+            return true
+
+        end
+
+
+        -- Pet yang sedang dinaiki bisa tidak berada di Backpack.
+        local root =
+            character
+            and character:
+                FindFirstChild(
+                    "HumanoidRootPart"
+                )
+
+
+        local mountJoint =
+            root
+            and root:
+                FindFirstChild(
+                    "PetMountJoint"
+                )
+
+
+        local mountedPet =
+            mountJoint
+            and mountJoint.Part1
+            and mountJoint.Part1.Parent
+
+
+        if mountedPet then
+
+            local mountedName =
+                mountedPet:
+                GetAttribute(
+                    "PetName"
+                )
+                or mountedPet.Name
+
+
+            if GetCleanPetName(
+                mountedName
+            )
+                == requiredPet
+            then
+
+                return true
+
+            end
+
+        end
+
+
+        return false
+    end
+
+
+    local function GetRebirthEligibility()
+
+        local currentRebirths =
+            tonumber(
+                RebirthsValue.Value
+            )
+            or 0
+
+
+        local cap =
+            tonumber(
+                RebirthsData.Cap
+            )
+
+
+        if cap
+            and currentRebirths
+                >= cap
+        then
+
+            return
+                false,
+                "CapReached",
+                currentRebirths
+
+        end
+
+
+        local cost =
+            tonumber(
+                RebirthsData:
+                GetCost(
+                    currentRebirths
+                )
+            )
+
+
+        if not cost then
+
+            return
+                false,
+                "NoCost",
+                currentRebirths
+
+        end
+
+
+        if (
+            tonumber(
+                CashValue.Value
+            )
+            or 0
+        )
+            < cost
+        then
+
+            return
+                false,
+                "NotEnoughCash",
+                currentRebirths
+
+        end
+
+
+        local requirements =
+            GeneralData.RebirthRequirements
+
+
+        if type(requirements)
+            ~= "table"
+            or #requirements
+                == 0
+        then
+
+            return
+                false,
+                "NoRequirements",
+                currentRebirths
+
+        end
+
+
+        local requirementIndex =
+            math.clamp(
+                currentRebirths + 1,
+                1,
+                #requirements
+            )
+
+
+        local requiredPet =
+            requirements[
+                requirementIndex
+            ]
+
+
+        if not OwnsRequiredRebirthPet(
+            requiredPet
+        )
+        then
+
+            return
+                false,
+                "MissingPet",
+                currentRebirths
+
+        end
+
+
+        return
+            true,
+            nil,
+            currentRebirths
 
     end
 
@@ -2086,6 +2387,13 @@ return function(Context)
         )
 
 
+    local ServerTab =
+        Window:AddTab(
+            "SERVER",
+            "◇"
+        )
+
+
     -- ========================================================
     -- FARM UI
     -- ========================================================
@@ -2252,7 +2560,7 @@ return function(Context)
 
     local ServerSection =
         Window:AddSection(
-            FarmTab,
+            ServerTab,
             "Server Hop"
         )
 
@@ -2510,6 +2818,20 @@ return function(Context)
         function(state)
 
             autoMaxHatchLuckActive =
+                state
+
+        end
+    )
+
+
+    UpdateSection:AddToggle(
+        "AutoRebirth",
+        "Auto Rebirth",
+        false,
+
+        function(state)
+
+            autoRebirthActive =
                 state
 
         end
@@ -4255,6 +4577,111 @@ return function(Context)
 
 
             task.wait(1)
+
+        end
+
+    end)
+
+
+    -- ========================================================
+    -- AUTO REBIRTH
+    --
+    -- Tidak spam remote:
+    -- - hanya fire saat syarat berubah menjadi terpenuhi
+    -- - maksimal 1 kali untuk Rebirths.Value yang sama
+    -- - baru bisa fire lagi setelah rebirth level berubah
+    --   atau syarat sempat menjadi tidak terpenuhi
+    -- ========================================================
+
+    task.spawn(function()
+
+        local wasEligible =
+            false
+
+        local lastAttemptRebirthValue =
+            nil
+
+
+        while Runtime:IsCurrent() do
+
+            if not autoRebirthActive then
+
+                wasEligible =
+                    false
+
+                lastAttemptRebirthValue =
+                    nil
+
+                task.wait(0.5)
+                continue
+
+            end
+
+
+            local eligible,
+                reason,
+                currentRebirths =
+                GetRebirthEligibility()
+
+
+            if eligible then
+
+                local shouldAttempt =
+                    (
+                        not wasEligible
+                    )
+                    or (
+                        lastAttemptRebirthValue
+                            ~= currentRebirths
+                    )
+
+
+                if shouldAttempt then
+
+                    lastAttemptRebirthValue =
+                        currentRebirths
+
+
+                    local ok,
+                        err =
+                        pcall(function()
+
+                            RebirthRemote:
+                            FireServer()
+
+                        end)
+
+
+                    if not ok then
+
+                        warn(
+                            "[CHLISE HUB] Auto Rebirth failed:",
+                            err
+                        )
+
+                    end
+
+                end
+
+            else
+
+                -- Bila syarat menjadi false lagi, izinkan satu
+                -- percobaan baru saat nanti kembali eligible.
+                if wasEligible then
+
+                    lastAttemptRebirthValue =
+                        nil
+
+                end
+
+            end
+
+
+            wasEligible =
+                eligible
+
+
+            task.wait(0.35)
 
         end
 
