@@ -916,7 +916,7 @@ function UI.new(
 
                 Text =
                     config.Version
-                    or "v2.0",
+                    or "v2.1",
 
                 TextColor3 =
                     Color3.fromRGB(
