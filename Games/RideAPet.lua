@@ -211,6 +211,7 @@ return function(Context)
 
     local selectedEggsFarm = {}
     local selectedRaritiesFarm = {}
+    local minimumEggWeight = 0
 
     local selectedEggsPlace = {}
     local selectedRaritiesPlace = {}
@@ -2394,6 +2395,35 @@ return function(Context)
         )
 
 
+    -- Paksa urutan sidebar:
+    -- FARM -> PROGRESS -> ESP -> SERVER -> SETTINGS
+    if ServerTab
+        and ServerTab.Button
+    then
+
+        ServerTab.Button.LayoutOrder =
+            4
+
+    end
+
+
+    local ExistingSettingsTab =
+        Window.Tabs
+        and Window.Tabs[
+            "SETTINGS"
+        ]
+
+
+    if ExistingSettingsTab
+        and ExistingSettingsTab.Button
+    then
+
+        ExistingSettingsTab.Button.LayoutOrder =
+            5
+
+    end
+
+
     -- ========================================================
     -- FARM UI
     -- ========================================================
@@ -2429,6 +2459,49 @@ return function(Context)
             selectedRaritiesFarm = value
         end
     )
+
+
+    FarmSection:AddTextbox(
+        "MinimumEggWeight",
+        "Minimum Weight",
+        "Example: 5",
+
+        function(value)
+
+            local normalized =
+                tostring(
+                    value or ""
+                ):
+                gsub(
+                    ",",
+                    "."
+                )
+
+
+            local parsed =
+                tonumber(
+                    normalized
+                )
+
+
+            if parsed
+                and parsed > 0
+            then
+
+                minimumEggWeight =
+                    parsed
+
+            else
+
+                -- Blank / invalid / 0 / negative = filter off.
+                minimumEggWeight =
+                    0
+
+            end
+
+        end
+    )
+
 
     local GiftPlayerDropdown =
         FarmSection:AddDropdown(
@@ -3396,6 +3469,27 @@ return function(Context)
                     )
                     then
                         return
+                    end
+
+
+                    local eggWeight =
+                        tonumber(
+                            configObject:
+                            GetAttribute(
+                                "Weight"
+                            )
+                        )
+                        or 0
+
+
+                    if minimumEggWeight
+                            > 0
+                        and eggWeight
+                            < minimumEggWeight
+                    then
+
+                        return
+
                     end
 
 
