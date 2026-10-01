@@ -262,6 +262,358 @@ return function(Context)
 
 
     -- ========================================================
+    -- WEBHOOK STATE
+    -- ========================================================
+
+    local webhookUrl = ""
+
+    local webhookWorldEggActive = false
+    local webhookEggPickedUpActive = false
+    local webhookVolcanoDipActive = false
+    local webhookGiftEggActive = false
+    local webhookRebirthActive = false
+    local webhookServerHopActive = false
+    local webhookErrorsActive = false
+
+    local selectedWebhookWorldEggs = {}
+
+    local WebhookState = {
+        SentWorldEggs = {}
+    }
+
+
+    -- ========================================================
+    -- WEBHOOK HELPERS
+    -- ========================================================
+
+    local function TrimWebhookText(
+        value
+    )
+
+        return tostring(
+            value or ""
+        ):
+        match(
+            "^%s*(.-)%s*$"
+        )
+        or ""
+
+    end
+
+
+    local function GetWebhookRequest()
+
+        local globalEnv =
+            (
+                getgenv
+                and getgenv()
+            )
+            or _G
+
+
+        if type(request)
+            == "function"
+        then
+            return request
+        end
+
+
+        if type(http_request)
+            == "function"
+        then
+            return http_request
+        end
+
+
+        if type(globalEnv.request)
+            == "function"
+        then
+            return globalEnv.request
+        end
+
+
+        if type(globalEnv.http_request)
+            == "function"
+        then
+            return globalEnv.http_request
+        end
+
+
+        if type(syn)
+                == "table"
+            and type(syn.request)
+                == "function"
+        then
+            return syn.request
+        end
+
+
+        return nil
+    end
+
+
+    local function IsWebhookConfigured()
+
+        return
+            type(webhookUrl)
+                == "string"
+            and webhookUrl
+                ~= ""
+
+    end
+
+
+    local function SendWebhook(
+        title,
+        fields,
+        description
+    )
+
+        if not IsWebhookConfigured() then
+            return false
+        end
+
+
+        local requestFunction =
+            GetWebhookRequest()
+
+
+        if not requestFunction then
+
+            warn(
+                "[CHLISE HUB] Webhook request function not supported by executor."
+            )
+
+            return false
+        end
+
+
+        local embedFields = {}
+
+
+        if type(fields)
+            == "table"
+        then
+
+            for _, field
+                in ipairs(fields)
+            do
+
+                table.insert(
+                    embedFields,
+                    {
+                        name =
+                            tostring(
+                                field.name
+                                or "Info"
+                            ),
+
+                        value =
+                            tostring(
+                                field.value
+                                or "-"
+                            ),
+
+                        inline =
+                            field.inline
+                            ~= false
+                    }
+                )
+
+            end
+
+        end
+
+
+        local payload = {
+            username =
+                "Chlise Hub",
+
+            embeds = {
+                {
+                    title =
+                        tostring(
+                            title
+                            or "Chlise Hub"
+                        ),
+
+                    description =
+                        description
+                        and tostring(
+                            description
+                        )
+                        or nil,
+
+                    fields =
+                        embedFields,
+
+                    footer = {
+                        text =
+                            "Ride A Pet"
+                    },
+
+                    timestamp =
+                        DateTime.now():
+                        ToIsoDate()
+                }
+            }
+        }
+
+
+        local ok,
+            response =
+            pcall(function()
+
+                return requestFunction(
+                    {
+                        Url =
+                            webhookUrl,
+
+                        Method =
+                            "POST",
+
+                        Headers = {
+                            ["Content-Type"] =
+                                "application/json"
+                        },
+
+                        Body =
+                            HttpService:
+                            JSONEncode(
+                                payload
+                            )
+                    }
+                )
+
+            end)
+
+
+        if not ok then
+
+            warn(
+                "[CHLISE HUB] Webhook request failed:",
+                response
+            )
+
+            return false
+        end
+
+
+        local statusCode =
+            type(response)
+                == "table"
+            and (
+                response.StatusCode
+                or response.Status
+                or response.status_code
+            )
+            or nil
+
+
+        if statusCode
+            and (
+                statusCode < 200
+                or statusCode >= 300
+            )
+        then
+
+            warn(
+                "[CHLISE HUB] Webhook HTTP status:",
+                statusCode
+            )
+
+            return false
+        end
+
+
+        return true
+    end
+
+
+    local function IsWebhookEggSelected(
+        eggName
+    )
+
+        if not eggName then
+            return false
+        end
+
+
+        if type(selectedWebhookWorldEggs)
+            ~= "table"
+        then
+            return false
+        end
+
+
+        for key,
+            value
+            in pairs(
+                selectedWebhookWorldEggs
+            )
+        do
+
+            if key
+                    == eggName
+                and value
+                    == true
+            then
+
+                return true
+
+            end
+
+
+            if value
+                == eggName
+            then
+
+                return true
+
+            end
+
+        end
+
+
+        return false
+    end
+
+
+    local function NotifyWebhookError(
+        message
+    )
+
+        if not webhookErrorsActive then
+            return
+        end
+
+
+        task.spawn(function()
+
+            SendWebhook(
+                "Chlise Hub — Error",
+                {
+                    {
+                        name =
+                            "Message",
+
+                        value =
+                            tostring(
+                                message
+                            ),
+
+                        inline =
+                            false
+                    }
+                }
+            )
+
+        end)
+
+    end
+
+
+    -- ========================================================
     -- SERVER HOP RUNTIME STATE
     --
     -- Tidak masuk named config. Hanya dipakai selama runtime
@@ -2265,6 +2617,11 @@ return function(Context)
                 "[CHLISE HUB] No available server found."
             )
 
+
+            NotifyWebhookError(
+                "Server Hop failed: no available server found."
+            )
+
             return false
         end
 
@@ -2284,6 +2641,57 @@ return function(Context)
             "->",
             targetId
         )
+
+
+        if webhookServerHopActive then
+
+            task.spawn(function()
+
+                SendWebhook(
+                    "Chlise Hub — Server Hop",
+                    {
+                        {
+                            name =
+                                "Reason",
+
+                            value =
+                                tostring(
+                                    reason
+                                    or "Manual"
+                                )
+                        },
+
+                        {
+                            name =
+                                "Current Server",
+
+                            value =
+                                tostring(
+                                    game.JobId
+                                ),
+
+                            inline =
+                                false
+                        },
+
+                        {
+                            name =
+                                "Target Server",
+
+                            value =
+                                tostring(
+                                    targetId
+                                ),
+
+                            inline =
+                                false
+                        }
+                    }
+                )
+
+            end)
+
+        end
 
 
         local teleportOk,
@@ -2308,6 +2716,14 @@ return function(Context)
             warn(
                 "[CHLISE HUB] Server Hop failed:",
                 teleportError
+            )
+
+
+            NotifyWebhookError(
+                "Server Hop failed: "
+                .. tostring(
+                    teleportError
+                )
             )
 
             return false
@@ -2388,6 +2804,13 @@ return function(Context)
         )
 
 
+    local WebhookTab =
+        Window:AddTab(
+            "WEBHOOK",
+            "✦"
+        )
+
+
     local ServerTab =
         Window:AddTab(
             "SERVER",
@@ -2396,14 +2819,39 @@ return function(Context)
 
 
     -- Paksa urutan sidebar:
-    -- FARM -> PROGRESS -> ESP -> SERVER -> SETTINGS
+    -- FARM -> PROGRESS -> ESP -> WEBHOOK -> SERVER -> SETTINGS
+    if FarmTab
+        and FarmTab.Button
+    then
+        FarmTab.Button.LayoutOrder = 1
+    end
+
+
+    if ProgressTab
+        and ProgressTab.Button
+    then
+        ProgressTab.Button.LayoutOrder = 2
+    end
+
+
+    if ESPTab
+        and ESPTab.Button
+    then
+        ESPTab.Button.LayoutOrder = 3
+    end
+
+
+    if WebhookTab
+        and WebhookTab.Button
+    then
+        WebhookTab.Button.LayoutOrder = 4
+    end
+
+
     if ServerTab
         and ServerTab.Button
     then
-
-        ServerTab.Button.LayoutOrder =
-            4
-
+        ServerTab.Button.LayoutOrder = 5
     end
 
 
@@ -2417,10 +2865,7 @@ return function(Context)
     if ExistingSettingsTab
         and ExistingSettingsTab.Button
     then
-
-        ExistingSettingsTab.Button.LayoutOrder =
-            5
-
+        ExistingSettingsTab.Button.LayoutOrder = 6
     end
 
 
@@ -2602,6 +3047,172 @@ return function(Context)
 
 
     -- ========================================================
+    -- WEBHOOK - WORLD EGG
+    -- Event-based, tidak polling.
+    -- ========================================================
+
+    local function HandleWorldEggWebhook(
+        eggObject
+    )
+
+        if not webhookWorldEggActive
+            or not eggObject
+        then
+            return
+        end
+
+
+        local eggName =
+            eggObject:
+            GetAttribute(
+                "Egg"
+            )
+
+
+        if not IsWebhookEggSelected(
+            eggName
+        )
+        then
+            return
+        end
+
+
+        local eggId =
+            eggObject.Name
+
+
+        if WebhookState.SentWorldEggs[
+            eggId
+        ]
+        then
+            return
+        end
+
+
+        WebhookState.SentWorldEggs[
+            eggId
+        ] = true
+
+
+        local rarity =
+            GetEggRarity(
+                eggName
+            )
+
+
+        local area =
+            eggObject:
+            GetAttribute(
+                "Area"
+            )
+
+
+        task.spawn(function()
+
+            SendWebhook(
+                "Chlise Hub — World Egg Spawned",
+                {
+                    {
+                        name =
+                            "Egg",
+
+                        value =
+                            tostring(
+                                eggName
+                            )
+                    },
+
+                    {
+                        name =
+                            "Rarity",
+
+                        value =
+                            tostring(
+                                rarity
+                                or "Unknown"
+                            )
+                    },
+
+                    {
+                        name =
+                            "Area",
+
+                        value =
+                            tostring(
+                                area
+                                or "Unknown"
+                            )
+                    }
+                }
+            )
+
+        end)
+
+    end
+
+
+    do
+
+        local serverData =
+            ReplicatedStorage:
+            FindFirstChild(
+                "ServerData"
+            )
+
+
+        local activeEggs =
+            serverData
+            and serverData:
+                FindFirstChild(
+                    "ActiveEggs"
+                )
+
+
+        if activeEggs then
+
+            Runtime:TrackConnection(
+
+                activeEggs.ChildAdded:
+                Connect(function(
+                    eggObject
+                )
+
+                    task.wait(0.05)
+
+                    HandleWorldEggWebhook(
+                        eggObject
+                    )
+
+                end)
+
+            )
+
+
+            Runtime:TrackConnection(
+
+                activeEggs.ChildRemoved:
+                Connect(function(
+                    eggObject
+                )
+
+                    if eggObject then
+
+                        WebhookState.SentWorldEggs[
+                            eggObject.Name
+                        ] = nil
+
+                    end
+
+                end)
+
+            )
+
+        end
+
+    end
+
+
+    -- ========================================================
     -- AUTO FARM
     -- ========================================================
 
@@ -2630,6 +3241,194 @@ return function(Context)
     -- ========================================================
     -- SERVER HOP UI
     -- ========================================================
+
+    -- ========================================================
+    -- WEBHOOK UI
+    -- ========================================================
+
+    local WebhookSection =
+        Window:AddSection(
+            WebhookTab,
+            "Webhook"
+        )
+
+
+    WebhookSection:AddTextbox(
+        "WebhookURL",
+        "Webhook URL",
+        "https://discord.com/api/webhooks/...",
+
+        function(value)
+
+            webhookUrl =
+                TrimWebhookText(
+                    value
+                )
+
+        end
+    )
+
+
+    WebhookSection:AddButton(
+        "Test Webhook",
+
+        function()
+
+            task.spawn(function()
+
+                local sent =
+                    SendWebhook(
+                        "Chlise Hub — Test Webhook",
+                        {
+                            {
+                                name =
+                                    "Status",
+
+                                value =
+                                    "Webhook connected successfully.",
+
+                                inline =
+                                    false
+                            },
+
+                            {
+                                name =
+                                    "Player",
+
+                                value =
+                                    LocalPlayer.Name
+                            }
+                        }
+                    )
+
+
+                if not sent then
+
+                    warn(
+                        "[CHLISE HUB] Test Webhook failed."
+                    )
+
+                end
+
+            end)
+
+        end
+    )
+
+
+    WebhookSection:AddCheckbox(
+        "WebhookWorldEgg",
+        "World Egg",
+        false,
+
+        function(state)
+
+            webhookWorldEggActive =
+                state
+
+        end
+    )
+
+
+    WebhookSection:AddDropdown(
+        "WebhookWorldEggSelection",
+        "World Egg Selection",
+        MASTER_EGGS,
+        true,
+        selectedWebhookWorldEggs,
+
+        function(value)
+
+            selectedWebhookWorldEggs =
+                value
+
+        end
+    )
+
+
+    WebhookSection:AddCheckbox(
+        "WebhookEggPickedUp",
+        "Egg Picked Up",
+        false,
+
+        function(state)
+
+            webhookEggPickedUpActive =
+                state
+
+        end
+    )
+
+
+    WebhookSection:AddCheckbox(
+        "WebhookVolcanoDip",
+        "Volcano Dip",
+        false,
+
+        function(state)
+
+            webhookVolcanoDipActive =
+                state
+
+        end
+    )
+
+
+    WebhookSection:AddCheckbox(
+        "WebhookGiftEgg",
+        "Gift Egg",
+        false,
+
+        function(state)
+
+            webhookGiftEggActive =
+                state
+
+        end
+    )
+
+
+    WebhookSection:AddCheckbox(
+        "WebhookRebirth",
+        "Rebirth",
+        false,
+
+        function(state)
+
+            webhookRebirthActive =
+                state
+
+        end
+    )
+
+
+    WebhookSection:AddCheckbox(
+        "WebhookServerHop",
+        "Server Hop",
+        false,
+
+        function(state)
+
+            webhookServerHopActive =
+                state
+
+        end
+    )
+
+
+    WebhookSection:AddCheckbox(
+        "WebhookErrors",
+        "Errors",
+        false,
+
+        function(state)
+
+            webhookErrorsActive =
+                state
+
+        end
+    )
+
 
     local ServerSection =
         Window:AddSection(
@@ -3994,6 +4793,68 @@ return function(Context)
             end
 
 
+            if webhookEggPickedUpActive then
+
+                local pickedWeight =
+                    tonumber(
+                        targetObject:
+                        GetAttribute(
+                            "Weight"
+                        )
+                    )
+                    or 0
+
+
+                local pickedRarity =
+                    GetEggRarity(
+                        targetName
+                    )
+
+
+                task.spawn(function()
+
+                    SendWebhook(
+                        "Chlise Hub — Egg Picked Up",
+                        {
+                            {
+                                name =
+                                    "Egg",
+
+                                value =
+                                    tostring(
+                                        targetName
+                                    )
+                            },
+
+                            {
+                                name =
+                                    "Rarity",
+
+                                value =
+                                    tostring(
+                                        pickedRarity
+                                        or "Unknown"
+                                    )
+                            },
+
+                            {
+                                name =
+                                    "Weight",
+
+                                value =
+                                    string.format(
+                                        "%.2f",
+                                        pickedWeight
+                                    )
+                            }
+                        }
+                    )
+
+                end)
+
+            end
+
+
             -- ================================================
             -- GO VOLCANO DIP
             -- Setelah pickup sukses, langsung teleport ke Volcano Dip
@@ -4002,7 +4863,7 @@ return function(Context)
             -- 1. Teleport ke Volcano Dip
             -- 2. Tunggu tombol / client recognize area
             -- 3. Fire VolcanoDip remote
-            -- 4. Stay 4 detik DI VOLCANO
+            -- 4. Stay 10 detik DI VOLCANO
             -- ================================================
 
             if goVolcanoDipActive then
@@ -4063,6 +4924,14 @@ return function(Context)
                             dipError
                         )
 
+
+                        NotifyWebhookError(
+                            "VolcanoDip remote failed: "
+                            .. tostring(
+                                dipError
+                            )
+                        )
+
                     elseif not buttonReady then
 
                         warn(
@@ -4098,10 +4967,49 @@ return function(Context)
 
                     end
 
+
+                    if webhookVolcanoDipActive
+                        and dipOk
+                    then
+
+                        task.spawn(function()
+
+                            SendWebhook(
+                                "Chlise Hub — Volcano Dip",
+                                {
+                                    {
+                                        name =
+                                            "Egg",
+
+                                        value =
+                                            tostring(
+                                                targetName
+                                            )
+                                    },
+
+                                    {
+                                        name =
+                                            "Status",
+
+                                        value =
+                                            "Dip process finished"
+                                    }
+                                }
+                            )
+
+                        end)
+
+                    end
+
                 else
 
                     warn(
                         "[CHLISE HUB] Volcano Dip skipped: HumanoidRootPart missing."
+                    )
+
+
+                    NotifyWebhookError(
+                        "Volcano Dip skipped: HumanoidRootPart missing."
                     )
 
                 end
@@ -4145,11 +5053,60 @@ return function(Context)
 
             if giftEggActive then
 
-                pcall(function()
+                local giftCallOk,
+                    giftResult =
+                    pcall(function()
 
-                    GiftCurrentEgg()
+                        return GiftCurrentEgg()
 
-                end)
+                    end)
+
+
+                if giftCallOk
+                    and giftResult
+                    and webhookGiftEggActive
+                then
+
+                    task.spawn(function()
+
+                        SendWebhook(
+                            "Chlise Hub — Gift Egg",
+                            {
+                                {
+                                    name =
+                                        "Egg",
+
+                                    value =
+                                        tostring(
+                                            targetName
+                                        )
+                                },
+
+                                {
+                                    name =
+                                        "Player",
+
+                                    value =
+                                        tostring(
+                                            selectedGiftPlayer
+                                            or "Unknown"
+                                        )
+                                }
+                            }
+                        )
+
+                    end)
+
+                elseif not giftCallOk then
+
+                    NotifyWebhookError(
+                        "Gift Egg failed: "
+                        .. tostring(
+                            giftResult
+                        )
+                    )
+
+                end
 
             end
 
@@ -4736,6 +5693,10 @@ return function(Context)
                         currentRebirths
 
 
+                    local rebirthBefore =
+                        currentRebirths
+
+
                     local ok,
                         err =
                         pcall(function()
@@ -4752,6 +5713,69 @@ return function(Context)
                             "[CHLISE HUB] Auto Rebirth failed:",
                             err
                         )
+
+
+                        NotifyWebhookError(
+                            "Auto Rebirth failed: "
+                            .. tostring(
+                                err
+                            )
+                        )
+
+                    elseif webhookRebirthActive then
+
+                        task.spawn(function()
+
+                            local started =
+                                os.clock()
+
+
+                            while Runtime:IsCurrent()
+                                and os.clock()
+                                    - started
+                                    < 3
+                            do
+
+                                local rebirthAfter =
+                                    tonumber(
+                                        RebirthsValue.Value
+                                    )
+                                    or rebirthBefore
+
+
+                                if rebirthAfter
+                                    > rebirthBefore
+                                then
+
+                                    SendWebhook(
+                                        "Chlise Hub — Rebirth",
+                                        {
+                                            {
+                                                name =
+                                                    "Rebirth",
+
+                                                value =
+                                                    tostring(
+                                                        rebirthBefore
+                                                    )
+                                                    .. " → "
+                                                    .. tostring(
+                                                        rebirthAfter
+                                                    )
+                                            }
+                                        }
+                                    )
+
+                                    break
+
+                                end
+
+
+                                task.wait(0.1)
+
+                            end
+
+                        end)
 
                     end
 
