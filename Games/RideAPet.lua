@@ -1226,7 +1226,7 @@ return function(Context)
     end
 
 
-    local function GetLairDoorPosition()
+    local function GetLairDoorCFrame()
 
         local volcano =
             workspace:
@@ -1258,7 +1258,7 @@ return function(Context)
             then
 
                 return
-                    validate.Position
+                    validate.CFrame
 
             elseif validate:IsA(
                 "Model"
@@ -1268,7 +1268,6 @@ return function(Context)
                 return
                     validate:
                     GetPivot()
-                    .Position
 
             end
 
@@ -1292,7 +1291,7 @@ return function(Context)
             then
 
                 return
-                    entrance.Position
+                    entrance.CFrame
 
             elseif entrance:IsA(
                 "Model"
@@ -1302,7 +1301,6 @@ return function(Context)
                 return
                     entrance:
                     GetPivot()
-                    .Position
 
             end
 
@@ -1310,6 +1308,20 @@ return function(Context)
 
 
         return nil
+    end
+
+
+    local function GetLairDoorPosition()
+
+        local cf =
+            GetLairDoorCFrame()
+
+
+        return
+            cf
+            and cf.Position
+            or nil
+
     end
 
 
@@ -4572,8 +4584,14 @@ return function(Context)
                 end)
 
 
+                local validateCFrame =
+                    GetLairDoorCFrame()
+
+
                 local validatePosition =
-                    GetLairDoorPosition()
+                    validateCFrame
+                    and validateCFrame.Position
+                    or nil
 
 
                 if not validatePosition then
@@ -4593,9 +4611,27 @@ return function(Context)
                 end
 
 
-                -- Masuk ke lair dengan bergerak menuju VolcanoValidate,
-                -- bukan teleport instan. Tween 3 detik memberi trigger
-                -- VolcanoValidate waktu untuk mendeteksi karakter.
+                -- 1) Teleport dulu ke area VolcanoValidate.
+                -- Start sedikit di depan trigger supaya tween berikutnya
+                -- benar-benar bergerak MENEMBUS / menuju pusat validate.
+                local tweenStartPosition =
+                    validatePosition
+                    - validateCFrame.LookVector
+                    * 6
+
+
+                root.CFrame =
+                    CFrame.new(
+                        tweenStartPosition,
+                        validatePosition
+                    )
+
+
+                task.wait(0.15)
+
+
+                -- 2) Setelah teleport, tween 3 detik ke arah/pusat VolcanoValidate.
+                -- Ini memberi trigger waktu untuk mendeteksi karakter.
                 local validateReached =
                     TweenRootToPosition(
                         root,
@@ -4612,8 +4648,8 @@ return function(Context)
                 end
 
 
-                -- Setelah tween selesai di VolcanoValidate, baru tunggu
-                -- Volcanic Egg dirender lalu teleport ke egg seperti biasa.
+                -- 3) Setelah tween selesai, baru tunggu Volcanic Egg
+                -- dirender lalu teleport/pickup seperti biasa.
                 targetModel,
                     targetPrompt =
                     WaitForRenderedEgg(
@@ -4999,6 +5035,10 @@ return function(Context)
             -- ================================================
 
             if goVolcanoDipActive then
+
+                -- Delay tambahan sebelum menuju Volcano Dip.
+                task.wait(2)
+
 
                 local currentCharacter,
                     currentHumanoid,
