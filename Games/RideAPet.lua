@@ -1226,6 +1226,57 @@ return function(Context)
     end
 
 
+    local function GetVolcanoEntranceCFrame()
+
+        local volcano =
+            workspace:
+            FindFirstChild(
+                "Volcano"
+            )
+
+
+        if not volcano then
+            return nil
+        end
+
+
+        local entrance =
+            volcano:
+            FindFirstChild(
+                "VolcanoEntrance",
+                true
+            )
+
+
+        if not entrance then
+            return nil
+        end
+
+
+        if entrance:IsA(
+            "BasePart"
+        )
+        then
+
+            return
+                entrance.CFrame
+
+        elseif entrance:IsA(
+            "Model"
+        )
+        then
+
+            return
+                entrance:
+                GetPivot()
+
+        end
+
+
+        return nil
+    end
+
+
     local function GetLairDoorCFrame()
 
         local volcano =
@@ -4584,6 +4635,10 @@ return function(Context)
                 end)
 
 
+                local entranceCFrame =
+                    GetVolcanoEntranceCFrame()
+
+
                 local validateCFrame =
                     GetLairDoorCFrame()
 
@@ -4594,7 +4649,9 @@ return function(Context)
                     or nil
 
 
-                if not validatePosition then
+                if not entranceCFrame
+                    or not validatePosition
+                then
 
                     if autoServerHopActive
                         and not noTargetSince
@@ -4611,27 +4668,34 @@ return function(Context)
                 end
 
 
-                -- 1) Teleport dulu ke area VolcanoValidate.
-                -- Start sedikit di depan trigger supaya tween berikutnya
-                -- benar-benar bergerak MENEMBUS / menuju pusat validate.
-                local tweenStartPosition =
-                    validatePosition
-                    - validateCFrame.LookVector
-                    * 6
+                local character =
+                    LocalPlayer.Character
 
 
-                root.CFrame =
-                    CFrame.new(
-                        tweenStartPosition,
-                        validatePosition
-                    )
+                if not character
+                    or not root
+                    or not root.Parent
+                then
+
+                    task.wait(0.2)
+                    continue
+
+                end
+
+
+                -- 1) Teleport dulu ke VolcanoEntrance.
+                character:
+                PivotTo(
+                    entranceCFrame
+                )
 
 
                 task.wait(0.15)
 
 
-                -- 2) Setelah teleport, tween 3 detik ke arah/pusat VolcanoValidate.
-                -- Ini memberi trigger waktu untuk mendeteksi karakter.
+                -- 2) Dari VolcanoEntrance, tween 3 detik menuju
+                -- pusat VolcanoValidate supaya trigger terlewati
+                -- seperti player benar-benar masuk melalui pintu.
                 local validateReached =
                     TweenRootToPosition(
                         root,
@@ -4648,8 +4712,9 @@ return function(Context)
                 end
 
 
-                -- 3) Setelah tween selesai, baru tunggu Volcanic Egg
-                -- dirender lalu teleport/pickup seperti biasa.
+                -- 3) Setelah sampai VolcanoValidate, baru tunggu
+                -- Volcanic Egg dirender. Setelah terdeteksi, flow
+                -- normal di bawah akan teleport ke egg dan pickup.
                 targetModel,
                     targetPrompt =
                     WaitForRenderedEgg(
