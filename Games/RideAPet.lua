@@ -47,6 +47,9 @@ return function(Context)
     local TeleportService =
         game:GetService("TeleportService")
 
+    local TweenService =
+        game:GetService("TweenService")
+
     local HttpService =
         game:GetService("HttpService")
 
@@ -1103,6 +1106,123 @@ return function(Context)
 
 
         return nil
+    end
+
+
+    local function TweenRootToPosition(
+        root,
+        position,
+        duration
+    )
+
+        if not root
+            or not root.Parent
+            or typeof(position)
+                ~= "Vector3"
+        then
+
+            return false
+
+        end
+
+
+        duration =
+            tonumber(duration)
+            or 3
+
+
+        local tween =
+            TweenService:
+            Create(
+                root,
+
+                TweenInfo.new(
+                    duration,
+                    Enum.EasingStyle.Linear,
+                    Enum.EasingDirection.Out
+                ),
+
+                {
+                    CFrame =
+                        CFrame.new(
+                            position
+                        )
+                }
+            )
+
+
+        local completed =
+            false
+
+        local connection =
+            tween.Completed:
+            Connect(function()
+
+                completed =
+                    true
+
+            end)
+
+
+        tween:Play()
+
+
+        local started =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and root.Parent
+            and not completed
+            and os.clock()
+                - started
+                < duration + 0.5
+        do
+
+            task.wait(0.03)
+
+        end
+
+
+        if connection then
+
+            connection:
+            Disconnect()
+
+        end
+
+
+        if not Runtime:IsCurrent()
+            or not root.Parent
+        then
+
+            pcall(function()
+
+                tween:
+                Cancel()
+
+            end)
+
+            return false
+
+        end
+
+
+        if not completed then
+
+            pcall(function()
+
+                tween:
+                Cancel()
+
+            end)
+
+            return false
+
+        end
+
+
+        return true
     end
 
 
@@ -4473,15 +4593,27 @@ return function(Context)
                 end
 
 
-                root.CFrame =
-                    CFrame.new(
-                        validatePosition
+                -- Masuk ke lair dengan bergerak menuju VolcanoValidate,
+                -- bukan teleport instan. Tween 3 detik memberi trigger
+                -- VolcanoValidate waktu untuk mendeteksi karakter.
+                local validateReached =
+                    TweenRootToPosition(
+                        root,
+                        validatePosition,
+                        3
                     )
 
 
-                task.wait(0.45)
+                if not validateReached then
+
+                    task.wait(0.2)
+                    continue
+
+                end
 
 
+                -- Setelah tween selesai di VolcanoValidate, baru tunggu
+                -- Volcanic Egg dirender lalu teleport ke egg seperti biasa.
                 targetModel,
                     targetPrompt =
                     WaitForRenderedEgg(
