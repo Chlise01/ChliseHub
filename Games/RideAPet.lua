@@ -1226,6 +1226,146 @@ return function(Context)
     end
 
 
+    local function SmoothMoveCharacter(
+        character,
+        root,
+        targetPosition,
+        duration
+    )
+
+        if not character
+            or not character.Parent
+            or not root
+            or not root.Parent
+            or typeof(targetPosition)
+                ~= "Vector3"
+        then
+
+            return false
+
+        end
+
+
+        duration =
+            tonumber(duration)
+            or 5
+
+
+        local startCFrame =
+            character:
+            GetPivot()
+
+
+        local startPosition =
+            startCFrame.Position
+
+
+        local lookVector =
+            startCFrame.LookVector
+
+
+        local humanoid =
+            character:
+            FindFirstChildOfClass(
+                "Humanoid"
+            )
+
+
+        local oldAutoRotate =
+            humanoid
+            and humanoid.AutoRotate
+
+
+        if humanoid then
+
+            humanoid.AutoRotate =
+                false
+
+        end
+
+
+        root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        root.AssemblyAngularVelocity =
+            Vector3.zero
+
+
+        local started =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and character.Parent
+            and root.Parent
+        do
+
+            local alpha =
+                math.clamp(
+                    (
+                        os.clock()
+                        - started
+                    )
+                    / duration,
+                    0,
+                    1
+                )
+
+
+            local position =
+                startPosition:
+                Lerp(
+                    targetPosition,
+                    alpha
+                )
+
+
+            character:
+            PivotTo(
+                CFrame.lookAt(
+                    position,
+                    position
+                    + lookVector
+                )
+            )
+
+
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
+
+
+            if alpha >= 1 then
+                break
+            end
+
+
+            RunService.RenderStepped:
+            Wait()
+
+        end
+
+
+        if humanoid
+            and humanoid.Parent
+        then
+
+            humanoid.AutoRotate =
+                oldAutoRotate
+
+        end
+
+
+        return
+            Runtime:IsCurrent()
+            and character.Parent
+            and root.Parent
+
+    end
+
+
     local function GetVolcanoEntranceCFrame()
 
         local volcano =
@@ -4690,17 +4830,41 @@ return function(Context)
                 )
 
 
-                task.wait(0.15)
+                task.wait(0.1)
 
 
-                -- 2) Dari VolcanoEntrance, tween 3 detik menuju
-                -- pusat VolcanoValidate supaya trigger terlewati
-                -- seperti player benar-benar masuk melalui pintu.
+                -- 2) Bergerak HALUS dari VolcanoEntrance, melewati
+                -- VolcanoValidate, lalu masuk lebih dalam.
+                -- Arah dihitung dari Entrance -> Validate supaya
+                -- tidak bergantung pada LookVector part yang bisa terbalik.
+                local entrancePosition =
+                    entranceCFrame.Position
+
+
+                local travelVector =
+                    validatePosition
+                    - entrancePosition
+
+
+                local travelDirection =
+                    travelVector.Magnitude
+                        > 0.01
+                    and travelVector.Unit
+                    or validateCFrame.LookVector
+
+
+                local deepTargetPosition =
+                    validatePosition
+                    + travelDirection
+                    * 12
+
+
                 local validateReached =
-                    TweenRootToPosition(
+                    SmoothMoveCharacter(
+                        character,
                         root,
-                        validatePosition,
-                        3
+                        deepTargetPosition,
+                        5
                     )
 
 
@@ -4712,9 +4876,9 @@ return function(Context)
                 end
 
 
-                -- 3) Setelah sampai VolcanoValidate, baru tunggu
-                -- Volcanic Egg dirender. Setelah terdeteksi, flow
-                -- normal di bawah akan teleport ke egg dan pickup.
+                -- 3) Setelah benar-benar masuk lebih dalam, baru tunggu
+                -- Volcanic Egg dirender. Setelah terdeteksi, langsung
+                -- teleport ke egg lalu trigger pickup.
                 targetModel,
                     targetPrompt =
                     WaitForRenderedEgg(
@@ -4814,31 +4978,36 @@ return function(Context)
                 )
 
 
-            -- Jangan pakai delay tetap sebelum pickup.
-            -- Tunggu sebentar hanya sampai prompt benar-benar Enabled
-            -- setelah posisi karakter berpindah.
-            local promptReadyStarted =
-                os.clock()
+            -- Egg normal menunggu prompt siap sebentar.
+            -- Volcanic Egg langsung trigger pickup setelah teleport.
+            if targetName
+                ~= "Volcanic Egg"
+            then
+
+                local promptReadyStarted =
+                    os.clock()
 
 
-            while Runtime:IsCurrent()
-                and autoFarmActive
-                and os.clock()
-                    - promptReadyStarted
-                    < 0.6
-            do
+                while Runtime:IsCurrent()
+                    and autoFarmActive
+                    and os.clock()
+                        - promptReadyStarted
+                        < 0.6
+                do
 
-                if targetPrompt
-                    and targetPrompt.Parent
-                    and targetPrompt.Enabled
-                then
+                    if targetPrompt
+                        and targetPrompt.Parent
+                        and targetPrompt.Enabled
+                    then
 
-                    break
+                        break
+
+                    end
+
+
+                    task.wait(0.03)
 
                 end
-
-
-                task.wait(0.03)
 
             end
 
@@ -5099,7 +5268,10 @@ return function(Context)
             -- 4. Stay 10 detik DI VOLCANO
             -- ================================================
 
-            if goVolcanoDipActive then
+            if goVolcanoDipActive
+                and targetName
+                    ~= "Volcanic Egg"
+            then
 
                 -- Delay tambahan sebelum menuju Volcano Dip.
                 task.wait(2)
