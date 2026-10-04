@@ -265,36 +265,22 @@ return function(Context)
 
     -- Consolidated to avoid Luau's 200-local register limit.
     local TravelState = {
-        -- Low -> high test ladder.
-        -- Egg travel and return-to-plot use the SAME step.
         ArrivalDurations = {
-            0.5,
-            1.0,
-            1.5,
-            2.0,
-            3.0,
-            4.0,
-            5.0,
-            6.0,
-            8.0,
-            10.0,
-            12.0
+            12.0,
+            14.0,
+            16.0,
+            18.0,
+            20.0
         },
 
         ArrivalIndex = 1,
 
         EggDurations = {
-            0.5,
-            1.0,
-            1.5,
-            2.0,
-            3.0,
-            4.0,
-            5.0,
-            6.0,
             8.0,
             10.0,
-            12.0
+            12.0,
+            15.0,
+            18.0
         },
 
         EggIndex = 1,
@@ -2129,14 +2115,6 @@ return function(Context)
         end
 
 
-        -- Keep egg travel on the same test step as return-to-plot.
-        TravelState.EggIndex =
-            math.min(
-                TravelState.ArrivalIndex,
-                #TravelState.EggDurations
-            )
-
-
         local nextDuration =
             TravelState.ArrivalDurations[
                 TravelState.ArrivalIndex
@@ -2212,7 +2190,7 @@ return function(Context)
 
         print(
             string.format(
-                "[CHLISE HUB] DURATION TEST %.1fs | Return travel | distance %.1f | est. speed %.1f studs/s | riding=%s",
+                "[CHLISE HUB] Arrival travel %.1fs | distance %.1f | est. speed %.1f studs/s | riding=%s",
                 duration,
                 distance,
                 estimatedSpeed,
@@ -2519,7 +2497,7 @@ return function(Context)
             if #pending == 0 then
 
                 print(
-                    "[CHLISE HUB] MIN DURATION CANDIDATE SUCCESS:",
+                    "[CHLISE HUB] Arrival SUCCESS at duration:",
                     tostring(
                         duration
                     )
@@ -2565,7 +2543,7 @@ return function(Context)
         if #ids == 0 then
 
             print(
-                "[CHLISE HUB] MIN DURATION CANDIDATE SUCCESS:",
+                "[CHLISE HUB] Arrival SUCCESS at duration:",
                 tostring(
                     duration
                 )
@@ -2634,7 +2612,7 @@ return function(Context)
             if #remaining == 0 then
 
                 print(
-                    "[CHLISE HUB] MIN DURATION CANDIDATE SUCCESS:",
+                    "[CHLISE HUB] Arrival SUCCESS at duration:",
                     tostring(
                         duration
                     )
@@ -2830,14 +2808,6 @@ return function(Context)
                 1
 
         end
-
-
-        -- Keep return-to-plot on the same test step.
-        TravelState.ArrivalIndex =
-            math.min(
-                TravelState.EggIndex,
-                #TravelState.ArrivalDurations
-            )
 
 
         warn(
@@ -3230,7 +3200,7 @@ return function(Context)
 
         print(
             string.format(
-                "[CHLISE HUB] DURATION TEST %.1fs | Egg travel | distance %.1f | est. speed %.1f studs/s | flags=%s | grace=%s",
+                "[CHLISE HUB] Egg travel %.1fs | distance %.1f | est. speed %.1f studs/s | flags=%s | grace=%s",
                 duration,
                 distance,
                 distance / math.max(duration, 0.1),
@@ -6686,11 +6656,46 @@ return function(Context)
                 end
 
 
-                -- 1) Teleport dulu ke VolcanoEntrance.
-                character:
-                PivotTo(
-                    entranceCFrame
-                )
+                -- VOLCANIC sekarang mengikuti kombinasi yang sudah terbukti:
+                -- riding pet + seluruh perpindahan dibuat smooth/tween.
+                local volcanicRideOk,
+                    volcanicRideReason =
+                    TravelState.EnsureMountedForFarm()
+
+
+                if not volcanicRideOk then
+
+                    warn(
+                        "[CHLISE HUB] Volcanic ride required failed:",
+                        tostring(
+                            volcanicRideReason
+                        )
+                    )
+
+
+                    task.wait(0.5)
+                    continue
+
+                end
+
+
+                -- 1) TWEEN dari posisi sekarang menuju VolcanoEntrance.
+                -- Tidak ada teleport instan ke entrance.
+                local entranceReached =
+                    SmoothMoveCharacter(
+                        character,
+                        root,
+                        entranceCFrame.Position,
+                        5
+                    )
+
+
+                if not entranceReached then
+
+                    task.wait(0.2)
+                    continue
+
+                end
 
 
                 task.wait(0.1)
@@ -6731,6 +6736,21 @@ return function(Context)
                     )
 
 
+                print(
+                    "[CHLISE HUB] Volcanic tween: entrance -> deep validate | success=",
+                    tostring(
+                        validateReached
+                    ),
+                    "| riding=",
+                    tostring(
+                        LocalPlayer:
+                        GetAttribute(
+                            "IsRiding"
+                        )
+                    )
+                )
+
+
                 if not validateReached then
 
                     task.wait(0.2)
@@ -6769,17 +6789,21 @@ return function(Context)
 
                     if plotCenter
                         and root.Parent
+                        and character
+                        and character.Parent
                     then
 
-                        root.CFrame =
-                            CFrame.new(
-                                plotCenter.Position
+                        SmoothMoveCharacter(
+                            character,
+                            root,
+                            plotCenter.Position
                                 + Vector3.new(
                                     0,
                                     5,
                                     0
-                                )
-                            )
+                                ),
+                            5
+                        )
 
                     end
 
@@ -6877,16 +6901,43 @@ return function(Context)
                 == "Volcanic Egg"
             then
 
-                -- Jangan ubah flow Volcanic Egg.
-                root.CFrame =
-                    CFrame.new(
+                local volcanicCharacter =
+                    LocalPlayer.Character
+
+
+                if not volcanicCharacter
+                    or not volcanicCharacter.Parent
+                    or not root
+                    or not root.Parent
+                then
+
+                    task.wait(0.2)
+                    continue
+
+                end
+
+
+                -- 3) TWEEN dari area dalam volcano menuju Volcanic Egg.
+                local volcanicEggReached =
+                    SmoothMoveCharacter(
+                        volcanicCharacter,
+                        root,
                         pickupPosition
-                        + Vector3.new(
-                            0,
-                            2,
-                            0
-                        )
+                            + Vector3.new(
+                                0,
+                                2,
+                                0
+                            ),
+                        3
                     )
+
+
+                if not volcanicEggReached then
+
+                    task.wait(0.2)
+                    continue
+
+                end
 
 
                 root.AssemblyLinearVelocity =
@@ -6894,6 +6945,17 @@ return function(Context)
 
                 root.AssemblyAngularVelocity =
                     Vector3.zero
+
+
+                print(
+                    "[CHLISE HUB] Volcanic tween: reached egg | riding=",
+                    tostring(
+                        LocalPlayer:
+                        GetAttribute(
+                            "IsRiding"
+                        )
+                    )
+                )
 
             else
 
@@ -6995,9 +7057,7 @@ return function(Context)
             -- Pastikan normal egg masih dalam kondisi riding sesaat
             -- sebelum pickup. Kalau game melepas mount saat perjalanan,
             -- coba mount ulang dulu; jangan pickup dalam keadaan jalan kaki.
-            if targetName
-                ~= "Volcanic Egg"
-                and LocalPlayer:
+            if LocalPlayer:
                     GetAttribute(
                         "IsRiding"
                     )
@@ -7597,18 +7657,43 @@ return function(Context)
                     GetLairDoorPosition()
 
 
+                local volcanicCharacter =
+                    LocalPlayer.Character
+
+
                 if validatePosition
                     and root.Parent
+                    and volcanicCharacter
+                    and volcanicCharacter.Parent
                 then
 
-                    -- Kembali menyentuh VolcanoValidate untuk keluar.
-                    root.CFrame =
-                        CFrame.new(
-                            validatePosition
+                    -- 4) TWEEN kembali menyentuh VolcanoValidate untuk keluar.
+                    local exitReached =
+                        SmoothMoveCharacter(
+                            volcanicCharacter,
+                            root,
+                            validatePosition,
+                            3
                         )
 
 
+                    print(
+                        "[CHLISE HUB] Volcanic tween: exit validate | success=",
+                        tostring(
+                            exitReached
+                        ),
+                        "| riding=",
+                        tostring(
+                            LocalPlayer:
+                            GetAttribute(
+                                "IsRiding"
+                            )
+                        )
+                    )
+
+
                     task.wait(0.4)
+
                 end
 
             end
@@ -7694,9 +7779,7 @@ return function(Context)
                 and root.Parent
             then
 
-                if targetName
-                        ~= "Volcanic Egg"
-                    and LocalPlayer:
+                if LocalPlayer:
                         GetAttribute(
                             "IsRiding"
                         )
