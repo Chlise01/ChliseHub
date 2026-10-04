@@ -286,7 +286,14 @@ return function(Context)
         EggIndex = 1,
 
         FailureSerial = 0,
-        LastFailure = nil
+        LastFailure = nil,
+
+        -- Eggs dropped by Gift Egg must never be targeted again.
+        -- Exact GUIDs are kept for the whole session. Drop zones are only
+        -- temporary fallbacks until the newly dropped ActiveEgg is identified.
+        GiftIgnoredEggIds = {},
+        GiftDropZones = {},
+        GiftDropRadius = 18
     }
 
 
@@ -4401,91 +4408,562 @@ return function(Context)
     end
 
 
+    function TravelState.ShouldIgnoreGiftedEgg(
+        configObject,
+        position
+    )
+
+        if not configObject
+            or typeof(position)
+                ~= "Vector3"
+        then
+
+            return false
+
+        end
+
+
+        local eggId =
+            configObject.Name
+
+
+        if TravelState.GiftIgnoredEggIds[
+            eggId
+        ]
+        then
+
+            return true
+
+        end
+
+
+        local eggName =
+            configObject:
+            GetAttribute(
+                "Egg"
+            )
+
+
+        local nowClock =
+            os.clock()
+
+
+        for index =
+            #TravelState.GiftDropZones,
+            1,
+            -1
+        do
+
+            local zone =
+                TravelState.GiftDropZones[
+                    index
+                ]
+
+
+            if not zone
+                or (
+                    zone.ExpiresAt
+                    and nowClock
+                        > zone.ExpiresAt
+                )
+            then
+
+                table.remove(
+                    TravelState.GiftDropZones,
+                    index
+                )
+
+            else
+
+                local nameMatch =
+                    not zone.EggNames
+                    or next(
+                        zone.EggNames
+                    )
+                        == nil
+                    or zone.EggNames[
+                        eggName
+                    ]
+                        == true
+
+
+                local radius =
+                    tonumber(
+                        zone.Radius
+                    )
+                    or TravelState.GiftDropRadius
+
+
+                if nameMatch
+                    and (
+                        position
+                        - zone.Position
+                    ).Magnitude
+                        <= radius
+                then
+
+                    -- Once the dropped egg is recognized, keep its exact GUID
+                    -- ignored for the rest of this server session.
+                    TravelState.GiftIgnoredEggIds[
+                        eggId
+                    ] = true
+
+
+                    if zone.Remaining then
+
+                        zone.Remaining =
+                            math.max(
+                                zone.Remaining - 1,
+                                0
+                            )
+
+
+                        if zone.Remaining <= 0 then
+
+                            table.remove(
+                                TravelState.GiftDropZones,
+                                index
+                            )
+
+                        end
+
+                    end
+
+
+                    print(
+                        "[CHLISE HUB] Gift ignore: skipping dropped egg",
+                        tostring(
+                            eggName
+                        ),
+                        "| GUID:",
+                        tostring(
+                            eggId
+                        )
+                    )
+
+
+                    return true
+
+                end
+
+            end
+
+        end
+
+
+        return false
+
+    end
+
+
     local function GiftCurrentEgg()
 
         if not giftEggActive then
             return false
         end
 
+
         if not selectedGiftPlayer then
             return false
         end
+
 
         local targetPlayer =
             GetPlayerByName(
                 selectedGiftPlayer
             )
 
+
         if not targetPlayer then
             return false
         end
+
 
         local targetPlot =
             GetPlayerPlot(
                 targetPlayer
             )
 
+
         if not targetPlot then
             return false
         end
+
 
         local targetCF =
             GetPlotFrontCFrame(
                 targetPlot
             )
 
+
         if not targetCF then
             return false
         end
+
 
         local character,
             humanoid,
             root =
             GetCharacterData()
 
+
         if not root then
             return false
         end
 
+
         local basket =
             LocalPlayer:
-            FindFirstChild("Basket")
+            FindFirstChild(
+                "Basket"
+            )
+
 
         if not basket
-            or #basket:GetChildren() == 0
+            or #basket:GetChildren()
+                == 0
         then
+
             return false
+
         end
+
+
+        local serverData =
+            ReplicatedStorage:
+            FindFirstChild(
+                "ServerData"
+            )
+
+
+        local activeEggs =
+            serverData
+            and serverData:
+                FindFirstChild(
+                    "ActiveEggs"
+                )
+
+
+        -- Snapshot what existed before the gift.
+        local activeBefore = {}
+
+
+        if activeEggs then
+
+            for _, eggObject
+                in ipairs(
+                    activeEggs:
+                    GetChildren()
+                )
+            do
+
+                activeBefore[
+                    eggObject.Name
+                ] = true
+
+            end
+
+        end
+
+
+        -- Remember which egg types/count are being dropped.
+        local giftEggNames = {}
+
+
+        local giftEggCount =
+            0
+
+
+        for _, basketEgg
+            in ipairs(
+                basket:
+                GetChildren()
+            )
+        do
+
+            giftEggCount +=
+                1
+
+
+            local basketEggName =
+                basketEgg:
+                GetAttribute(
+                    "Egg"
+                )
+
+
+            if type(
+                basketEggName
+            )
+                == "string"
+            then
+
+                giftEggNames[
+                    basketEggName
+                ] = true
+
+            end
+
+        end
+
 
         local oldCF =
             root.CFrame
 
+
         root.CFrame =
             targetCF
 
+
+        root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        root.AssemblyAngularVelocity =
+            Vector3.zero
+
+
         task.wait(0.35)
+
+
+        -- THIS is the place where the gift is actually dropped.
+        local dropPosition =
+            root.Position
+
 
         BasketDrop:
         FireServer()
 
+
         local started =
             os.clock()
 
-        while os.clock() - started < 2 do
 
-            if #basket:GetChildren() == 0 then
+        while os.clock()
+                - started
+                < 2
+        do
+
+            if #basket:
+                GetChildren()
+                == 0
+            then
+
                 break
+
             end
 
+
             task.wait(0.05)
+
         end
+
+
+        local droppedSuccessfully =
+            #basket:
+            GetChildren()
+                == 0
+
+
+        if droppedSuccessfully then
+
+            local zone = {
+
+                Position =
+                    dropPosition,
+
+                Radius =
+                    TravelState.GiftDropRadius,
+
+                EggNames =
+                    giftEggNames,
+
+                Remaining =
+                    math.max(
+                        giftEggCount,
+                        1
+                    ),
+
+                -- Temporary position fallback. Once a matching ActiveEgg is
+                -- found, its GUID is ignored permanently for this session.
+                ExpiresAt =
+                    os.clock()
+                    + 12
+            }
+
+
+            table.insert(
+                TravelState.GiftDropZones,
+                zone
+            )
+
+
+            print(
+                "[CHLISE HUB] Gift drop registered at",
+                tostring(
+                    dropPosition
+                ),
+                "| eggs:",
+                tostring(
+                    giftEggCount
+                )
+            )
+
+
+            -- Try to resolve the exact newly dropped ActiveEgg immediately.
+            if activeEggs then
+
+                local resolveStarted =
+                    os.clock()
+
+
+                while Runtime:IsCurrent()
+                    and os.clock()
+                        - resolveStarted
+                        < 2.5
+                    and zone.Remaining
+                        > 0
+                do
+
+                    for _, eggObject
+                        in ipairs(
+                            activeEggs:
+                            GetChildren()
+                        )
+                    do
+
+                        if not activeBefore[
+                                eggObject.Name
+                            ]
+                            and not TravelState.GiftIgnoredEggIds[
+                                eggObject.Name
+                            ]
+                        then
+
+                            local position =
+                                PositionToVector3(
+                                    eggObject:
+                                    GetAttribute(
+                                        "Position"
+                                    )
+                                )
+
+
+                            local eggName =
+                                eggObject:
+                                GetAttribute(
+                                    "Egg"
+                                )
+
+
+                            local nameMatch =
+                                next(
+                                    giftEggNames
+                                )
+                                    == nil
+                                or giftEggNames[
+                                    eggName
+                                ]
+                                    == true
+
+
+                            if position
+                                and nameMatch
+                                and (
+                                    position
+                                    - dropPosition
+                                ).Magnitude
+                                    <= TravelState.GiftDropRadius
+                            then
+
+                                TravelState.GiftIgnoredEggIds[
+                                    eggObject.Name
+                                ] = true
+
+
+                                zone.Remaining =
+                                    math.max(
+                                        zone.Remaining
+                                            - 1,
+                                        0
+                                    )
+
+
+                                print(
+                                    "[CHLISE HUB] Gift drop exact GUID ignored:",
+                                    tostring(
+                                        eggObject.Name
+                                    ),
+                                    "|",
+                                    tostring(
+                                        eggName
+                                    )
+                                )
+
+                            end
+
+                        end
+
+                    end
+
+
+                    if zone.Remaining
+                        <= 0
+                    then
+
+                        break
+                    end
+
+
+                    task.wait(0.05)
+
+                end
+
+
+                if zone.Remaining
+                    <= 0
+                then
+
+                    for index =
+                        #TravelState.GiftDropZones,
+                        1,
+                        -1
+                    do
+
+                        if TravelState.GiftDropZones[
+                            index
+                        ]
+                            == zone
+                        then
+
+                            table.remove(
+                                TravelState.GiftDropZones,
+                                index
+                            )
+
+                            break
+
+                        end
+
+                    end
+
+                end
+
+            end
+
+        end
+
 
         if root.Parent then
+
             root.CFrame =
                 oldCF
+
         end
 
-        return true
+
+        return
+            droppedSuccessfully
+
     end
 
     -- ========================================================
@@ -6378,6 +6856,19 @@ return function(Context)
                         or not position
                     then
                         return
+                    end
+
+
+                    -- Never re-pick an egg that Auto Farm itself dropped
+                    -- at the selected gift player's plot.
+                    if TravelState.ShouldIgnoreGiftedEgg(
+                        configObject,
+                        position
+                    )
+                    then
+
+                        return
+
                     end
 
 
