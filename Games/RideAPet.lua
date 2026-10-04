@@ -264,18 +264,39 @@ return function(Context)
     -- ========================================================
 
     local ARRIVAL_TRAVEL_DURATIONS = {
-        1.0,
-        1.5,
-        2.0,
-        3.0,
-        4.0,
-        5.0,
-        7.0,
-        10.0
+        12.0,
+        14.0,
+        16.0,
+        18.0,
+        20.0
     }
 
 
     local arrivalTravelDurationIndex =
+        1
+
+
+    -- ========================================================
+    -- EGG TRAVEL FALLBACK TEST
+    -- ========================================================
+    --
+    -- Normal egg tidak lagi di-teleport instan. Kita mulai dari
+    -- 8 detik dan memperlambat attempt berikutnya jika perjalanan
+    -- menaikkan TeleportFlags / memicu TeleportGraceUntil.
+    --
+    -- Volcanic Egg TIDAK memakai flow ini.
+    -- ========================================================
+
+    local EGG_TRAVEL_DURATIONS = {
+        8.0,
+        10.0,
+        12.0,
+        15.0,
+        18.0
+    }
+
+
+    local eggTravelDurationIndex =
         1
 
 
@@ -2032,6 +2053,72 @@ return function(Context)
     end
 
 
+    local function GetTrackedBreakRemaining(
+        trackedIds
+    )
+
+        local now =
+            workspace:
+            GetServerTimeNow()
+
+
+        local bestRemaining =
+            nil
+
+
+        for _, id
+            in ipairs(
+                trackedIds
+                or {}
+            )
+        do
+
+            local egg =
+                Basket:
+                FindFirstChild(
+                    id
+                )
+
+
+            if egg then
+
+                local breakAt =
+                    tonumber(
+                        egg:
+                        GetAttribute(
+                            "BreakAt"
+                        )
+                    )
+
+
+                if breakAt then
+
+                    local remaining =
+                        breakAt
+                        - now
+
+
+                    if not bestRemaining
+                        or remaining
+                            < bestRemaining
+                    then
+
+                        bestRemaining =
+                            remaining
+
+                    end
+
+                end
+
+            end
+
+        end
+
+
+        return bestRemaining
+    end
+
+
     local function AdvanceArrivalDuration(
         reason
     )
@@ -2268,6 +2355,45 @@ return function(Context)
             or ARRIVAL_TRAVEL_DURATIONS[
                 #ARRIVAL_TRAVEL_DURATIONS
             ]
+
+
+        local breakRemaining =
+            GetTrackedBreakRemaining(
+                trackedIds
+            )
+
+
+        if breakRemaining then
+
+            -- Sisakan ~0.9s untuk home detection / claim.
+            local deadlineDuration =
+                math.max(
+                    breakRemaining
+                        - 0.9,
+                    0.25
+                )
+
+
+            if deadlineDuration
+                < duration
+            then
+
+                warn(
+                    string.format(
+                        "[CHLISE HUB] Configured arrival %.1fs is longer than BreakAt window %.1fs; using %.1fs",
+                        duration,
+                        breakRemaining,
+                        deadlineDuration
+                    )
+                )
+
+
+                duration =
+                    deadlineDuration
+
+            end
+
+        end
 
 
         local failureSerialAtStart =
@@ -2523,6 +2649,391 @@ return function(Context)
 
 
         return false
+    end
+
+
+    -- ========================================================
+    -- TELEPORT FLAG / GRACE MONITOR
+    -- ========================================================
+
+    local function ReadTeleportState()
+
+        return
+            LocalPlayer:
+            GetAttribute(
+                "TeleportFlags"
+            ),
+            LocalPlayer:
+            GetAttribute(
+                "TeleportGraceUntil"
+            )
+
+    end
+
+
+    local function NumberChanged(
+        before,
+        after
+    )
+
+        if before == after then
+            return false
+        end
+
+
+        return true
+    end
+
+
+    local function WaitForTeleportGraceClear(
+        graceValue,
+        maxWait
+    )
+
+        local grace =
+            tonumber(
+                graceValue
+            )
+
+
+        if not grace
+            or grace <= 0
+        then
+
+            return true,
+                0
+        end
+
+
+        maxWait =
+            tonumber(maxWait)
+            or 10
+
+
+        local waitFor =
+            nil
+
+
+        -- Beberapa game menyimpan "until" memakai os.clock().
+        local clockNow =
+            os.clock()
+
+
+        if grace > clockNow
+            and grace - clockNow <= maxWait
+        then
+
+            waitFor =
+                grace - clockNow
+
+        end
+
+
+        -- Fallback bila "until" ternyata memakai server time.
+        if not waitFor then
+
+            local serverNow =
+                workspace:
+                GetServerTimeNow()
+
+
+            if grace > serverNow
+                and grace - serverNow <= maxWait
+            then
+
+                waitFor =
+                    grace - serverNow
+
+            end
+
+        end
+
+
+        -- Kalau nilainya terlihat seperti duration pendek, tunggu
+        -- konservatif. Ini hanya dipakai saat state berubah setelah travel.
+        if not waitFor
+            and grace <= maxWait
+        then
+
+            waitFor =
+                grace
+
+        end
+
+
+        if not waitFor
+            or waitFor <= 0
+        then
+
+            return true,
+                0
+        end
+
+
+        waitFor =
+            math.min(
+                waitFor + 0.15,
+                maxWait
+            )
+
+
+        print(
+            string.format(
+                "[CHLISE HUB] Waiting TeleportGrace %.2fs before pickup",
+                waitFor
+            )
+        )
+
+
+        local started =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and autoFarmActive
+            and os.clock()
+                - started
+                < waitFor
+        do
+
+            task.wait(0.05)
+
+        end
+
+
+        return true,
+            os.clock()
+                - started
+
+    end
+
+
+    local function AdvanceEggTravelDuration(
+        reason
+    )
+
+        if eggTravelDurationIndex
+            < #EGG_TRAVEL_DURATIONS
+        then
+
+            eggTravelDurationIndex +=
+                1
+
+        end
+
+
+        warn(
+            "[CHLISE HUB] Egg travel fallback ->",
+            tostring(
+                EGG_TRAVEL_DURATIONS[
+                    eggTravelDurationIndex
+                ]
+            )
+                .. "s",
+            "| reason:",
+            tostring(
+                reason
+                or "teleport state changed"
+            )
+        )
+
+    end
+
+
+    local function SmoothTravelToEgg(
+        character,
+        root,
+        destination
+    )
+
+        if not character
+            or not character.Parent
+            or not root
+            or not root.Parent
+            or typeof(destination)
+                ~= "Vector3"
+        then
+
+            return false,
+                "invalid character/root/destination"
+        end
+
+
+        local duration =
+            EGG_TRAVEL_DURATIONS[
+                eggTravelDurationIndex
+            ]
+            or EGG_TRAVEL_DURATIONS[
+                #EGG_TRAVEL_DURATIONS
+            ]
+
+
+        local flagsBefore,
+            graceBefore =
+            ReadTeleportState()
+
+
+        local startPivot =
+            character:
+            GetPivot()
+
+
+        local startPosition =
+            root.Position
+
+
+        local distance =
+            (
+                destination
+                - startPosition
+            ).Magnitude
+
+
+        print(
+            string.format(
+                "[CHLISE HUB] Egg travel %.1fs | distance %.1f | est. speed %.1f studs/s | flags=%s | grace=%s",
+                duration,
+                distance,
+                distance / math.max(duration, 0.1),
+                tostring(flagsBefore),
+                tostring(graceBefore)
+            )
+        )
+
+
+        local startTime =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and autoFarmActive
+            and character.Parent
+            and root.Parent
+        do
+
+            local alpha =
+                math.clamp(
+                    (
+                        os.clock()
+                        - startTime
+                    )
+                        / duration,
+                    0,
+                    1
+                )
+
+
+            local eased =
+                alpha
+                * alpha
+                * (
+                    3
+                    - 2
+                        * alpha
+                )
+
+
+            local finalCFrame =
+                CFrame.new(
+                    destination
+                )
+                * (
+                    startPivot
+                    - startPivot.Position
+                )
+
+
+            character:
+            PivotTo(
+                startPivot:
+                Lerp(
+                    finalCFrame,
+                    eased
+                )
+            )
+
+
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
+
+
+            if alpha >= 1 then
+                break
+            end
+
+
+            RunService.RenderStepped:
+            Wait()
+
+        end
+
+
+        if not root.Parent then
+
+            return false,
+                "root removed during egg travel"
+        end
+
+
+        local flagsAfter,
+            graceAfter =
+            ReadTeleportState()
+
+
+        print(
+            string.format(
+                "[CHLISE HUB] Egg travel state | TeleportFlags: %s -> %s | TeleportGraceUntil: %s -> %s",
+                tostring(flagsBefore),
+                tostring(flagsAfter),
+                tostring(graceBefore),
+                tostring(graceAfter)
+            )
+        )
+
+
+        local flagsChanged =
+            NumberChanged(
+                flagsBefore,
+                flagsAfter
+            )
+
+
+        local graceChanged =
+            NumberChanged(
+                graceBefore,
+                graceAfter
+            )
+
+
+        if flagsChanged
+            or graceChanged
+        then
+
+            AdvanceEggTravelDuration(
+                flagsChanged
+                    and "TeleportFlags changed"
+                    or "TeleportGraceUntil changed"
+            )
+
+
+            WaitForTeleportGraceClear(
+                graceAfter,
+                10
+            )
+
+        end
+
+
+        return true,
+            nil,
+            flagsBefore,
+            flagsAfter,
+            graceBefore,
+            graceAfter
+
     end
 
 
@@ -5974,12 +6485,10 @@ return function(Context)
 
 
             -- ================================================
-            -- TELEPORT TO EGG
+            -- MOVE TO EGG
             -- ================================================
 
             -- Gunakan posisi egg yang benar-benar dirender.
-            -- Ini mengikuti EggSpawning.Client terbaru yang membedakan
-            -- posisi spawn (ActiveEgg.Position) dan posisi model yang digambar.
             local pickupPosition =
                 targetPosition
 
@@ -6022,22 +6531,99 @@ return function(Context)
             end
 
 
-            root.CFrame =
-                CFrame.new(
-                    pickupPosition
-                    + Vector3.new(
-                        0,
-                        2,
-                        0
+            if targetName
+                == "Volcanic Egg"
+            then
+
+                -- Jangan ubah flow Volcanic Egg.
+                root.CFrame =
+                    CFrame.new(
+                        pickupPosition
+                        + Vector3.new(
+                            0,
+                            2,
+                            0
+                        )
+                    )
+
+
+                root.AssemblyLinearVelocity =
+                    Vector3.zero
+
+                root.AssemblyAngularVelocity =
+                    Vector3.zero
+
+            else
+
+                -- NORMAL EGG:
+                -- Tidak ada teleport instan ke egg.
+                local character =
+                    LocalPlayer.Character
+
+
+                if not character
+                    or not root
+                    or not root.Parent
+                then
+
+                    task.wait(0.2)
+                    continue
+
+                end
+
+
+                local travelOk,
+                    travelReason =
+                    SmoothTravelToEgg(
+                        character,
+                        root,
+                        pickupPosition
+                        + Vector3.new(
+                            0,
+                            2,
+                            0
+                        )
+                    )
+
+
+                if not travelOk then
+
+                    warn(
+                        "[CHLISE HUB] Egg travel failed:",
+                        tostring(
+                            travelReason
+                        )
+                    )
+
+
+                    task.wait(0.2)
+                    continue
+
+                end
+
+
+                -- Re-read grace state immediately before pickup.
+                local currentFlags,
+                    currentGrace =
+                    ReadTeleportState()
+
+
+                print(
+                    string.format(
+                        "[CHLISE HUB] Before pickup | TeleportFlags=%s | TeleportGraceUntil=%s",
+                        tostring(currentFlags),
+                        tostring(currentGrace)
                     )
                 )
 
 
-            root.AssemblyLinearVelocity =
-                Vector3.zero
+                -- Jika grace masih tampak aktif, tunggu dulu.
+                WaitForTeleportGraceClear(
+                    currentGrace,
+                    10
+                )
 
-            root.AssemblyAngularVelocity =
-                Vector3.zero
+            end
 
 
             -- Egg normal menunggu prompt siap sebentar.
@@ -6158,6 +6744,33 @@ return function(Context)
             if targetObject
                 and targetObject.Parent
             then
+
+                if targetName
+                    ~= "Volcanic Egg"
+                then
+
+                    local pickupFlags,
+                        pickupGrace =
+                        ReadTeleportState()
+
+
+                    print(
+                        string.format(
+                            "[CHLISE HUB] EggPickup fire | GUID=%s | flags=%s | grace=%s",
+                            tostring(
+                                targetObject.Name
+                            ),
+                            tostring(
+                                pickupFlags
+                            ),
+                            tostring(
+                                pickupGrace
+                            )
+                        )
+                    )
+
+                end
+
 
                 for attempt = 1, 3 do
 
