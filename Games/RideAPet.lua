@@ -186,6 +186,11 @@ return function(Context)
         WaitForChild("EggArrivalClaim")
 
 
+    local EggTimerPauseRemote =
+        GameRemotes:
+        WaitForChild("EggTimerPause")
+
+
     local VolcanoData =
         require(
             GameData:
@@ -6015,6 +6020,65 @@ return function(Context)
                 )
 
 
+            -- ====================================================
+            -- EGG TIMER PAUSE BYPASS
+            --
+            -- BreakTimer bawaan game sendiri memakai EggTimerPause
+            -- saat camera menjadi Scriptable. Kita manfaatkan remote
+            -- yang sama untuk menahan timer selama perjalanan pulang.
+            --
+            -- Sengaja TIDAK dipakai untuk:
+            -- - Go Volcano Dip
+            -- - Volcanic Egg
+            -- - Gift Egg
+            -- supaya flow-flow itu tidak disentuh.
+            -- ====================================================
+
+            local timerPauseBypassActive =
+                false
+
+
+            if not goVolcanoDipActive
+                and targetName
+                    ~= "Volcanic Egg"
+                and not giftEggActive
+                and #currentPickupBasketIds
+                    > 0
+            then
+
+                local pauseOk,
+                    pauseErr =
+                    pcall(function()
+
+                        EggTimerPauseRemote:
+                        FireServer(
+                            true
+                        )
+
+                    end)
+
+
+                if pauseOk then
+
+                    timerPauseBypassActive =
+                        true
+
+
+                    -- Beri server waktu mengubah state pause basket.
+                    task.wait(0.15)
+
+                else
+
+                    warn(
+                        "[CHLISE HUB] EggTimerPause(true) failed:",
+                        pauseErr
+                    )
+
+                end
+
+            end
+
+
             if webhookEggPickedUpActive then
 
                 local pickedWeight =
@@ -6355,6 +6419,41 @@ return function(Context)
                 and root.Parent
             then
 
+                if timerPauseBypassActive then
+
+                    local resumeOk,
+                        resumeErr =
+                        pcall(function()
+
+                            EggTimerPauseRemote:
+                            FireServer(
+                                false
+                            )
+
+                        end)
+
+
+                    timerPauseBypassActive =
+                        false
+
+
+                    if not resumeOk then
+
+                        warn(
+                            "[CHLISE HUB] EggTimerPause(false) failed:",
+                            resumeErr
+                        )
+
+                    end
+
+
+                    -- Pada resume server dapat menyesuaikan BreakAt /
+                    -- BreakPausedAt. Tunggu sinkronisasi sebentar sebelum claim.
+                    task.wait(0.3)
+
+                end
+
+
                 ClaimTrackedEggArrival(
                     root,
                     currentPickupBasketIds
@@ -6368,6 +6467,24 @@ return function(Context)
                     CFrame.new(
                         plotCenter.Position
                     )
+
+            end
+
+
+            if timerPauseBypassActive then
+
+                pcall(function()
+
+                    EggTimerPauseRemote:
+                    FireServer(
+                        false
+                    )
+
+                end)
+
+
+                timerPauseBypassActive =
+                    false
 
             end
 
