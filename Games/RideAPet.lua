@@ -186,9 +186,10 @@ return function(Context)
         WaitForChild("EggArrivalClaim")
 
 
-    local EggTimerPauseRemote =
-        GameRemotes:
-        WaitForChild("EggTimerPause")
+    local GameMessageRemote =
+        Remotes:
+        WaitForChild("Reusable"):
+        WaitForChild("GameMessage")
 
 
     local VolcanoData =
@@ -248,6 +249,44 @@ return function(Context)
 
 
     local autoFarmActive = false
+
+
+    -- ========================================================
+    -- ARRIVAL TRAVEL FALLBACK TEST
+    -- ========================================================
+    --
+    -- Kalau server menolak dengan "Egg Delivery Failed" /
+    -- "Your Egg Was Returned", attempt berikutnya otomatis
+    -- memakai duration yang lebih lambat.
+    --
+    -- Console akan menunjukkan duration + estimasi speed agar
+    -- kita bisa menemukan batas yang mulai diterima server.
+    -- ========================================================
+
+    local ARRIVAL_TRAVEL_DURATIONS = {
+        1.0,
+        1.5,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        7.0,
+        10.0
+    }
+
+
+    local arrivalTravelDurationIndex =
+        1
+
+
+    local arrivalFailureSerial =
+        0
+
+
+    local lastArrivalFailureMessage =
+        nil
+
+
     local placeEggActive = false
     local autoHatchActive = false
 
@@ -282,6 +321,59 @@ return function(Context)
     local autoServerHopActive = false
     local serverHopDelay = 30
     local noTargetSince = nil
+
+
+    Runtime:TrackConnection(
+
+        GameMessageRemote.OnClientEvent:
+        Connect(function(
+            message
+        )
+
+            if not autoFarmActive then
+                return
+            end
+
+
+            local messageText =
+                tostring(
+                    message
+                    or ""
+                )
+
+
+            if string.find(
+                    messageText,
+                    "Egg Delivery Failed",
+                    1,
+                    true
+                )
+                or string.find(
+                    messageText,
+                    "Your Egg Was Returned",
+                    1,
+                    true
+                )
+            then
+
+                arrivalFailureSerial +=
+                    1
+
+
+                lastArrivalFailureMessage =
+                    messageText
+
+
+                warn(
+                    "[CHLISE HUB] Arrival rejected:",
+                    messageText
+                )
+
+            end
+
+        end)
+
+    )
 
 
     -- ========================================================
@@ -1812,7 +1904,8 @@ return function(Context)
             pcall(function()
 
                 return
-                    EggDeliveryRules.Contains(
+                    EggDeliveryRules:
+                    Contains(
                         baseplate,
                         position
                     )
@@ -1939,6 +2032,206 @@ return function(Context)
     end
 
 
+    local function AdvanceArrivalDuration(
+        reason
+    )
+
+        if arrivalTravelDurationIndex
+            < #ARRIVAL_TRAVEL_DURATIONS
+        then
+
+            arrivalTravelDurationIndex +=
+                1
+
+        end
+
+
+        local nextDuration =
+            ARRIVAL_TRAVEL_DURATIONS[
+                arrivalTravelDurationIndex
+            ]
+
+
+        warn(
+            "[CHLISE HUB] Arrival fallback ->",
+            tostring(
+                nextDuration
+            )
+                .. "s",
+            "| reason:",
+            tostring(
+                reason
+                or lastArrivalFailureMessage
+                or "unknown"
+            )
+        )
+
+    end
+
+
+    local function SmoothTravelCharacter(
+        character,
+        root,
+        destination,
+        duration,
+        failureSerialAtStart
+    )
+
+        if not character
+            or not character.Parent
+            or not root
+            or not root.Parent
+            or typeof(destination)
+                ~= "Vector3"
+        then
+
+            return false,
+                "invalid character/root/destination"
+        end
+
+
+        duration =
+            math.max(
+                tonumber(duration)
+                    or 1,
+                0.1
+            )
+
+
+        local startPivot =
+            character:
+            GetPivot()
+
+
+        local startPosition =
+            root.Position
+
+
+        local distance =
+            (
+                destination
+                - startPosition
+            ).Magnitude
+
+
+        local estimatedSpeed =
+            distance
+            / duration
+
+
+        print(
+            string.format(
+                "[CHLISE HUB] Arrival travel %.1fs | distance %.1f | est. speed %.1f studs/s",
+                duration,
+                distance,
+                estimatedSpeed
+            )
+        )
+
+
+        local startTime =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and autoFarmActive
+            and character.Parent
+            and root.Parent
+        do
+
+            if arrivalFailureSerial
+                ~= failureSerialAtStart
+            then
+
+                return false,
+                    lastArrivalFailureMessage
+                    or "server rejected during travel"
+            end
+
+
+            local alpha =
+                math.clamp(
+                    (
+                        os.clock()
+                        - startTime
+                    )
+                        / duration,
+                    0,
+                    1
+                )
+
+
+            -- Smoothstep supaya start/end tidak terlalu mendadak.
+            local eased =
+                alpha
+                * alpha
+                * (
+                    3
+                    - 2
+                        * alpha
+                )
+
+
+            local targetPivot =
+                startPivot:
+                Lerp(
+                    CFrame.new(
+                        destination
+                    )
+                        * (
+                            startPivot
+                            - startPivot.Position
+                        ),
+                    eased
+                )
+
+
+            character:
+            PivotTo(
+                targetPivot
+            )
+
+
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
+
+
+            if alpha >= 1 then
+                break
+            end
+
+
+            RunService.RenderStepped:
+            Wait()
+
+        end
+
+
+        if not root.Parent then
+
+            return false,
+                "root removed during travel"
+        end
+
+
+        if arrivalFailureSerial
+            ~= failureSerialAtStart
+        then
+
+            return false,
+                lastArrivalFailureMessage
+                or "server rejected after travel"
+        end
+
+
+        return true
+
+    end
+
+
     local function ClaimTrackedEggArrival(
         root,
         trackedIds
@@ -1968,110 +2261,88 @@ return function(Context)
         end
 
 
-        -- ====================================================
-        -- X/Z ARRIVAL BYPASS
-        --
-        -- EggDeliveryRules.Contains() hanya memeriksa local X/Z:
-        --   abs(X) <= Size.X/2 + 2
-        --   abs(Z) <= Size.Z/2 + 2
-        --
-        -- Y sama sekali tidak diperiksa.
-        --
-        -- Jadi kita tidak perlu turun ke permukaan plot. Cukup
-        -- pindahkan karakter ke X/Z tengah Baseplate sambil menjaga
-        -- local-Y relatif terhadap Baseplate, tunggu BreakTimer asli
-        -- mendeteksi "home", lalu restore posisi lama.
-        -- ====================================================
-
-        local oldPivot =
-            character:
-            GetPivot()
+        local duration =
+            ARRIVAL_TRAVEL_DURATIONS[
+                arrivalTravelDurationIndex
+            ]
+            or ARRIVAL_TRAVEL_DURATIONS[
+                #ARRIVAL_TRAVEL_DURATIONS
+            ]
 
 
-        local oldRootCFrame =
-            root.CFrame
+        local failureSerialAtStart =
+            arrivalFailureSerial
 
 
-        local localPosition =
-            baseplate.CFrame:
-            PointToObjectSpace(
-                root.Position
-            )
-
-
-        local bypassWorldPosition =
+        -- Datang ke pusat Baseplate dengan posisi Y sedikit di atas
+        -- permukaan plot. Tidak ada instant teleport ke plot.
+        local destination =
             baseplate.CFrame:
             PointToWorldSpace(
                 Vector3.new(
                     0,
-                    localPosition.Y,
+                    baseplate.Size.Y
+                        * 0.5
+                        + 3,
                     0
                 )
             )
 
 
-        local oldRotation =
-            oldRootCFrame
-            - oldRootCFrame.Position
-
-
-        character:
-        PivotTo(
-            CFrame.new(
-                bypassWorldPosition
+        local moved,
+            moveReason =
+            SmoothTravelCharacter(
+                character,
+                root,
+                destination,
+                duration,
+                failureSerialAtStart
             )
-            * oldRotation
-        )
 
 
-        root.AssemblyLinearVelocity =
-            Vector3.zero
+        if not moved then
 
-        root.AssemblyAngularVelocity =
-            Vector3.zero
+            AdvanceArrivalDuration(
+                moveReason
+            )
+
+            return false
+        end
 
 
-        -- Pastikan rule client sendiri menganggap kita berada di home.
+        -- Pastikan rule client menganggap kita benar-benar home.
         if not IsInsideEggDeliveryArea(
             baseplate,
             root.Position
         )
         then
 
-            -- Fallback paling aman: pusat X/Z dengan local-Y 3 studs
-            -- di atas origin Baseplate. Y tidak memengaruhi Contains.
-            bypassWorldPosition =
-                baseplate.CFrame:
-                PointToWorldSpace(
-                    Vector3.new(
-                        0,
-                        3,
-                        0
-                    )
-                )
-
-
-            character:
-            PivotTo(
-                CFrame.new(
-                    bypassWorldPosition
-                )
-                * oldRotation
+            AdvanceArrivalDuration(
+                "EggDeliveryRules.Contains returned false"
             )
 
-
-            root.AssemblyLinearVelocity =
-                Vector3.zero
-
-            root.AssemblyAngularVelocity =
-                Vector3.zero
-
+            return false
         end
 
 
-        -- Biarkan BreakTimer bawaan game berjalan lebih dulu.
-        -- Heartbeat-nya mengecek sekitar tiap 0.1 detik.
-        local started =
+        print(
+            "[CHLISE HUB] Arrival reached home with duration:",
+            tostring(
+                duration
+            )
+                .. "s"
+        )
+
+
+        -- ====================================================
+        -- BIARKAN BREAKTIMER ASLI CLAIM DULU
+        -- ====================================================
+        --
+        -- LiveTimer bawaan game mengecek home sekitar tiap 0.1s.
+        -- Selama window ini kita tidak mengirim remote manual.
+        -- ====================================================
+
+        local officialStarted =
             os.clock()
 
 
@@ -2079,15 +2350,20 @@ return function(Context)
             and autoFarmActive
             and root.Parent
             and os.clock()
-                - started
-                < 0.65
+                - officialStarted
+                < 1.2
         do
 
-            root.AssemblyLinearVelocity =
-                Vector3.zero
+            if arrivalFailureSerial
+                ~= failureSerialAtStart
+            then
 
-            root.AssemblyAngularVelocity =
-                Vector3.zero
+                AdvanceArrivalDuration(
+                    lastArrivalFailureMessage
+                )
+
+                return false
+            end
 
 
             local pending =
@@ -2106,18 +2382,25 @@ return function(Context)
 
             if #pending == 0 then
 
-                if character.Parent then
-
-                    character:
-                    PivotTo(
-                        oldPivot
+                print(
+                    "[CHLISE HUB] Arrival SUCCESS at duration:",
+                    tostring(
+                        duration
                     )
-
-                end
+                        .. "s"
+                )
 
 
                 return true
             end
+
+
+            -- Jangan biarkan physics menggeser kita keluar area home.
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
 
 
             task.wait(0.05)
@@ -2125,8 +2408,10 @@ return function(Context)
         end
 
 
-        -- Kalau BreakTimer asli belum claim, kirim remote dengan:
-        -- current server time + HRP.Position aktual + GUID yang masih pending.
+        -- ====================================================
+        -- FALLBACK MANUAL CLAIM
+        -- ====================================================
+
         local ids =
             FilterTrackedArrivalEggIds(
                 trackedIds
@@ -2141,75 +2426,103 @@ return function(Context)
         end
 
 
-        if #ids > 0
-            and root.Parent
-            and IsInsideEggDeliveryArea(
-                baseplate,
-                root.Position
+        if #ids == 0 then
+
+            print(
+                "[CHLISE HUB] Arrival SUCCESS at duration:",
+                tostring(
+                    duration
+                )
+                    .. "s"
             )
-        then
 
-            local ok,
-                err =
-                pcall(function()
-
-                    EggArrivalClaimRemote:
-                    FireServer(
-                        workspace:
-                        GetServerTimeNow(),
-                        root.Position,
-                        ids
-                    )
-
-                end)
+            return true
+        end
 
 
-            if not ok then
+        local claimOk,
+            claimErr =
+            pcall(function()
 
-                warn(
-                    "[CHLISE HUB] EggArrivalClaim X/Z bypass failed:",
-                    err
+                EggArrivalClaimRemote:
+                FireServer(
+                    workspace:
+                    GetServerTimeNow(),
+                    root.Position,
+                    ids
                 )
 
+            end)
 
-                NotifyWebhookError(
-                    "EggArrivalClaim X/Z bypass failed: "
-                    .. tostring(
-                        err
-                    )
+
+        if not claimOk then
+
+            AdvanceArrivalDuration(
+                claimErr
+            )
+
+            return false
+        end
+
+
+        local resultStarted =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and autoFarmActive
+            and root.Parent
+            and os.clock()
+                - resultStarted
+                < 1.25
+        do
+
+            if arrivalFailureSerial
+                ~= failureSerialAtStart
+            then
+
+                AdvanceArrivalDuration(
+                    lastArrivalFailureMessage
                 )
 
+                return false
             end
 
 
-            task.wait(0.45)
+            local remaining =
+                FilterTrackedArrivalEggIds(
+                    ids
+                )
+
+
+            if #remaining == 0 then
+
+                print(
+                    "[CHLISE HUB] Arrival SUCCESS at duration:",
+                    tostring(
+                        duration
+                    )
+                        .. "s"
+                )
+
+
+                return true
+            end
+
+
+            task.wait(0.05)
 
         end
 
 
-        local remaining =
-            FilterTrackedArrivalEggIds(
-                ids
-            )
+        -- Tidak ada explicit reject, tapi server juga belum menerima.
+        -- Attempt egg berikutnya akan memakai duration lebih lambat.
+        AdvanceArrivalDuration(
+            "arrival timeout"
+        )
 
 
-        local success =
-            #remaining == 0
-
-
-        -- Restore posisi sebelum bypass setelah server diberi waktu
-        -- menerima arrival. Tidak mengubah logic Volcano Dip.
-        if character.Parent then
-
-            character:
-            PivotTo(
-                oldPivot
-            )
-
-        end
-
-
-        return success
+        return false
     end
 
 
@@ -6020,65 +6333,6 @@ return function(Context)
                 )
 
 
-            -- ====================================================
-            -- EGG TIMER PAUSE BYPASS
-            --
-            -- BreakTimer bawaan game sendiri memakai EggTimerPause
-            -- saat camera menjadi Scriptable. Kita manfaatkan remote
-            -- yang sama untuk menahan timer selama perjalanan pulang.
-            --
-            -- Sengaja TIDAK dipakai untuk:
-            -- - Go Volcano Dip
-            -- - Volcanic Egg
-            -- - Gift Egg
-            -- supaya flow-flow itu tidak disentuh.
-            -- ====================================================
-
-            local timerPauseBypassActive =
-                false
-
-
-            if not goVolcanoDipActive
-                and targetName
-                    ~= "Volcanic Egg"
-                and not giftEggActive
-                and #currentPickupBasketIds
-                    > 0
-            then
-
-                local pauseOk,
-                    pauseErr =
-                    pcall(function()
-
-                        EggTimerPauseRemote:
-                        FireServer(
-                            true
-                        )
-
-                    end)
-
-
-                if pauseOk then
-
-                    timerPauseBypassActive =
-                        true
-
-
-                    -- Beri server waktu mengubah state pause basket.
-                    task.wait(0.15)
-
-                else
-
-                    warn(
-                        "[CHLISE HUB] EggTimerPause(true) failed:",
-                        pauseErr
-                    )
-
-                end
-
-            end
-
-
             if webhookEggPickedUpActive then
 
                 local pickedWeight =
@@ -6419,41 +6673,6 @@ return function(Context)
                 and root.Parent
             then
 
-                if timerPauseBypassActive then
-
-                    local resumeOk,
-                        resumeErr =
-                        pcall(function()
-
-                            EggTimerPauseRemote:
-                            FireServer(
-                                false
-                            )
-
-                        end)
-
-
-                    timerPauseBypassActive =
-                        false
-
-
-                    if not resumeOk then
-
-                        warn(
-                            "[CHLISE HUB] EggTimerPause(false) failed:",
-                            resumeErr
-                        )
-
-                    end
-
-
-                    -- Pada resume server dapat menyesuaikan BreakAt /
-                    -- BreakPausedAt. Tunggu sinkronisasi sebentar sebelum claim.
-                    task.wait(0.3)
-
-                end
-
-
                 ClaimTrackedEggArrival(
                     root,
                     currentPickupBasketIds
@@ -6467,24 +6686,6 @@ return function(Context)
                     CFrame.new(
                         plotCenter.Position
                     )
-
-            end
-
-
-            if timerPauseBypassActive then
-
-                pcall(function()
-
-                    EggTimerPauseRemote:
-                    FireServer(
-                        false
-                    )
-
-                end)
-
-
-                timerPauseBypassActive =
-                    false
 
             end
 
