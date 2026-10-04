@@ -174,6 +174,11 @@ return function(Context)
         WaitForChild("EggPickup")
 
 
+    local EggArrivalClaimRemote =
+        GameRemotes:
+        WaitForChild("EggArrivalClaim")
+
+
     local VolcanoData =
         require(
             GameData:
@@ -1513,6 +1518,155 @@ return function(Context)
             and cf.Position
             or nil
 
+    end
+
+
+    -- ========================================================
+    -- EGG ARRIVAL CLAIM
+    -- ========================================================
+
+    local function GetEligibleArrivalEggIds()
+
+        local now =
+            workspace:
+            GetServerTimeNow()
+
+
+        local ids = {}
+
+
+        for _, egg
+            in ipairs(
+                Basket:
+                GetChildren()
+            )
+        do
+
+            local breakAt =
+                tonumber(
+                    egg:
+                    GetAttribute(
+                        "BreakAt"
+                    )
+                )
+
+
+            local delivering =
+                egg:
+                GetAttribute(
+                    "Delivering"
+                )
+                == true
+
+
+            if breakAt
+                and breakAt == breakAt
+                and math.abs(breakAt)
+                    < math.huge
+                and now
+                    <= breakAt + 0.5
+                and not delivering
+            then
+
+                table.insert(
+                    ids,
+                    egg.Name
+                )
+
+
+                if #ids >= 64 then
+                    break
+                end
+
+            end
+
+        end
+
+
+        return ids
+    end
+
+
+    local function ClaimEggArrivalAtPlot(
+        root
+    )
+
+        if not root
+            or not root.Parent
+        then
+            return false
+        end
+
+
+        if #GetEligibleArrivalEggIds()
+            == 0
+        then
+            return false
+        end
+
+
+        for attempt = 1, 2 do
+
+            if not root.Parent then
+                return false
+            end
+
+
+            local ids =
+                GetEligibleArrivalEggIds()
+
+
+            if #ids == 0 then
+                return true
+            end
+
+
+            local ok,
+                err =
+                pcall(function()
+
+                    EggArrivalClaimRemote:
+                    FireServer(
+                        workspace:
+                        GetServerTimeNow(),
+                        root.Position,
+                        ids
+                    )
+
+                end)
+
+
+            if not ok then
+
+                warn(
+                    "[CHLISE HUB] EggArrivalClaim failed:",
+                    err
+                )
+
+
+                NotifyWebhookError(
+                    "EggArrivalClaim failed: "
+                    .. tostring(
+                        err
+                    )
+                )
+
+            end
+
+
+            task.wait(0.35)
+
+
+            if #GetEligibleArrivalEggIds()
+                == 0
+            then
+                return true
+            end
+
+        end
+
+
+        return false
     end
 
 
@@ -5460,6 +5614,10 @@ return function(Context)
             -- Jalankan setelah keluar dari volcano.
             -- ================================================
 
+            local giftSucceeded =
+                false
+
+
             if giftEggActive then
 
                 local giftCallOk,
@@ -5473,10 +5631,15 @@ return function(Context)
 
                 if giftCallOk
                     and giftResult
-                    and webhookGiftEggActive
                 then
 
-                    task.spawn(function()
+                    giftSucceeded =
+                        true
+
+
+                    if webhookGiftEggActive then
+
+                        task.spawn(function()
 
                         SendWebhook(
                             "Chlise Hub — Gift Egg",
@@ -5504,7 +5667,9 @@ return function(Context)
                             }
                         )
 
-                    end)
+                        end)
+
+                    end
 
                 elseif not giftCallOk then
 
@@ -5533,6 +5698,18 @@ return function(Context)
                             0
                         )
                     )
+
+
+                if not giftSucceeded then
+
+                    task.wait(0.2)
+
+
+                    ClaimEggArrivalAtPlot(
+                        root
+                    )
+
+                end
 
             end
 
