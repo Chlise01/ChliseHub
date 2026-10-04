@@ -1587,7 +1587,119 @@ return function(Context)
     end
 
 
-    local function ClaimEggArrivalAtPlot(
+    local function GetPlotArrivalPosition()
+
+        local plot =
+            GetPlot()
+
+
+        if not plot then
+            return nil
+        end
+
+
+        local baseplate =
+            plot:
+            FindFirstChild(
+                "Baseplate"
+            )
+            or plot:
+                FindFirstChild(
+                    "Floor"
+                )
+
+
+        if baseplate
+            and baseplate:IsA(
+                "BasePart"
+            )
+        then
+
+            -- Gunakan titik yang benar-benar berada di area plot,
+            -- bukan +5 studs generik dari pivot.
+            return
+                baseplate.Position
+                + Vector3.new(
+                    0,
+                    math.max(
+                        1.5,
+                        baseplate.Size.Y
+                            * 0.5
+                            + 1
+                    ),
+                    0
+                )
+
+        end
+
+
+        local center =
+            GetPlotCenter()
+
+
+        return
+            center
+            and center.Position
+            or nil
+    end
+
+
+    local function FireEggArrivalClaim(
+        claimPosition,
+        ids
+    )
+
+        if typeof(claimPosition)
+                ~= "Vector3"
+            or type(ids)
+                ~= "table"
+            or #ids
+                == 0
+        then
+
+            return false
+        end
+
+
+        local ok,
+            err =
+            pcall(function()
+
+                EggArrivalClaimRemote:
+                FireServer(
+                    workspace:
+                    GetServerTimeNow(),
+                    claimPosition,
+                    ids
+                )
+
+            end)
+
+
+        if not ok then
+
+            warn(
+                "[CHLISE HUB] EggArrivalClaim failed:",
+                err
+            )
+
+
+            NotifyWebhookError(
+                "EggArrivalClaim failed: "
+                .. tostring(
+                    err
+                )
+            )
+
+            return false
+        end
+
+
+        return true
+    end
+
+
+    local function ClaimEggArrivalBypass(
         root
     )
 
@@ -1598,75 +1710,108 @@ return function(Context)
         end
 
 
-        if #GetEligibleArrivalEggIds()
-            == 0
-        then
+        local ids =
+            GetEligibleArrivalEggIds()
+
+
+        if #ids == 0 then
             return false
         end
 
 
-        for attempt = 1, 2 do
-
-            if not root.Parent then
-                return false
-            end
+        local arrivalPosition =
+            GetPlotArrivalPosition()
 
 
-            local ids =
-                GetEligibleArrivalEggIds()
+        if not arrivalPosition then
+            return false
+        end
 
 
-            if #ids == 0 then
-                return true
-            end
+        -- ====================================================
+        -- ATTEMPT 1: spoof posisi plot pada payload remote.
+        -- Kalau server hanya memvalidasi payload arrival, ini selesai
+        -- tanpa memindahkan karakter sama sekali.
+        -- ====================================================
+
+        FireEggArrivalClaim(
+            arrivalPosition,
+            ids
+        )
 
 
-            local ok,
-                err =
-                pcall(function()
-
-                    EggArrivalClaimRemote:
-                    FireServer(
-                        workspace:
-                        GetServerTimeNow(),
-                        root.Position,
-                        ids
-                    )
-
-                end)
+        task.wait(0.4)
 
 
-            if not ok then
+        if #GetEligibleArrivalEggIds()
+            == 0
+        then
 
-                warn(
-                    "[CHLISE HUB] EggArrivalClaim failed:",
-                    err
-                )
-
-
-                NotifyWebhookError(
-                    "EggArrivalClaim failed: "
-                    .. tostring(
-                        err
-                    )
-                )
-
-            end
+            return true
+        end
 
 
-            task.wait(0.35)
+        -- ====================================================
+        -- ATTEMPT 2: fallback jika server juga cek posisi HRP asli.
+        -- Simpan posisi lama, teleport singkat ke area plot yang valid,
+        -- tunggu replikasi, claim sekali lagi, lalu tunggu proses server.
+        -- ====================================================
+
+        local oldCFrame =
+            root.CFrame
 
 
-            if #GetEligibleArrivalEggIds()
-                == 0
-            then
-                return true
-            end
+        root.CFrame =
+            CFrame.new(
+                arrivalPosition
+            )
+
+
+        root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        root.AssemblyAngularVelocity =
+            Vector3.zero
+
+
+        task.wait(0.45)
+
+
+        local freshIds =
+            GetEligibleArrivalEggIds()
+
+
+        if #freshIds > 0 then
+
+            FireEggArrivalClaim(
+                root.Position,
+                freshIds
+            )
 
         end
 
 
-        return false
+        task.wait(0.55)
+
+
+        local claimed =
+            #GetEligibleArrivalEggIds()
+            == 0
+
+
+        -- Hanya restore kalau flow masih aktif dan root masih valid.
+        -- Caller tetap boleh memindahkan player lagi setelah helper ini.
+        if Runtime:IsCurrent()
+            and root.Parent
+        then
+
+            root.CFrame =
+                oldCFrame
+
+        end
+
+
+        return claimed
     end
 
 
@@ -5685,31 +5830,68 @@ return function(Context)
             end
 
 
-            if plotCenter
+            if not giftSucceeded
                 and root.Parent
             then
 
-                root.CFrame =
-                    CFrame.new(
-                        plotCenter.Position
-                        + Vector3.new(
-                            0,
-                            5,
-                            0
-                        )
-                    )
-
-
-                if not giftSucceeded then
-
-                    task.wait(0.2)
-
-
-                    ClaimEggArrivalAtPlot(
+                local bypassClaimed =
+                    ClaimEggArrivalBypass(
                         root
                     )
 
+
+                -- Kalau bypass belum diterima server, jalankan fallback
+                -- normal: benar-benar pulang ke plot lalu biarkan client
+                -- game melihat kita sudah berada di rumah.
+                if not bypassClaimed
+                    and plotCenter
+                    and root.Parent
+                then
+
+                    root.CFrame =
+                        CFrame.new(
+                            plotCenter.Position
+                        )
+
+
+                    root.AssemblyLinearVelocity =
+                        Vector3.zero
+
+                    root.AssemblyAngularVelocity =
+                        Vector3.zero
+
+
+                    task.wait(0.75)
+
+
+                    local fallbackIds =
+                        GetEligibleArrivalEggIds()
+
+
+                    if #fallbackIds > 0 then
+
+                        FireEggArrivalClaim(
+                            root.Position,
+                            fallbackIds
+                        )
+
+                    end
+
+
+                    task.wait(0.5)
+
                 end
+
+            elseif plotCenter
+                and root.Parent
+            then
+
+                -- Gift sukses: pertahankan perilaku lama, jangan claim egg
+                -- ke rumah sendiri.
+                root.CFrame =
+                    CFrame.new(
+                        plotCenter.Position
+                    )
 
             end
 
