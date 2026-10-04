@@ -1955,6 +1955,7 @@ return function(Context)
 
 
         if not character
+            or not character.Parent
             or not baseplate
         then
 
@@ -1962,31 +1963,110 @@ return function(Context)
         end
 
 
-        -- PENTING:
-        -- BreakTimer asli memakai EggDeliveryRules.Contains(baseplate, position)
-        -- dengan DOT CALL, bukan method/colon call.
-        local inside =
-            MoveIntoEggDeliveryArea(
-                character,
-                root,
-                baseplate
+        -- ====================================================
+        -- X/Z ARRIVAL BYPASS
+        --
+        -- EggDeliveryRules.Contains() hanya memeriksa local X/Z:
+        --   abs(X) <= Size.X/2 + 2
+        --   abs(Z) <= Size.Z/2 + 2
+        --
+        -- Y sama sekali tidak diperiksa.
+        --
+        -- Jadi kita tidak perlu turun ke permukaan plot. Cukup
+        -- pindahkan karakter ke X/Z tengah Baseplate sambil menjaga
+        -- local-Y relatif terhadap Baseplate, tunggu BreakTimer asli
+        -- mendeteksi "home", lalu restore posisi lama.
+        -- ====================================================
+
+        local oldPivot =
+            character:
+            GetPivot()
+
+
+        local oldRootCFrame =
+            root.CFrame
+
+
+        local localPosition =
+            baseplate.CFrame:
+            PointToObjectSpace(
+                root.Position
             )
 
 
-        if not inside then
-
-            warn(
-                "[CHLISE HUB] Could not enter EggDeliveryRules area."
+        local bypassWorldPosition =
+            baseplate.CFrame:
+            PointToWorldSpace(
+                Vector3.new(
+                    0,
+                    localPosition.Y,
+                    0
+                )
             )
 
-            return false
+
+        local oldRotation =
+            oldRootCFrame
+            - oldRootCFrame.Position
+
+
+        character:
+        PivotTo(
+            CFrame.new(
+                bypassWorldPosition
+            )
+            * oldRotation
+        )
+
+
+        root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        root.AssemblyAngularVelocity =
+            Vector3.zero
+
+
+        -- Pastikan rule client sendiri menganggap kita berada di home.
+        if not IsInsideEggDeliveryArea(
+            baseplate,
+            root.Position
+        )
+        then
+
+            -- Fallback paling aman: pusat X/Z dengan local-Y 3 studs
+            -- di atas origin Baseplate. Y tidak memengaruhi Contains.
+            bypassWorldPosition =
+                baseplate.CFrame:
+                PointToWorldSpace(
+                    Vector3.new(
+                        0,
+                        3,
+                        0
+                    )
+                )
+
+
+            character:
+            PivotTo(
+                CFrame.new(
+                    bypassWorldPosition
+                )
+                * oldRotation
+            )
+
+
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
+
         end
 
 
-        -- Diam di area home yang VALID dan biarkan BreakTimer bawaan game
-        -- menjalankan LiveTimer -> SendArrivalClaim sendiri.
-        -- Heartbeat client mengecek sekitar tiap 0.1 detik.
-        local officialClaimStarted =
+        -- Biarkan BreakTimer bawaan game berjalan lebih dulu.
+        -- Heartbeat-nya mengecek sekitar tiap 0.1 detik.
+        local started =
             os.clock()
 
 
@@ -1994,9 +2074,16 @@ return function(Context)
             and autoFarmActive
             and root.Parent
             and os.clock()
-                - officialClaimStarted
-                < 1.6
+                - started
+                < 0.65
         do
+
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
+
 
             local pending =
                 FilterTrackedArrivalEggIds(
@@ -2013,41 +2100,28 @@ return function(Context)
 
 
             if #pending == 0 then
+
+                if character.Parent then
+
+                    character:
+                    PivotTo(
+                        oldPivot
+                    )
+
+                end
+
+
                 return true
             end
 
 
-            -- Pastikan kita tetap berada di area yang dianggap home
-            -- oleh EggDeliveryRules selama BreakTimer bekerja.
-            if not IsInsideEggDeliveryArea(
-                baseplate,
-                root.Position
-            )
-            then
-
-                MoveIntoEggDeliveryArea(
-                    character,
-                    root,
-                    baseplate
-                )
-
-            end
-
-
-            root.AssemblyLinearVelocity =
-                Vector3.zero
-
-            root.AssemblyAngularVelocity =
-                Vector3.zero
-
-
-            task.wait(0.1)
+            task.wait(0.05)
 
         end
 
 
-        -- Kalau BreakTimer bawaan belum menyelesaikan claim,
-        -- baru fallback ke remote yang sama seperti SendArrivalClaim.
+        -- Kalau BreakTimer asli belum claim, kirim remote dengan:
+        -- current server time + HRP.Position aktual + GUID yang masih pending.
         local ids =
             FilterTrackedArrivalEggIds(
                 trackedIds
@@ -2062,67 +2136,50 @@ return function(Context)
         end
 
 
-        if #ids == 0 then
-            return true
-        end
-
-
-        if not IsInsideEggDeliveryArea(
-            baseplate,
-            root.Position
-        )
+        if #ids > 0
+            and root.Parent
+            and IsInsideEggDeliveryArea(
+                baseplate,
+                root.Position
+            )
         then
 
-            local moved =
-                MoveIntoEggDeliveryArea(
-                    character,
-                    root,
-                    baseplate
-                )
+            local ok,
+                err =
+                pcall(function()
+
+                    EggArrivalClaimRemote:
+                    FireServer(
+                        workspace:
+                        GetServerTimeNow(),
+                        root.Position,
+                        ids
+                    )
+
+                end)
 
 
-            if not moved then
-                return false
-            end
+            if not ok then
 
-        end
-
-
-        local ok,
-            err =
-            pcall(function()
-
-                EggArrivalClaimRemote:
-                FireServer(
-                    workspace:
-                    GetServerTimeNow(),
-                    root.Position,
-                    ids
-                )
-
-            end)
-
-
-        if not ok then
-
-            warn(
-                "[CHLISE HUB] EggArrivalClaim fallback failed:",
-                err
-            )
-
-
-            NotifyWebhookError(
-                "EggArrivalClaim fallback failed: "
-                .. tostring(
+                warn(
+                    "[CHLISE HUB] EggArrivalClaim X/Z bypass failed:",
                     err
                 )
-            )
+
+
+                NotifyWebhookError(
+                    "EggArrivalClaim X/Z bypass failed: "
+                    .. tostring(
+                        err
+                    )
+                )
+
+            end
+
+
+            task.wait(0.45)
 
         end
-
-
-        -- Tunggu satu window retry milik BreakTimer / server.
-        task.wait(1.1)
 
 
         local remaining =
@@ -2131,8 +2188,23 @@ return function(Context)
             )
 
 
-        return
+        local success =
             #remaining == 0
+
+
+        -- Restore posisi sebelum bypass setelah server diberi waktu
+        -- menerima arrival. Tidak mengubah logic Volcano Dip.
+        if character.Parent then
+
+            character:
+            PivotTo(
+                oldPivot
+            )
+
+        end
+
+
+        return success
     end
 
 
