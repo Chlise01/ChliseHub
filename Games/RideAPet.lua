@@ -2359,12 +2359,11 @@ return function(Context)
 
         -- TEST VERSION:
         -- tetap riding, lalu teleport langsung dari egg ke plot.
-        character:
-        PivotTo(
+        -- HARD TELEPORT pulang: langsung HumanoidRootPart.CFrame.
+        root.CFrame =
             CFrame.new(
                 destination
             )
-        )
 
 
         root.AssemblyLinearVelocity =
@@ -2384,7 +2383,7 @@ return function(Context)
 
         print(
             string.format(
-                "[CHLISE HUB] Plot TELEPORT while riding | flags: %s -> %s | grace: %s -> %s | riding=%s | contains=%s",
+                "[CHLISE HUB] HARD Plot TELEPORT while riding | flags: %s -> %s | grace: %s -> %s | riding=%s | contains=%s",
                 tostring(flagsBefore),
                 tostring(flagsAfter),
                 tostring(graceBefore),
@@ -2748,6 +2747,19 @@ return function(Context)
 
         if LocalPlayer:
             GetAttribute(
+                "IsPassenger"
+            )
+            == true
+        then
+
+            return false,
+                "player is passenger"
+
+        end
+
+
+        if LocalPlayer:
+            GetAttribute(
                 "IsRiding"
             )
             == true
@@ -2836,6 +2848,14 @@ return function(Context)
             if tool:IsA(
                 "Tool"
             )
+                and game:
+                    GetService(
+                        "CollectionService"
+                    ):
+                    HasTag(
+                        tool,
+                        "Pet"
+                    )
             then
 
                 local cleanName =
@@ -6812,8 +6832,9 @@ return function(Context)
                     TravelState.ReadTeleportState()
 
 
-                character:
-                PivotTo(
+                -- HARD TELEPORT: langsung set HumanoidRootPart.CFrame.
+                -- Tidak ada tween / lerp / SmoothTravelToEgg di normal egg.
+                root.CFrame =
                     CFrame.new(
                         pickupPosition
                         + Vector3.new(
@@ -6822,7 +6843,6 @@ return function(Context)
                             0
                         )
                     )
-                )
 
 
                 root.AssemblyLinearVelocity =
@@ -6842,7 +6862,7 @@ return function(Context)
 
                 print(
                     string.format(
-                        "[CHLISE HUB] Egg TELEPORT while riding | flags: %s -> %s | grace: %s -> %s | riding=%s",
+                        "[CHLISE HUB] HARD Egg TELEPORT while riding | flags: %s -> %s | grace: %s -> %s | riding=%s",
                         tostring(flagsBefore),
                         tostring(flagsAfter),
                         tostring(graceBefore),
