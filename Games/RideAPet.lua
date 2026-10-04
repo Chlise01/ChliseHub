@@ -293,7 +293,12 @@ return function(Context)
         -- temporary fallbacks until the newly dropped ActiveEgg is identified.
         GiftIgnoredEggIds = {},
         GiftDropZones = {},
-        GiftDropRadius = 18
+        GiftDropRadius = 18,
+
+        -- Persistent per-server ignore areas for plots that received a gift.
+        -- This is more reliable than a tiny radius because BasketDrop can
+        -- place the egg deeper inside the recipient's plot.
+        GiftIgnoreAreas = {}
     }
 
 
@@ -4408,6 +4413,90 @@ return function(Context)
     end
 
 
+    function TravelState.IsInsideGiftIgnoreArea(
+        position,
+        eggName
+    )
+
+        if typeof(position)
+            ~= "Vector3"
+        then
+
+            return false
+
+        end
+
+
+        for _, area
+            in ipairs(
+                TravelState.GiftIgnoreAreas
+            )
+        do
+
+            if area
+                and area.CFrame
+                and area.Size
+            then
+
+                local nameMatch =
+                    not area.EggNames
+                    or next(
+                        area.EggNames
+                    )
+                        == nil
+                    or area.EggNames[
+                        eggName
+                    ]
+                        == true
+
+
+                if nameMatch then
+
+                    local localPosition =
+                        area.CFrame:
+                        PointToObjectSpace(
+                            position
+                        )
+
+
+                    local margin =
+                        tonumber(
+                            area.Margin
+                        )
+                        or 10
+
+
+                    if math.abs(
+                            localPosition.X
+                        )
+                            <= area.Size.X
+                                * 0.5
+                                + margin
+                        and math.abs(
+                            localPosition.Z
+                        )
+                            <= area.Size.Z
+                                * 0.5
+                                + margin
+                    then
+
+                        return true,
+                            area.PlayerName
+
+                    end
+
+                end
+
+            end
+
+        end
+
+
+        return false
+
+    end
+
+
     function TravelState.ShouldIgnoreGiftedEgg(
         configObject,
         position
@@ -4442,6 +4531,43 @@ return function(Context)
             GetAttribute(
                 "Egg"
             )
+
+
+        local inGiftArea,
+            giftPlayerName =
+            TravelState.IsInsideGiftIgnoreArea(
+                position,
+                eggName
+            )
+
+
+        if inGiftArea then
+
+            TravelState.GiftIgnoredEggIds[
+                eggId
+            ] = true
+
+
+            print(
+                "[CHLISE HUB] Gift ignore: egg inside recipient plot",
+                tostring(
+                    giftPlayerName
+                    or "Unknown"
+                ),
+                "|",
+                tostring(
+                    eggName
+                ),
+                "| GUID:",
+                tostring(
+                    eggId
+                )
+            )
+
+
+            return true
+
+        end
 
 
         local nowClock =
@@ -4765,6 +4891,117 @@ return function(Context)
 
 
         if droppedSuccessfully then
+
+            local targetBaseplate =
+                targetPlot:
+                FindFirstChild(
+                    "Baseplate"
+                )
+                or targetPlot:
+                    FindFirstChild(
+                        "Floor"
+                    )
+
+
+            if targetBaseplate
+                and targetBaseplate:IsA(
+                    "BasePart"
+                )
+            then
+
+                local mergedArea =
+                    nil
+
+
+                for _, existingArea
+                    in ipairs(
+                        TravelState.GiftIgnoreAreas
+                    )
+                do
+
+                    if existingArea.Baseplate
+                        == targetBaseplate
+                    then
+
+                        mergedArea =
+                            existingArea
+
+                        break
+
+                    end
+
+                end
+
+
+                if not mergedArea then
+
+                    mergedArea = {
+
+                        Baseplate =
+                            targetBaseplate,
+
+                        CFrame =
+                            targetBaseplate.CFrame,
+
+                        Size =
+                            targetBaseplate.Size,
+
+                        Margin =
+                            12,
+
+                        PlayerName =
+                            targetPlayer.Name,
+
+                        EggNames = {}
+                    }
+
+
+                    table.insert(
+                        TravelState.GiftIgnoreAreas,
+                        mergedArea
+                    )
+
+                else
+
+                    -- Refresh in case the plot moved/reloaded.
+                    mergedArea.CFrame =
+                        targetBaseplate.CFrame
+
+                    mergedArea.Size =
+                        targetBaseplate.Size
+
+                    mergedArea.PlayerName =
+                        targetPlayer.Name
+
+                end
+
+
+                for eggName
+                    in pairs(
+                        giftEggNames
+                    )
+                do
+
+                    mergedArea.EggNames[
+                        eggName
+                    ] = true
+
+                end
+
+
+                print(
+                    "[CHLISE HUB] Gift plot ignore registered:",
+                    tostring(
+                        targetPlayer.Name
+                    ),
+                    "| size:",
+                    tostring(
+                        targetBaseplate.Size
+                    )
+                )
+
+            end
+
 
             local zone = {
 
@@ -6859,12 +7096,10 @@ return function(Context)
                     end
 
 
-                    -- Never re-pick an egg that Auto Farm itself dropped
-                    -- at the selected gift player's plot.
-                    if TravelState.ShouldIgnoreGiftedEgg(
-                        configObject,
-                        position
-                    )
+                    -- Exact GUID ignore is safe to check immediately.
+                    if TravelState.GiftIgnoredEggIds[
+                        configObject.Name
+                    ]
                     then
 
                         return
@@ -6897,6 +7132,65 @@ return function(Context)
                         then
                             return
                         end
+
+                    end
+
+
+                    local giftCheckPosition =
+                        position
+
+
+                    if renderedPrompt
+                        and renderedPrompt.Parent
+                        and renderedPrompt.Parent:IsA(
+                            "BasePart"
+                        )
+                    then
+
+                        giftCheckPosition =
+                            renderedPrompt.Parent.Position
+
+                    elseif renderedModel
+                        and renderedModel.Parent
+                    then
+
+                        local pivotOk,
+                            pivot =
+                            pcall(function()
+
+                                return
+                                    renderedModel:
+                                    GetPivot()
+
+                            end)
+
+
+                        if pivotOk
+                            and typeof(
+                                pivot
+                            )
+                                == "CFrame"
+                        then
+
+                            giftCheckPosition =
+                                pivot.Position
+
+                        end
+
+                    end
+
+
+                    -- Never re-pick an egg dropped inside a plot that received
+                    -- a Gift Egg. We use the physical rendered position when
+                    -- available because dropped eggs can be deeper in the plot
+                    -- than the player's exact BasketDrop position.
+                    if TravelState.ShouldIgnoreGiftedEgg(
+                        configObject,
+                        giftCheckPosition
+                    )
+                    then
+
+                        return
 
                     end
 
