@@ -4609,35 +4609,38 @@ return function(Context)
     -- TABS
     -- ========================================================
 
-    local FarmTab =
+    local UIRefs = {}
+
+
+    UIRefs.FarmTab =
         Window:AddTab(
             "FARM",
             "◆"
         )
 
 
-    local ProgressTab =
+    UIRefs.ProgressTab =
         Window:AddTab(
             "PROGRESS",
             "▲"
         )
 
 
-    local ESPTab =
+    UIRefs.ESPTab =
         Window:AddTab(
             "ESP",
             "◎"
         )
 
 
-    local WebhookTab =
+    UIRefs.WebhookTab =
         Window:AddTab(
             "WEBHOOK",
             "✦"
         )
 
 
-    local ServerTab =
+    UIRefs.ServerTab =
         Window:AddTab(
             "SERVER",
             "◇"
@@ -4646,52 +4649,52 @@ return function(Context)
 
     -- Paksa urutan sidebar:
     -- FARM -> PROGRESS -> ESP -> WEBHOOK -> SERVER -> SETTINGS
-    if FarmTab
-        and FarmTab.Button
+    if UIRefs.FarmTab
+        and UIRefs.FarmTab.Button
     then
-        FarmTab.Button.LayoutOrder = 1
+        UIRefs.FarmTab.Button.LayoutOrder = 1
     end
 
 
-    if ProgressTab
-        and ProgressTab.Button
+    if UIRefs.ProgressTab
+        and UIRefs.ProgressTab.Button
     then
-        ProgressTab.Button.LayoutOrder = 2
+        UIRefs.ProgressTab.Button.LayoutOrder = 2
     end
 
 
-    if ESPTab
-        and ESPTab.Button
+    if UIRefs.ESPTab
+        and UIRefs.ESPTab.Button
     then
-        ESPTab.Button.LayoutOrder = 3
+        UIRefs.ESPTab.Button.LayoutOrder = 3
     end
 
 
-    if WebhookTab
-        and WebhookTab.Button
+    if UIRefs.WebhookTab
+        and UIRefs.WebhookTab.Button
     then
-        WebhookTab.Button.LayoutOrder = 4
+        UIRefs.WebhookTab.Button.LayoutOrder = 4
     end
 
 
-    if ServerTab
-        and ServerTab.Button
+    if UIRefs.ServerTab
+        and UIRefs.ServerTab.Button
     then
-        ServerTab.Button.LayoutOrder = 5
+        UIRefs.ServerTab.Button.LayoutOrder = 5
     end
 
 
-    local ExistingSettingsTab =
+    UIRefs.ExistingSettingsTab =
         Window.Tabs
         and Window.Tabs[
             "SETTINGS"
         ]
 
 
-    if ExistingSettingsTab
-        and ExistingSettingsTab.Button
+    if UIRefs.ExistingSettingsTab
+        and UIRefs.ExistingSettingsTab.Button
     then
-        ExistingSettingsTab.Button.LayoutOrder = 6
+        UIRefs.ExistingSettingsTab.Button.LayoutOrder = 6
     end
 
 
@@ -4699,14 +4702,14 @@ return function(Context)
     -- FARM UI
     -- ========================================================
 
-    local FarmSection =
+    UIRefs.FarmSection =
         Window:AddSection(
-            FarmTab,
+            UIRefs.FarmTab,
             "Eggs Farm"
         )
 
 
-    FarmSection:AddDropdown(
+    UIRefs.FarmSection:AddDropdown(
         "EggsFarm",
         "Eggs Farm",
         MASTER_EGGS,
@@ -4719,7 +4722,7 @@ return function(Context)
     )
 
 
-    FarmSection:AddDropdown(
+    UIRefs.FarmSection:AddDropdown(
         "RaritiesFarm",
         "Rarities Farm",
         MASTER_RARITIES,
@@ -4732,7 +4735,7 @@ return function(Context)
     )
 
 
-    FarmSection:AddTextbox(
+    UIRefs.FarmSection:AddTextbox(
         "MinimumEggWeight",
         "Minimum Weight",
         "Example: 5",
@@ -4774,8 +4777,8 @@ return function(Context)
     )
 
 
-    local GiftPlayerDropdown =
-        FarmSection:AddDropdown(
+    UIRefs.GiftPlayerDropdown =
+        UIRefs.FarmSection:AddDropdown(
             "GiftPlayer",
             "Player Selection",
             GetServerPlayerNames(),
@@ -4793,13 +4796,13 @@ return function(Context)
         )
 
 
-    local function RefreshGiftPlayers()
+    function UIRefs.RefreshGiftPlayers()
 
-        if GiftPlayerDropdown
-            and GiftPlayerDropdown.SetOptions
+        if UIRefs.GiftPlayerDropdown
+            and UIRefs.GiftPlayerDropdown.SetOptions
         then
 
-            GiftPlayerDropdown.SetOptions(
+            UIRefs.GiftPlayerDropdown.SetOptions(
                 GetServerPlayerNames(),
                 true
             )
@@ -4815,7 +4818,7 @@ return function(Context)
 
             task.wait(0.5)
 
-            RefreshGiftPlayers()
+            UIRefs.RefreshGiftPlayers()
 
         end)
 
@@ -4837,14 +4840,14 @@ return function(Context)
 
             task.wait(0.1)
 
-            RefreshGiftPlayers()
+            UIRefs.RefreshGiftPlayers()
 
         end)
 
     )
 
 
-    FarmSection:AddToggle(
+    UIRefs.FarmSection:AddToggle(
         "GiftEgg",
         "Gift Egg",
         false,
@@ -4858,7 +4861,7 @@ return function(Context)
     )
 
 
-    FarmSection:AddToggle(
+    UIRefs.FarmSection:AddToggle(
         "GoVolcanoDip",
         "Go Volcano Dip",
         false,
@@ -4877,7 +4880,7 @@ return function(Context)
     -- Event-based, tidak polling.
     -- ========================================================
 
-    local function HandleWorldEggWebhook(
+    function UIRefs.HandleWorldEggWebhook(
         eggObject
     )
 
@@ -5005,7 +5008,7 @@ return function(Context)
 
                     task.wait(0.05)
 
-                    HandleWorldEggWebhook(
+                    UIRefs.HandleWorldEggWebhook(
                         eggObject
                     )
 
@@ -5042,7 +5045,7 @@ return function(Context)
     -- AUTO FARM
     -- ========================================================
 
-    FarmSection:AddToggle(
+    UIRefs.FarmSection:AddToggle(
         "AutoFarm",
         "Auto Farm",
         false,
@@ -5072,14 +5075,14 @@ return function(Context)
     -- WEBHOOK UI
     -- ========================================================
 
-    local WebhookSection =
+    UIRefs.WebhookSection =
         Window:AddSection(
-            WebhookTab,
+            UIRefs.WebhookTab,
             "Webhook"
         )
 
 
-    WebhookSection:AddTextbox(
+    UIRefs.WebhookSection:AddTextbox(
         "WebhookURL",
         "Webhook URL",
         "https://discord.com/api/webhooks/...",
@@ -5095,7 +5098,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddButton(
+    UIRefs.WebhookSection:AddButton(
         "Test Webhook",
 
         function()
@@ -5142,7 +5145,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddCheckbox(
+    UIRefs.WebhookSection:AddCheckbox(
         "WebhookWorldEgg",
         "World Egg",
         false,
@@ -5156,7 +5159,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddDropdown(
+    UIRefs.WebhookSection:AddDropdown(
         "WebhookWorldEggSelection",
         "World Egg Selection",
         MASTER_EGGS,
@@ -5172,7 +5175,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddCheckbox(
+    UIRefs.WebhookSection:AddCheckbox(
         "WebhookEggPickedUp",
         "Egg Picked Up",
         false,
@@ -5186,7 +5189,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddCheckbox(
+    UIRefs.WebhookSection:AddCheckbox(
         "WebhookVolcanoDip",
         "Volcano Dip",
         false,
@@ -5200,7 +5203,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddCheckbox(
+    UIRefs.WebhookSection:AddCheckbox(
         "WebhookGiftEgg",
         "Gift Egg",
         false,
@@ -5214,7 +5217,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddCheckbox(
+    UIRefs.WebhookSection:AddCheckbox(
         "WebhookRebirth",
         "Rebirth",
         false,
@@ -5228,7 +5231,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddCheckbox(
+    UIRefs.WebhookSection:AddCheckbox(
         "WebhookServerHop",
         "Server Hop",
         false,
@@ -5242,7 +5245,7 @@ return function(Context)
     )
 
 
-    WebhookSection:AddCheckbox(
+    UIRefs.WebhookSection:AddCheckbox(
         "WebhookErrors",
         "Errors",
         false,
@@ -5256,14 +5259,14 @@ return function(Context)
     )
 
 
-    local ServerSection =
+    UIRefs.ServerSection =
         Window:AddSection(
-            ServerTab,
+            UIRefs.ServerTab,
             "Server Hop"
         )
 
 
-    ServerSection:AddButton(
+    UIRefs.ServerSection:AddButton(
         "Server Hop",
 
         function()
@@ -5280,7 +5283,7 @@ return function(Context)
     )
 
 
-    ServerSection:AddToggle(
+    UIRefs.ServerSection:AddToggle(
         "AutoServerHop",
         "Auto Server Hop",
         false,
@@ -5297,7 +5300,7 @@ return function(Context)
     )
 
 
-    ServerSection:AddDropdown(
+    UIRefs.ServerSection:AddDropdown(
         "ServerHopDelay",
         "Hop Delay",
         SERVER_HOP_DELAYS,
@@ -5322,14 +5325,14 @@ return function(Context)
     -- PLACE EGG UI
     -- ========================================================
 
-    local PlaceSection =
+    UIRefs.PlaceSection =
         Window:AddSection(
-            FarmTab,
+            UIRefs.FarmTab,
             "Place Egg"
         )
 
 
-    PlaceSection:AddDropdown(
+    UIRefs.PlaceSection:AddDropdown(
         "EggsPlace",
         "Eggs Place",
         MASTER_EGGS,
@@ -5345,7 +5348,7 @@ return function(Context)
     )
 
 
-    PlaceSection:AddDropdown(
+    UIRefs.PlaceSection:AddDropdown(
         "RaritiesPlace",
         "Rarities Place",
         MASTER_RARITIES,
@@ -5361,7 +5364,7 @@ return function(Context)
     )
 
 
-    PlaceSection:AddToggle(
+    UIRefs.PlaceSection:AddToggle(
         "PlaceEgg",
         "Place Egg",
         false,
@@ -5379,14 +5382,14 @@ return function(Context)
     -- HATCH UI
     -- ========================================================
 
-    local HatchSection =
+    UIRefs.HatchSection =
         Window:AddSection(
-            FarmTab,
+            UIRefs.FarmTab,
             "Hatch Egg"
         )
 
 
-    HatchSection:AddToggle(
+    UIRefs.HatchSection:AddToggle(
         "AutoHatch",
         "Auto Hatch",
         false,
@@ -5404,14 +5407,14 @@ return function(Context)
     -- PROGRESS / PET SETTINGS
     -- ========================================================
 
-    local PetSection =
+    UIRefs.PetSection =
         Window:AddSection(
-            ProgressTab,
+            UIRefs.ProgressTab,
             "Pet Setting"
         )
 
 
-    PetSection:AddToggle(
+    UIRefs.PetSection:AddToggle(
         "AutoPlaceBestPet",
         "Auto Place Best Pet",
         false,
@@ -5425,7 +5428,7 @@ return function(Context)
     )
 
 
-    PetSection:AddToggle(
+    UIRefs.PetSection:AddToggle(
         "AutoRideBestPet",
         "Auto Ride Best Pet",
         false,
@@ -5444,14 +5447,14 @@ return function(Context)
     -- PLACEHOLDER ONLY
     -- ========================================================
 
-    local FeedSection =
+    UIRefs.FeedSection =
         Window:AddSection(
-            ProgressTab,
+            UIRefs.ProgressTab,
             "Feed Pet"
         )
 
 
-    FeedSection:AddDropdown(
+    UIRefs.FeedSection:AddDropdown(
         "Foods",
         "Food Selection",
         MASTER_FOODS,
@@ -5467,7 +5470,7 @@ return function(Context)
     )
 
 
-    FeedSection:AddToggle(
+    UIRefs.FeedSection:AddToggle(
         "AutoFeedPet",
         "Auto Feed Pet",
         false,
@@ -5487,14 +5490,14 @@ return function(Context)
     -- UPDATE
     -- ========================================================
 
-    local UpdateSection =
+    UIRefs.UpdateSection =
         Window:AddSection(
-            ProgressTab,
+            UIRefs.ProgressTab,
             "Update"
         )
 
 
-    UpdateSection:AddToggle(
+    UIRefs.UpdateSection:AddToggle(
         "AutoUpdateHatchLuck",
         "Auto Update Hatch Luck",
         false,
@@ -5508,7 +5511,7 @@ return function(Context)
     )
 
 
-    UpdateSection:AddToggle(
+    UIRefs.UpdateSection:AddToggle(
         "AutoMaxHatchLuck",
         "Auto Max Hatch Luck",
         false,
@@ -5522,7 +5525,7 @@ return function(Context)
     )
 
 
-    UpdateSection:AddToggle(
+    UIRefs.UpdateSection:AddToggle(
         "AutoRebirth",
         "Auto Rebirth",
         false,
@@ -5540,14 +5543,14 @@ return function(Context)
     -- SELL
     -- ========================================================
 
-    local SellSection =
+    UIRefs.SellSection =
         Window:AddSection(
-            ProgressTab,
+            UIRefs.ProgressTab,
             "Sell"
         )
 
 
-    SellSection:AddDropdown(
+    UIRefs.SellSection:AddDropdown(
         "SellRarities",
         "Rarity Selection",
         MASTER_RARITIES,
@@ -5563,7 +5566,7 @@ return function(Context)
     )
 
 
-    SellSection:AddToggle(
+    UIRefs.SellSection:AddToggle(
         "AutoSellByRarity",
         "Auto Sell By Rarity",
         false,
@@ -5577,7 +5580,7 @@ return function(Context)
     )
 
 
-    SellSection:AddDropdown(
+    UIRefs.SellSection:AddDropdown(
         "SellPetNames",
         "Pet Selection",
         SELL_PET_NAMES,
@@ -5593,7 +5596,7 @@ return function(Context)
     )
 
 
-    SellSection:AddToggle(
+    UIRefs.SellSection:AddToggle(
         "AutoSellByName",
         "Auto Sell By Name",
         false,
@@ -5611,14 +5614,14 @@ return function(Context)
     -- FAVORITE
     -- ========================================================
 
-    local FavoriteSection =
+    UIRefs.FavoriteSection =
         Window:AddSection(
-            ProgressTab,
+            UIRefs.ProgressTab,
             "Favorite"
         )
 
 
-    FavoriteSection:AddDropdown(
+    UIRefs.FavoriteSection:AddDropdown(
         "FavoriteRarities",
         "Rarity Selection",
         MASTER_RARITIES,
@@ -5634,7 +5637,7 @@ return function(Context)
     )
 
 
-    FavoriteSection:AddToggle(
+    UIRefs.FavoriteSection:AddToggle(
         "AutoFavoriteByRarity",
         "Auto Favorite By Rarity",
         false,
@@ -5648,7 +5651,7 @@ return function(Context)
     )
 
 
-    FavoriteSection:AddToggle(
+    UIRefs.FavoriteSection:AddToggle(
         "AutoUnfavoriteByRarity",
         "Auto Unfavorite By Rarity",
         false,
@@ -5666,14 +5669,14 @@ return function(Context)
     -- ESP
     -- ========================================================
 
-    local ESPSection =
+    UIRefs.ESPSection =
         Window:AddSection(
-            ESPTab,
+            UIRefs.ESPTab,
             "ESP Settings"
         )
 
 
-    ESPSection:AddToggle(
+    UIRefs.ESPSection:AddToggle(
         "ESPWorldEggs",
         "ESP World Eggs",
         false,
@@ -5687,7 +5690,7 @@ return function(Context)
     )
 
 
-    ESPSection:AddToggle(
+    UIRefs.ESPSection:AddToggle(
         "ESPInventoryPet",
         "ESP Inventory Pet",
         false,
@@ -5705,19 +5708,19 @@ return function(Context)
     -- PERFORMANCE BACKUPS
     -- ========================================================
 
-    local lowGraphicBackup =
+    UIRefs.lowGraphicBackup =
         nil
 
 
-    local fpsBackups =
+    UIRefs.fpsBackups =
         {}
 
 
-    local function EnableLowGraphic()
+    function UIRefs.EnableLowGraphic()
 
-        if not lowGraphicBackup then
+        if not UIRefs.lowGraphicBackup then
 
-            lowGraphicBackup = {
+            UIRefs.lowGraphicBackup = {
                 GlobalShadows =
                     Lighting.GlobalShadows,
 
@@ -5737,28 +5740,28 @@ return function(Context)
     end
 
 
-    local function DisableLowGraphic()
+    function UIRefs.DisableLowGraphic()
 
-        if not lowGraphicBackup then
+        if not UIRefs.lowGraphicBackup then
             return
         end
 
 
         Lighting.GlobalShadows =
-            lowGraphicBackup.GlobalShadows
+            UIRefs.lowGraphicBackup.GlobalShadows
 
 
         Lighting.FogEnd =
-            lowGraphicBackup.FogEnd
+            UIRefs.lowGraphicBackup.FogEnd
 
 
-        lowGraphicBackup =
+        UIRefs.lowGraphicBackup =
             nil
 
     end
 
 
-    local function EnableFPSBoost()
+    function UIRefs.EnableFPSBoost()
 
         for _, object
             in ipairs(
@@ -5772,12 +5775,12 @@ return function(Context)
             )
             then
 
-                if not fpsBackups[
+                if not UIRefs.fpsBackups[
                     object
                 ]
                 then
 
-                    fpsBackups[object] = {
+                    UIRefs.fpsBackups[object] = {
                         Type = "Material",
                         Value = object.Material
                     }
@@ -5800,12 +5803,12 @@ return function(Context)
                 )
             then
 
-                if not fpsBackups[
+                if not UIRefs.fpsBackups[
                     object
                 ]
                 then
 
-                    fpsBackups[object] = {
+                    UIRefs.fpsBackups[object] = {
                         Type = "Enabled",
                         Value = object.Enabled
                     }
@@ -5822,11 +5825,11 @@ return function(Context)
     end
 
 
-    local function DisableFPSBoost()
+    function UIRefs.DisableFPSBoost()
 
         for object, data
             in pairs(
-                fpsBackups
+                UIRefs.fpsBackups
             )
         do
 
@@ -5859,7 +5862,7 @@ return function(Context)
 
 
         table.clear(
-            fpsBackups
+            UIRefs.fpsBackups
         )
 
     end
@@ -5869,14 +5872,14 @@ return function(Context)
     -- PERFORMANCE UI
     -- ========================================================
 
-    local PerformanceSection =
+    UIRefs.PerformanceSection =
         Window:AddSection(
-            ESPTab,
+            UIRefs.ESPTab,
             "Performance Settings"
         )
 
 
-    PerformanceSection:AddToggle(
+    UIRefs.PerformanceSection:AddToggle(
         "Disable3D",
         "Disable 3D Rendering",
         false,
@@ -5896,7 +5899,7 @@ return function(Context)
     )
 
 
-    PerformanceSection:AddToggle(
+    UIRefs.PerformanceSection:AddToggle(
         "LowGraphic",
         "Low Graphic",
         false,
@@ -5909,11 +5912,11 @@ return function(Context)
 
             if state then
 
-                EnableLowGraphic()
+                UIRefs.EnableLowGraphic()
 
             else
 
-                DisableLowGraphic()
+                UIRefs.DisableLowGraphic()
 
             end
 
@@ -5921,7 +5924,7 @@ return function(Context)
     )
 
 
-    PerformanceSection:AddToggle(
+    UIRefs.PerformanceSection:AddToggle(
         "FPSBoost",
         "FPS Boost",
         false,
@@ -5934,11 +5937,11 @@ return function(Context)
 
             if state then
 
-                EnableFPSBoost()
+                UIRefs.EnableFPSBoost()
 
             else
 
-                DisableFPSBoost()
+                UIRefs.DisableFPSBoost()
 
             end
 
@@ -9991,12 +9994,12 @@ return function(Context)
 
 
         pcall(
-            DisableLowGraphic
+            UIRefs.DisableLowGraphic
         )
 
 
         pcall(
-            DisableFPSBoost
+            UIRefs.DisableFPSBoost
         )
 
 
