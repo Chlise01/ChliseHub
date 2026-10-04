@@ -2315,7 +2315,9 @@ return function(Context)
         if not root
             or not root.Parent
         then
+
             return false
+
         end
 
 
@@ -2333,63 +2335,15 @@ return function(Context)
         then
 
             return false
-        end
-
-
-        local duration =
-            TravelState.ArrivalDurations[
-                TravelState.ArrivalIndex
-            ]
-            or TravelState.ArrivalDurations[
-                #TravelState.ArrivalDurations
-            ]
-
-
-        local breakRemaining =
-            TravelState.GetTrackedBreakRemaining(
-                trackedIds
-            )
-
-
-        if breakRemaining then
-
-            -- Sisakan ~0.9s untuk home detection / claim.
-            local deadlineDuration =
-                math.max(
-                    breakRemaining
-                        - 0.9,
-                    0.25
-                )
-
-
-            if deadlineDuration
-                < duration
-            then
-
-                warn(
-                    string.format(
-                        "[CHLISE HUB] Configured arrival %.1fs is longer than BreakAt window %.1fs; using %.1fs",
-                        duration,
-                        breakRemaining,
-                        deadlineDuration
-                    )
-                )
-
-
-                duration =
-                    deadlineDuration
-
-            end
 
         end
 
 
-        local failureSerialAtStart =
-            TravelState.FailureSerial
+        local flagsBefore,
+            graceBefore =
+            TravelState.ReadTeleportState()
 
 
-        -- Datang ke pusat Baseplate dengan posisi Y sedikit di atas
-        -- permukaan plot. Tidak ada instant teleport ke plot.
         local destination =
             baseplate.CFrame:
             PointToWorldSpace(
@@ -2403,58 +2357,58 @@ return function(Context)
             )
 
 
-        local moved,
-            moveReason =
-            TravelState.SmoothTravelCharacter(
-                character,
-                root,
-                destination,
-                duration,
-                failureSerialAtStart
+        -- TEST VERSION:
+        -- tetap riding, lalu teleport langsung dari egg ke plot.
+        character:
+        PivotTo(
+            CFrame.new(
+                destination
             )
-
-
-        if not moved then
-
-            TravelState.AdvanceArrivalDuration(
-                moveReason
-            )
-
-            return false
-        end
-
-
-        -- Pastikan rule client menganggap kita benar-benar home.
-        if not IsInsideEggDeliveryArea(
-            baseplate,
-            root.Position
         )
-        then
 
-            TravelState.AdvanceArrivalDuration(
-                "EggDeliveryRules.Contains returned false"
-            )
 
-            return false
-        end
+        root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        root.AssemblyAngularVelocity =
+            Vector3.zero
+
+
+        task.wait(0.35)
+
+
+        local flagsAfter,
+            graceAfter =
+            TravelState.ReadTeleportState()
 
 
         print(
-            "[CHLISE HUB] Arrival reached home with duration:",
-            tostring(
-                duration
+            string.format(
+                "[CHLISE HUB] Plot TELEPORT while riding | flags: %s -> %s | grace: %s -> %s | riding=%s | contains=%s",
+                tostring(flagsBefore),
+                tostring(flagsAfter),
+                tostring(graceBefore),
+                tostring(graceAfter),
+                tostring(
+                    LocalPlayer:
+                    GetAttribute(
+                        "IsRiding"
+                    )
+                ),
+                tostring(
+                    IsInsideEggDeliveryArea(
+                        baseplate,
+                        root.Position
+                    )
+                )
             )
-                .. "s"
         )
 
 
-        -- ====================================================
-        -- BIARKAN BREAKTIMER ASLI CLAIM DULU
-        -- ====================================================
-        --
-        -- LiveTimer bawaan game mengecek home sekitar tiap 0.1s.
-        -- Selama window ini kita tidak mengirim remote manual.
-        -- ====================================================
+        -- Biarkan BreakTimer asli mencoba claim dulu.
+        local failureSerialAtStart =
+            TravelState.FailureSerial
+
 
         local officialStarted =
             os.clock()
@@ -2465,16 +2419,12 @@ return function(Context)
             and root.Parent
             and os.clock()
                 - officialStarted
-                < 1.2
+                < 0.8
         do
 
             if TravelState.FailureSerial
                 ~= failureSerialAtStart
             then
-
-                TravelState.AdvanceArrivalDuration(
-                    TravelState.LastFailure
-                )
 
                 return false
             end
@@ -2497,34 +2447,18 @@ return function(Context)
             if #pending == 0 then
 
                 print(
-                    "[CHLISE HUB] Arrival SUCCESS at duration:",
-                    tostring(
-                        duration
-                    )
-                        .. "s"
+                    "[CHLISE HUB] TELEPORT + RIDING arrival SUCCESS"
                 )
 
-
                 return true
+
             end
-
-
-            -- Jangan biarkan physics menggeser kita keluar area home.
-            root.AssemblyLinearVelocity =
-                Vector3.zero
-
-            root.AssemblyAngularVelocity =
-                Vector3.zero
 
 
             task.wait(0.05)
 
         end
 
-
-        -- ====================================================
-        -- FALLBACK MANUAL CLAIM
-        -- ====================================================
 
         local ids =
             FilterTrackedArrivalEggIds(
@@ -2542,20 +2476,13 @@ return function(Context)
 
         if #ids == 0 then
 
-            print(
-                "[CHLISE HUB] Arrival SUCCESS at duration:",
-                tostring(
-                    duration
-                )
-                    .. "s"
-            )
-
             return true
+
         end
 
 
-        local claimOk,
-            claimErr =
+        local ok,
+            err =
             pcall(function()
 
                 EggArrivalClaimRemote:
@@ -2569,74 +2496,42 @@ return function(Context)
             end)
 
 
-        if not claimOk then
+        if not ok then
 
-            TravelState.AdvanceArrivalDuration(
-                claimErr
+            warn(
+                "[CHLISE HUB] Teleport riding claim failed:",
+                err
             )
 
             return false
-        end
-
-
-        local resultStarted =
-            os.clock()
-
-
-        while Runtime:IsCurrent()
-            and autoFarmActive
-            and root.Parent
-            and os.clock()
-                - resultStarted
-                < 1.25
-        do
-
-            if TravelState.FailureSerial
-                ~= failureSerialAtStart
-            then
-
-                TravelState.AdvanceArrivalDuration(
-                    TravelState.LastFailure
-                )
-
-                return false
-            end
-
-
-            local remaining =
-                FilterTrackedArrivalEggIds(
-                    ids
-                )
-
-
-            if #remaining == 0 then
-
-                print(
-                    "[CHLISE HUB] Arrival SUCCESS at duration:",
-                    tostring(
-                        duration
-                    )
-                        .. "s"
-                )
-
-
-                return true
-            end
-
-
-            task.wait(0.05)
 
         end
 
 
-        -- Tidak ada explicit reject, tapi server juga belum menerima.
-        -- Attempt egg berikutnya akan memakai duration lebih lambat.
-        TravelState.AdvanceArrivalDuration(
-            "arrival timeout"
-        )
+        task.wait(0.75)
 
 
-        return false
+        local remaining =
+            FilterTrackedArrivalEggIds(
+                ids
+            )
+
+
+        local success =
+            #remaining == 0
+
+
+        if success then
+
+            print(
+                "[CHLISE HUB] TELEPORT + RIDING manual claim SUCCESS"
+            )
+
+        end
+
+
+        return success
+
     end
 
 
@@ -6908,11 +6803,18 @@ return function(Context)
                 end
 
 
-                local travelOk,
-                    travelReason =
-                    TravelState.SmoothTravelToEgg(
-                        character,
-                        root,
+                -- TEST VERSION:
+                -- Setelah riding aktif, NORMAL EGG langsung teleport ke egg.
+                -- Tujuannya mengecek apakah state riding pet membuat server
+                -- menerima pickup/delivery walau movement memakai teleport.
+                local flagsBefore,
+                    graceBefore =
+                    TravelState.ReadTeleportState()
+
+
+                character:
+                PivotTo(
+                    CFrame.new(
                         pickupPosition
                         + Vector3.new(
                             0,
@@ -6920,44 +6822,44 @@ return function(Context)
                             0
                         )
                     )
+                )
 
 
-                if not travelOk then
+                root.AssemblyLinearVelocity =
+                    Vector3.zero
 
-                    warn(
-                        "[CHLISE HUB] Egg travel failed:",
-                        tostring(
-                            travelReason
-                        )
-                    )
+                root.AssemblyAngularVelocity =
+                    Vector3.zero
 
 
-                    task.wait(0.2)
-                    continue
-
-                end
+                task.wait(0.3)
 
 
-                -- Re-read grace state immediately before pickup.
-                local currentFlags,
-                    currentGrace =
+                local flagsAfter,
+                    graceAfter =
                     TravelState.ReadTeleportState()
 
 
                 print(
                     string.format(
-                        "[CHLISE HUB] Before pickup | TeleportFlags=%s | TeleportGraceUntil=%s",
-                        tostring(currentFlags),
-                        tostring(currentGrace)
+                        "[CHLISE HUB] Egg TELEPORT while riding | flags: %s -> %s | grace: %s -> %s | riding=%s",
+                        tostring(flagsBefore),
+                        tostring(flagsAfter),
+                        tostring(graceBefore),
+                        tostring(graceAfter),
+                        tostring(
+                            LocalPlayer:
+                            GetAttribute(
+                                "IsRiding"
+                            )
+                        )
                     )
                 )
 
 
-                -- Jika grace masih tampak aktif, tunggu dulu.
-                TravelState.WaitForTeleportGraceClear(
-                    currentGrace,
-                    10
-                )
+                -- Untuk test teleport ini jangan tunggu grace terlalu lama.
+                -- Cukup beri waktu replikasi posisi sebelum pickup.
+                task.wait(0.25)
 
             end
 
