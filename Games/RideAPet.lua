@@ -263,49 +263,31 @@ return function(Context)
     -- kita bisa menemukan batas yang mulai diterima server.
     -- ========================================================
 
-    local ARRIVAL_TRAVEL_DURATIONS = {
-        12.0,
-        14.0,
-        16.0,
-        18.0,
-        20.0
+    -- Consolidated to avoid Luau's 200-local register limit.
+    local TravelState = {
+        ArrivalDurations = {
+            12.0,
+            14.0,
+            16.0,
+            18.0,
+            20.0
+        },
+
+        ArrivalIndex = 1,
+
+        EggDurations = {
+            8.0,
+            10.0,
+            12.0,
+            15.0,
+            18.0
+        },
+
+        EggIndex = 1,
+
+        FailureSerial = 0,
+        LastFailure = nil
     }
-
-
-    local arrivalTravelDurationIndex =
-        1
-
-
-    -- ========================================================
-    -- EGG TRAVEL FALLBACK TEST
-    -- ========================================================
-    --
-    -- Normal egg tidak lagi di-teleport instan. Kita mulai dari
-    -- 8 detik dan memperlambat attempt berikutnya jika perjalanan
-    -- menaikkan TeleportFlags / memicu TeleportGraceUntil.
-    --
-    -- Volcanic Egg TIDAK memakai flow ini.
-    -- ========================================================
-
-    local EGG_TRAVEL_DURATIONS = {
-        8.0,
-        10.0,
-        12.0,
-        15.0,
-        18.0
-    }
-
-
-    local eggTravelDurationIndex =
-        1
-
-
-    local arrivalFailureSerial =
-        0
-
-
-    local lastArrivalFailureMessage =
-        nil
 
 
     local placeEggActive = false
@@ -377,11 +359,11 @@ return function(Context)
                 )
             then
 
-                arrivalFailureSerial +=
+                TravelState.FailureSerial +=
                     1
 
 
-                lastArrivalFailureMessage =
+                TravelState.LastFailure =
                     messageText
 
 
@@ -2053,7 +2035,7 @@ return function(Context)
     end
 
 
-    local function GetTrackedBreakRemaining(
+    function TravelState.GetTrackedBreakRemaining(
         trackedIds
     )
 
@@ -2119,23 +2101,23 @@ return function(Context)
     end
 
 
-    local function AdvanceArrivalDuration(
+    function TravelState.AdvanceArrivalDuration(
         reason
     )
 
-        if arrivalTravelDurationIndex
-            < #ARRIVAL_TRAVEL_DURATIONS
+        if TravelState.ArrivalIndex
+            < #TravelState.ArrivalDurations
         then
 
-            arrivalTravelDurationIndex +=
+            TravelState.ArrivalIndex +=
                 1
 
         end
 
 
         local nextDuration =
-            ARRIVAL_TRAVEL_DURATIONS[
-                arrivalTravelDurationIndex
+            TravelState.ArrivalDurations[
+                TravelState.ArrivalIndex
             ]
 
 
@@ -2148,7 +2130,7 @@ return function(Context)
             "| reason:",
             tostring(
                 reason
-                or lastArrivalFailureMessage
+                or TravelState.LastFailure
                 or "unknown"
             )
         )
@@ -2156,7 +2138,7 @@ return function(Context)
     end
 
 
-    local function SmoothTravelCharacter(
+    function TravelState.SmoothTravelCharacter(
         character,
         root,
         destination,
@@ -2226,12 +2208,12 @@ return function(Context)
             and root.Parent
         do
 
-            if arrivalFailureSerial
+            if TravelState.FailureSerial
                 ~= failureSerialAtStart
             then
 
                 return false,
-                    lastArrivalFailureMessage
+                    TravelState.LastFailure
                     or "server rejected during travel"
             end
 
@@ -2304,12 +2286,12 @@ return function(Context)
         end
 
 
-        if arrivalFailureSerial
+        if TravelState.FailureSerial
             ~= failureSerialAtStart
         then
 
             return false,
-                lastArrivalFailureMessage
+                TravelState.LastFailure
                 or "server rejected after travel"
         end
 
@@ -2319,7 +2301,7 @@ return function(Context)
     end
 
 
-    local function ClaimTrackedEggArrival(
+    function TravelState.ClaimTrackedEggArrival(
         root,
         trackedIds
     )
@@ -2349,16 +2331,16 @@ return function(Context)
 
 
         local duration =
-            ARRIVAL_TRAVEL_DURATIONS[
-                arrivalTravelDurationIndex
+            TravelState.ArrivalDurations[
+                TravelState.ArrivalIndex
             ]
-            or ARRIVAL_TRAVEL_DURATIONS[
-                #ARRIVAL_TRAVEL_DURATIONS
+            or TravelState.ArrivalDurations[
+                #TravelState.ArrivalDurations
             ]
 
 
         local breakRemaining =
-            GetTrackedBreakRemaining(
+            TravelState.GetTrackedBreakRemaining(
                 trackedIds
             )
 
@@ -2397,7 +2379,7 @@ return function(Context)
 
 
         local failureSerialAtStart =
-            arrivalFailureSerial
+            TravelState.FailureSerial
 
 
         -- Datang ke pusat Baseplate dengan posisi Y sedikit di atas
@@ -2417,7 +2399,7 @@ return function(Context)
 
         local moved,
             moveReason =
-            SmoothTravelCharacter(
+            TravelState.SmoothTravelCharacter(
                 character,
                 root,
                 destination,
@@ -2428,7 +2410,7 @@ return function(Context)
 
         if not moved then
 
-            AdvanceArrivalDuration(
+            TravelState.AdvanceArrivalDuration(
                 moveReason
             )
 
@@ -2443,7 +2425,7 @@ return function(Context)
         )
         then
 
-            AdvanceArrivalDuration(
+            TravelState.AdvanceArrivalDuration(
                 "EggDeliveryRules.Contains returned false"
             )
 
@@ -2480,12 +2462,12 @@ return function(Context)
                 < 1.2
         do
 
-            if arrivalFailureSerial
+            if TravelState.FailureSerial
                 ~= failureSerialAtStart
             then
 
-                AdvanceArrivalDuration(
-                    lastArrivalFailureMessage
+                TravelState.AdvanceArrivalDuration(
+                    TravelState.LastFailure
                 )
 
                 return false
@@ -2583,7 +2565,7 @@ return function(Context)
 
         if not claimOk then
 
-            AdvanceArrivalDuration(
+            TravelState.AdvanceArrivalDuration(
                 claimErr
             )
 
@@ -2603,12 +2585,12 @@ return function(Context)
                 < 1.25
         do
 
-            if arrivalFailureSerial
+            if TravelState.FailureSerial
                 ~= failureSerialAtStart
             then
 
-                AdvanceArrivalDuration(
-                    lastArrivalFailureMessage
+                TravelState.AdvanceArrivalDuration(
+                    TravelState.LastFailure
                 )
 
                 return false
@@ -2643,7 +2625,7 @@ return function(Context)
 
         -- Tidak ada explicit reject, tapi server juga belum menerima.
         -- Attempt egg berikutnya akan memakai duration lebih lambat.
-        AdvanceArrivalDuration(
+        TravelState.AdvanceArrivalDuration(
             "arrival timeout"
         )
 
@@ -2656,7 +2638,7 @@ return function(Context)
     -- TELEPORT FLAG / GRACE MONITOR
     -- ========================================================
 
-    local function ReadTeleportState()
+    function TravelState.ReadTeleportState()
 
         return
             LocalPlayer:
@@ -2671,7 +2653,7 @@ return function(Context)
     end
 
 
-    local function NumberChanged(
+    function TravelState.NumberChanged(
         before,
         after
     )
@@ -2685,7 +2667,7 @@ return function(Context)
     end
 
 
-    local function WaitForTeleportGraceClear(
+    function TravelState.WaitForTeleportGraceClear(
         graceValue,
         maxWait
     )
@@ -2808,15 +2790,15 @@ return function(Context)
     end
 
 
-    local function AdvanceEggTravelDuration(
+    function TravelState.AdvanceEggTravelDuration(
         reason
     )
 
-        if eggTravelDurationIndex
-            < #EGG_TRAVEL_DURATIONS
+        if TravelState.EggIndex
+            < #TravelState.EggDurations
         then
 
-            eggTravelDurationIndex +=
+            TravelState.EggIndex +=
                 1
 
         end
@@ -2825,8 +2807,8 @@ return function(Context)
         warn(
             "[CHLISE HUB] Egg travel fallback ->",
             tostring(
-                EGG_TRAVEL_DURATIONS[
-                    eggTravelDurationIndex
+                TravelState.EggDurations[
+                    TravelState.EggIndex
                 ]
             )
                 .. "s",
@@ -2840,7 +2822,7 @@ return function(Context)
     end
 
 
-    local function SmoothTravelToEgg(
+    function TravelState.SmoothTravelToEgg(
         character,
         root,
         destination
@@ -2860,17 +2842,17 @@ return function(Context)
 
 
         local duration =
-            EGG_TRAVEL_DURATIONS[
-                eggTravelDurationIndex
+            TravelState.EggDurations[
+                TravelState.EggIndex
             ]
-            or EGG_TRAVEL_DURATIONS[
-                #EGG_TRAVEL_DURATIONS
+            or TravelState.EggDurations[
+                #TravelState.EggDurations
             ]
 
 
         local flagsBefore,
             graceBefore =
-            ReadTeleportState()
+            TravelState.ReadTeleportState()
 
 
         local startPivot =
@@ -2980,7 +2962,7 @@ return function(Context)
 
         local flagsAfter,
             graceAfter =
-            ReadTeleportState()
+            TravelState.ReadTeleportState()
 
 
         print(
@@ -2995,14 +2977,14 @@ return function(Context)
 
 
         local flagsChanged =
-            NumberChanged(
+            TravelState.NumberChanged(
                 flagsBefore,
                 flagsAfter
             )
 
 
         local graceChanged =
-            NumberChanged(
+            TravelState.NumberChanged(
                 graceBefore,
                 graceAfter
             )
@@ -3012,14 +2994,14 @@ return function(Context)
             or graceChanged
         then
 
-            AdvanceEggTravelDuration(
+            TravelState.AdvanceEggTravelDuration(
                 flagsChanged
                     and "TeleportFlags changed"
                     or "TeleportGraceUntil changed"
             )
 
 
-            WaitForTeleportGraceClear(
+            TravelState.WaitForTeleportGraceClear(
                 graceAfter,
                 10
             )
@@ -6574,7 +6556,7 @@ return function(Context)
 
                 local travelOk,
                     travelReason =
-                    SmoothTravelToEgg(
+                    TravelState.SmoothTravelToEgg(
                         character,
                         root,
                         pickupPosition
@@ -6605,7 +6587,7 @@ return function(Context)
                 -- Re-read grace state immediately before pickup.
                 local currentFlags,
                     currentGrace =
-                    ReadTeleportState()
+                    TravelState.ReadTeleportState()
 
 
                 print(
@@ -6618,7 +6600,7 @@ return function(Context)
 
 
                 -- Jika grace masih tampak aktif, tunggu dulu.
-                WaitForTeleportGraceClear(
+                TravelState.WaitForTeleportGraceClear(
                     currentGrace,
                     10
                 )
@@ -6751,7 +6733,7 @@ return function(Context)
 
                     local pickupFlags,
                         pickupGrace =
-                        ReadTeleportState()
+                        TravelState.ReadTeleportState()
 
 
                     print(
@@ -7286,7 +7268,7 @@ return function(Context)
                 and root.Parent
             then
 
-                ClaimTrackedEggArrival(
+                TravelState.ClaimTrackedEggArrival(
                     root,
                     currentPickupBasketIds
                 )
