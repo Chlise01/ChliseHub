@@ -1807,8 +1807,7 @@ return function(Context)
             pcall(function()
 
                 return
-                    EggDeliveryRules:
-                    Contains(
+                    EggDeliveryRules.Contains(
                         baseplate,
                         position
                     )
@@ -1963,8 +1962,9 @@ return function(Context)
         end
 
 
-        -- Jangan fire remote sampai posisi client sendiri lolos
-        -- EggDeliveryRules.Contains(), sama seperti BreakTimer asli.
+        -- PENTING:
+        -- BreakTimer asli memakai EggDeliveryRules.Contains(baseplate, position)
+        -- dengan DOT CALL, bukan method/colon call.
         local inside =
             MoveIntoEggDeliveryArea(
                 character,
@@ -1983,10 +1983,71 @@ return function(Context)
         end
 
 
-        -- Beri server sedikit waktu melihat HRP di posisi valid.
-        task.wait(0.35)
+        -- Diam di area home yang VALID dan biarkan BreakTimer bawaan game
+        -- menjalankan LiveTimer -> SendArrivalClaim sendiri.
+        -- Heartbeat client mengecek sekitar tiap 0.1 detik.
+        local officialClaimStarted =
+            os.clock()
 
 
+        while Runtime:IsCurrent()
+            and autoFarmActive
+            and root.Parent
+            and os.clock()
+                - officialClaimStarted
+                < 1.6
+        do
+
+            local pending =
+                FilterTrackedArrivalEggIds(
+                    trackedIds
+                )
+
+
+            if #pending == 0 then
+
+                pending =
+                    ScanEligibleArrivalEggIds()
+
+            end
+
+
+            if #pending == 0 then
+                return true
+            end
+
+
+            -- Pastikan kita tetap berada di area yang dianggap home
+            -- oleh EggDeliveryRules selama BreakTimer bekerja.
+            if not IsInsideEggDeliveryArea(
+                baseplate,
+                root.Position
+            )
+            then
+
+                MoveIntoEggDeliveryArea(
+                    character,
+                    root,
+                    baseplate
+                )
+
+            end
+
+
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
+
+
+            task.wait(0.1)
+
+        end
+
+
+        -- Kalau BreakTimer bawaan belum menyelesaikan claim,
+        -- baru fallback ke remote yang sama seperti SendArrivalClaim.
         local ids =
             FilterTrackedArrivalEggIds(
                 trackedIds
@@ -2002,58 +2063,56 @@ return function(Context)
 
 
         if #ids == 0 then
-            return false
+            return true
         end
 
 
-        local function fire(
-            idsToClaim
+        if not IsInsideEggDeliveryArea(
+            baseplate,
+            root.Position
         )
+        then
 
-            if not IsInsideEggDeliveryArea(
-                baseplate,
-                root.Position
-            )
-            then
+            local moved =
+                MoveIntoEggDeliveryArea(
+                    character,
+                    root,
+                    baseplate
+                )
 
-                return false,
-                    "HRP no longer inside EggDeliveryRules area"
+
+            if not moved then
+                return false
             end
-
-
-            return
-                pcall(function()
-
-                    EggArrivalClaimRemote:
-                    FireServer(
-                        workspace:
-                        GetServerTimeNow(),
-                        root.Position,
-                        idsToClaim
-                    )
-
-                end)
 
         end
 
 
         local ok,
             err =
-            fire(
-                ids
-            )
+            pcall(function()
+
+                EggArrivalClaimRemote:
+                FireServer(
+                    workspace:
+                    GetServerTimeNow(),
+                    root.Position,
+                    ids
+                )
+
+            end)
 
 
         if not ok then
 
             warn(
-                "[CHLISE HUB] EggArrivalClaim failed:",
+                "[CHLISE HUB] EggArrivalClaim fallback failed:",
                 err
             )
 
 
             NotifyWebhookError(
-                "EggArrivalClaim failed: "
+                "EggArrivalClaim fallback failed: "
                 .. tostring(
                     err
                 )
@@ -2062,7 +2121,8 @@ return function(Context)
         end
 
 
-        task.wait(0.55)
+        -- Tunggu satu window retry milik BreakTimer / server.
+        task.wait(1.1)
 
 
         local remaining =
@@ -2071,43 +2131,8 @@ return function(Context)
             )
 
 
-        if #remaining > 0
-            and root.Parent
-        then
-
-            -- Pastikan masih ada di area valid sebelum retry.
-            if not IsInsideEggDeliveryArea(
-                baseplate,
-                root.Position
-            )
-            then
-
-                MoveIntoEggDeliveryArea(
-                    character,
-                    root,
-                    baseplate
-                )
-
-                task.wait(0.25)
-
-            end
-
-
-            fire(
-                remaining
-            )
-
-
-            task.wait(0.55)
-
-        end
-
-
         return
-            #FilterTrackedArrivalEggIds(
-                ids
-            )
-            == 0
+            #remaining == 0
     end
 
 
