@@ -232,6 +232,9 @@ return function(Context)
     local selectedFavoriteRarities = {}
 
 
+    local currentPickupBasketIds = {}
+
+
     local autoFarmActive = false
     local placeEggActive = false
     local autoHatchActive = false
@@ -1525,12 +1528,197 @@ return function(Context)
     -- EGG ARRIVAL CLAIM
     -- ========================================================
 
-    local function GetEligibleArrivalEggIds()
+    local function SnapshotBasketNames()
+
+        local snapshot = {}
+
+
+        for _, egg
+            in ipairs(
+                Basket:
+                GetChildren()
+            )
+        do
+
+            snapshot[
+                egg.Name
+            ] = true
+
+        end
+
+
+        return snapshot
+    end
+
+
+    local function ResolveNewBasketEggIds(
+        beforeSnapshot,
+        timeout
+    )
+
+        timeout =
+            tonumber(timeout)
+            or 2
+
+
+        local started =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and os.clock()
+                - started
+                < timeout
+        do
+
+            local result = {}
+
+
+            for _, egg
+                in ipairs(
+                    Basket:
+                    GetChildren()
+                )
+            do
+
+                if not beforeSnapshot[
+                    egg.Name
+                ]
+                then
+
+                    table.insert(
+                        result,
+                        egg.Name
+                    )
+
+                end
+
+            end
+
+
+            if #result > 0 then
+
+                local allReady =
+                    true
+
+
+                for _, id
+                    in ipairs(
+                        result
+                    )
+                do
+
+                    local egg =
+                        Basket:
+                        FindFirstChild(
+                            id
+                        )
+
+
+                    if egg
+                        and egg:
+                            GetAttribute(
+                                "BreakAt"
+                            )
+                            == nil
+                    then
+
+                        allReady =
+                            false
+
+                        break
+                    end
+
+                end
+
+
+                if allReady then
+                    return result
+                end
+
+            end
+
+
+            task.wait(0.05)
+
+        end
+
+
+        return {}
+    end
+
+
+    local function FilterTrackedArrivalEggIds(
+        ids
+    )
 
         local now =
             workspace:
             GetServerTimeNow()
 
+
+        local result = {}
+
+
+        for _, id
+            in ipairs(
+                ids
+                or {}
+            )
+        do
+
+            local egg =
+                Basket:
+                FindFirstChild(
+                    id
+                )
+
+
+            if egg then
+
+                local breakAt =
+                    tonumber(
+                        egg:
+                        GetAttribute(
+                            "BreakAt"
+                        )
+                    )
+
+
+                local delivering =
+                    egg:
+                    GetAttribute(
+                        "Delivering"
+                    )
+                    == true
+
+
+                if breakAt
+                    and breakAt == breakAt
+                    and math.abs(breakAt)
+                        < math.huge
+                    and now
+                        <= breakAt + 0.5
+                    and not delivering
+                then
+
+                    table.insert(
+                        result,
+                        id
+                    )
+
+                end
+
+            end
+
+        end
+
+
+        return result
+    end
+
+
+    local function ScanEligibleArrivalEggIds()
 
         local ids = {}
 
@@ -1542,48 +1730,18 @@ return function(Context)
             )
         do
 
-            local breakAt =
-                tonumber(
-                    egg:
-                    GetAttribute(
-                        "BreakAt"
-                    )
-                )
-
-
-            local delivering =
-                egg:
-                GetAttribute(
-                    "Delivering"
-                )
-                == true
-
-
-            if breakAt
-                and breakAt == breakAt
-                and math.abs(breakAt)
-                    < math.huge
-                and now
-                    <= breakAt + 0.5
-                and not delivering
-            then
-
-                table.insert(
-                    ids,
-                    egg.Name
-                )
-
-
-                if #ids >= 64 then
-                    break
-                end
-
-            end
+            table.insert(
+                ids,
+                egg.Name
+            )
 
         end
 
 
-        return ids
+        return
+            FilterTrackedArrivalEggIds(
+                ids
+            )
     end
 
 
@@ -1615,14 +1773,12 @@ return function(Context)
             )
         then
 
-            -- Gunakan titik yang benar-benar berada di area plot,
-            -- bukan +5 studs generik dari pivot.
             return
                 baseplate.Position
                 + Vector3.new(
                     0,
                     math.max(
-                        1.5,
+                        2,
                         baseplate.Size.Y
                             * 0.5
                             + 1
@@ -1644,36 +1800,87 @@ return function(Context)
     end
 
 
-    local function FireEggArrivalClaim(
-        claimPosition,
-        ids
+    local function ClaimTrackedEggArrival(
+        root,
+        trackedIds
     )
 
-        if typeof(claimPosition)
-                ~= "Vector3"
-            or type(ids)
-                ~= "table"
-            or #ids
-                == 0
+        if not root
+            or not root.Parent
         then
-
             return false
+        end
+
+
+        local arrivalPosition =
+            GetPlotArrivalPosition()
+
+
+        if not arrivalPosition then
+            return false
+        end
+
+
+        root.CFrame =
+            CFrame.new(
+                arrivalPosition
+            )
+
+
+        root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        root.AssemblyAngularVelocity =
+            Vector3.zero
+
+
+        task.wait(0.9)
+
+
+        local ids =
+            FilterTrackedArrivalEggIds(
+                trackedIds
+            )
+
+
+        if #ids == 0 then
+
+            ids =
+                ScanEligibleArrivalEggIds()
+
+        end
+
+
+        if #ids == 0 then
+            return false
+        end
+
+
+        local function fire(
+            idsToClaim
+        )
+
+            return
+                pcall(function()
+
+                    EggArrivalClaimRemote:
+                    FireServer(
+                        workspace:
+                        GetServerTimeNow(),
+                        root.Position,
+                        idsToClaim
+                    )
+
+                end)
+
         end
 
 
         local ok,
             err =
-            pcall(function()
-
-                EggArrivalClaimRemote:
-                FireServer(
-                    workspace:
-                    GetServerTimeNow(),
-                    claimPosition,
-                    ids
-                )
-
-            end)
+            fire(
+                ids
+            )
 
 
         if not ok then
@@ -1691,127 +1898,37 @@ return function(Context)
                 )
             )
 
-            return false
         end
 
 
-        return true
-    end
+        task.wait(0.5)
 
 
-    local function ClaimEggArrivalBypass(
-        root
-    )
-
-        if not root
-            or not root.Parent
-        then
-            return false
-        end
-
-
-        local ids =
-            GetEligibleArrivalEggIds()
-
-
-        if #ids == 0 then
-            return false
-        end
-
-
-        local arrivalPosition =
-            GetPlotArrivalPosition()
-
-
-        if not arrivalPosition then
-            return false
-        end
-
-
-        -- ====================================================
-        -- ATTEMPT 1: spoof posisi plot pada payload remote.
-        -- Kalau server hanya memvalidasi payload arrival, ini selesai
-        -- tanpa memindahkan karakter sama sekali.
-        -- ====================================================
-
-        FireEggArrivalClaim(
-            arrivalPosition,
-            ids
-        )
-
-
-        task.wait(0.4)
-
-
-        if #GetEligibleArrivalEggIds()
-            == 0
-        then
-
-            return true
-        end
-
-
-        -- ====================================================
-        -- ATTEMPT 2: fallback jika server juga cek posisi HRP asli.
-        -- Simpan posisi lama, teleport singkat ke area plot yang valid,
-        -- tunggu replikasi, claim sekali lagi, lalu tunggu proses server.
-        -- ====================================================
-
-        local oldCFrame =
-            root.CFrame
-
-
-        root.CFrame =
-            CFrame.new(
-                arrivalPosition
+        local remaining =
+            FilterTrackedArrivalEggIds(
+                ids
             )
 
 
-        root.AssemblyLinearVelocity =
-            Vector3.zero
-
-        root.AssemblyAngularVelocity =
-            Vector3.zero
-
-
-        task.wait(0.45)
-
-
-        local freshIds =
-            GetEligibleArrivalEggIds()
-
-
-        if #freshIds > 0 then
-
-            FireEggArrivalClaim(
-                root.Position,
-                freshIds
-            )
-
-        end
-
-
-        task.wait(0.55)
-
-
-        local claimed =
-            #GetEligibleArrivalEggIds()
-            == 0
-
-
-        -- Hanya restore kalau flow masih aktif dan root masih valid.
-        -- Caller tetap boleh memindahkan player lagi setelah helper ini.
-        if Runtime:IsCurrent()
+        if #remaining > 0
             and root.Parent
         then
 
-            root.CFrame =
-                oldCFrame
+            fire(
+                remaining
+            )
+
+
+            task.wait(0.5)
 
         end
 
 
-        return claimed
+        return
+            #FilterTrackedArrivalEggIds(
+                ids
+            )
+            == 0
     end
 
 
@@ -5315,6 +5432,10 @@ return function(Context)
             -- PICKUP EGG
             -- ================================================
 
+            local basketSnapshotBefore =
+                SnapshotBasketNames()
+
+
             local basketCountBefore =
                 #Basket:GetChildren()
 
@@ -5492,6 +5613,13 @@ return function(Context)
                 continue
 
             end
+
+
+            currentPickupBasketIds =
+                ResolveNewBasketEggIds(
+                    basketSnapshotBefore,
+                    2
+                )
 
 
             if webhookEggPickedUpActive then
@@ -5834,66 +5962,24 @@ return function(Context)
                 and root.Parent
             then
 
-                local bypassClaimed =
-                    ClaimEggArrivalBypass(
-                        root
-                    )
-
-
-                -- Kalau bypass belum diterima server, jalankan fallback
-                -- normal: benar-benar pulang ke plot lalu biarkan client
-                -- game melihat kita sudah berada di rumah.
-                if not bypassClaimed
-                    and plotCenter
-                    and root.Parent
-                then
-
-                    root.CFrame =
-                        CFrame.new(
-                            plotCenter.Position
-                        )
-
-
-                    root.AssemblyLinearVelocity =
-                        Vector3.zero
-
-                    root.AssemblyAngularVelocity =
-                        Vector3.zero
-
-
-                    task.wait(0.75)
-
-
-                    local fallbackIds =
-                        GetEligibleArrivalEggIds()
-
-
-                    if #fallbackIds > 0 then
-
-                        FireEggArrivalClaim(
-                            root.Position,
-                            fallbackIds
-                        )
-
-                    end
-
-
-                    task.wait(0.5)
-
-                end
+                ClaimTrackedEggArrival(
+                    root,
+                    currentPickupBasketIds
+                )
 
             elseif plotCenter
                 and root.Parent
             then
 
-                -- Gift sukses: pertahankan perilaku lama, jangan claim egg
-                -- ke rumah sendiri.
                 root.CFrame =
                     CFrame.new(
                         plotCenter.Position
                     )
 
             end
+
+
+            currentPickupBasketIds = {}
 
 
             task.wait(0.5)
