@@ -5559,56 +5559,10 @@ return function(Context)
 
 
             -- ================================================
-            -- TELEPORT TO EGG
-            -- ================================================
-
-            root.CFrame =
-                CFrame.new(
-                    targetPosition
-                    + Vector3.new(
-                        0,
-                        3,
-                        0
-                    )
-                )
-
-
-            -- Egg normal menunggu prompt siap sebentar.
-            -- Volcanic Egg langsung trigger pickup setelah teleport.
-            if targetName
-                ~= "Volcanic Egg"
-            then
-
-                local promptReadyStarted =
-                    os.clock()
-
-
-                while Runtime:IsCurrent()
-                    and autoFarmActive
-                    and os.clock()
-                        - promptReadyStarted
-                        < 0.6
-                do
-
-                    if targetPrompt
-                        and targetPrompt.Parent
-                        and targetPrompt.Enabled
-                    then
-
-                        break
-
-                    end
-
-
-                    task.wait(0.03)
-
-                end
-
-            end
-
-
-            -- ================================================
-            -- PICKUP EGG
+            -- UPDATED EGG PICKUP FLOW
+            -- Match current EggSpawning.Client:
+            -- wait DropEndsAt -> move to rendered pickup position
+            -- -> FireServer(ActiveEgg GUID) -> confirm response/Basket.
             -- ================================================
 
             local basketSnapshotBefore =
@@ -5618,128 +5572,270 @@ return function(Context)
             local basketCountBefore =
                 #Basket:GetChildren()
 
+
             local pickedUp =
                 false
 
 
-            local function TriggerPickupPrompt(
-                prompt
-            )
-
-                if not prompt
-                    or not prompt.Parent
-                    or not prompt.Enabled
-                    or not fireproximityprompt
-                then
-
-                    return false
-
-                end
+            local pickupResponse =
+                nil
 
 
-                local ok =
+            local pickupResponseReason =
+                nil
+
+
+            local pickupGuid =
+                targetObject
+                and targetObject.Name
+                or nil
+
+
+            local dropEndsAt =
+                targetObject
+                and tonumber(
+                    targetObject:
+                    GetAttribute(
+                        "DropEndsAt"
+                    )
+                )
+                or 0
+
+
+            while Runtime:IsCurrent()
+                and autoFarmActive
+                and targetObject
+                and targetObject.Parent
+                and workspace:
+                    GetServerTimeNow()
+                    < dropEndsAt
+            do
+
+                task.wait(0.03)
+
+            end
+
+
+            if not targetObject
+                or not targetObject.Parent
+            then
+
+                task.wait(0.15)
+                continue
+
+            end
+
+
+            local pickupPart =
+                targetPrompt
+                and targetPrompt.Parent
+                or nil
+
+
+            local renderedPickupPosition =
+                nil
+
+
+            if pickupPart
+                and pickupPart:IsA(
+                    "BasePart"
+                )
+            then
+
+                renderedPickupPosition =
+                    pickupPart.Position
+
+            elseif targetModel
+                and targetModel.Parent
+            then
+
+                local ok,
+                    modelCFrame =
                     pcall(function()
 
-                        local oldHold =
-                            prompt.HoldDuration
-
-
-                        prompt.HoldDuration =
-                            0
-
-
-                        fireproximityprompt(
-                            prompt
-                        )
-
-
-                        task.delay(
-                            0.05,
-
-                            function()
-
-                                if prompt
-                                    and prompt.Parent
-                                then
-
-                                    prompt.HoldDuration =
-                                        oldHold
-
-                                end
-
-                            end
-                        )
+                        return
+                            targetModel:
+                            GetPivot()
 
                     end)
 
 
-                return ok
+                if ok
+                    and typeof(modelCFrame)
+                        == "CFrame"
+                then
+
+                    renderedPickupPosition =
+                        modelCFrame.Position
+
+                end
+
             end
 
 
-            TriggerPickupPrompt(
-                targetPrompt
-            )
+            renderedPickupPosition =
+                renderedPickupPosition
+                or targetPosition
 
 
-            -- Tunggu Basket sebagai konfirmasi utama.
-            local pickupStarted =
+            -- Use the position of the rendered egg/prompt, not only
+            -- ServerData.Position. This keeps server-side distance tiny.
+            root.CFrame =
+                CFrame.new(
+                    renderedPickupPosition
+                    + Vector3.new(
+                        0,
+                        2,
+                        0
+                    )
+                )
+
+
+            root.AssemblyLinearVelocity =
+                Vector3.zero
+
+            root.AssemblyAngularVelocity =
+                Vector3.zero
+
+
+            -- Current EggSpawning.Client refreshes prompt state every 0.1s.
+            local promptReadyStarted =
                 os.clock()
 
 
             while Runtime:IsCurrent()
                 and autoFarmActive
                 and os.clock()
-                    - pickupStarted
-                    < 1.5
+                    - promptReadyStarted
+                    < 0.45
             do
 
-                if #Basket:GetChildren()
-                    > basketCountBefore
+                if targetPrompt
+                    and targetPrompt.Parent
+                    and targetPrompt.Enabled
                 then
-
-                    pickedUp =
-                        true
 
                     break
 
                 end
 
 
-                task.wait(0.05)
+                task.wait(0.03)
 
             end
 
 
-            -- Retry SATU KALI kalau pickup pertama miss.
-            if not pickedUp
-                and targetModel
-                and targetModel.Parent
-            then
+            local responseConnection =
+                EggPickupRemote.OnClientEvent:
+                Connect(function(
+                    status,
+                    reason,
+                    responseGuid
+                )
 
-                targetPrompt =
-                    GetEggPickupPrompt(
-                        targetModel
-                    )
+                    if responseGuid
+                        and pickupGuid
+                        and tostring(
+                            responseGuid
+                        )
+                            ~= tostring(
+                                pickupGuid
+                            )
+                    then
+
+                        return
+
+                    end
 
 
-                local retryReadyStarted =
+                    if status
+                        == "PickedUp"
+                    then
+
+                        pickupResponse =
+                            "PickedUp"
+
+                        pickedUp =
+                            true
+
+                    elseif status
+                        == "Refused"
+                    then
+
+                        pickupResponse =
+                            "Refused"
+
+                        pickupResponseReason =
+                            reason
+
+                    elseif status
+                        == "BasketFull"
+                    then
+
+                        pickupResponse =
+                            "BasketFull"
+
+                        pickupResponseReason =
+                            "BasketFull"
+
+                    end
+
+                end)
+
+
+            local function BasketIncreased()
+
+                return
+                    #Basket:GetChildren()
+                    > basketCountBefore
+
+            end
+
+
+            local function WaitForPickupResult(
+                timeout
+            )
+
+                local started =
                     os.clock()
 
 
                 while Runtime:IsCurrent()
                     and autoFarmActive
                     and os.clock()
-                        - retryReadyStarted
-                        < 0.5
+                        - started
+                        < timeout
                 do
 
-                    if targetPrompt
-                        and targetPrompt.Parent
-                        and targetPrompt.Enabled
+                    if BasketIncreased() then
+
+                        pickedUp =
+                            true
+
+                        return true
+
+                    end
+
+
+                    if pickupResponse
+                        == "PickedUp"
                     then
 
-                        break
+                        pickedUp =
+                            true
+
+                        return true
+
+                    end
+
+
+                    if pickupResponse
+                            == "Refused"
+                        or pickupResponse
+                            == "BasketFull"
+                    then
+
+                        return false
 
                     end
 
@@ -5749,44 +5845,199 @@ return function(Context)
                 end
 
 
-                TriggerPickupPrompt(
-                    targetPrompt
-                )
-
-
-                local retryStarted =
-                    os.clock()
-
-
-                while Runtime:IsCurrent()
-                    and autoFarmActive
-                    and os.clock()
-                        - retryStarted
-                        < 1.5
-                do
-
-                    if #Basket:GetChildren()
-                        > basketCountBefore
-                    then
-
-                        pickedUp =
-                            true
-
-                        break
-
-                    end
-
-
-                    task.wait(0.05)
-
-                end
+                return pickedUp
 
             end
 
 
-            -- Kalau egg benar-benar belum keambil, jangan lanjut Volcano / plot.
-            -- Biarkan loop Auto Farm mencoba target lagi.
+            local function FireDirectPickup()
+
+                if not pickupGuid then
+                    return false
+                end
+
+
+                return
+                    pcall(function()
+
+                        EggPickupRemote:
+                        FireServer(
+                            pickupGuid
+                        )
+
+                    end)
+
+            end
+
+
+            -- First attempt: exact same remote call as the game client.
+            local directOk,
+                directErr =
+                FireDirectPickup()
+
+
+            if not directOk then
+
+                warn(
+                    "[CHLISE HUB] EggPickup remote failed:",
+                    directErr
+                )
+
+            end
+
+
+            WaitForPickupResult(
+                1.0
+            )
+
+
+            -- One controlled retry after snapping even closer to the
+            -- actual prompt parent.
+            if not pickedUp
+                and pickupResponse
+                    ~= "BasketFull"
+                and targetObject.Parent
+            then
+
+                pickupResponse =
+                    nil
+
+                pickupResponseReason =
+                    nil
+
+
+                if pickupPart
+                    and pickupPart.Parent
+                    and pickupPart:IsA(
+                        "BasePart"
+                    )
+                then
+
+                    root.CFrame =
+                        CFrame.new(
+                            pickupPart.Position
+                            + Vector3.new(
+                                0,
+                                1.5,
+                                0
+                            )
+                        )
+
+
+                    root.AssemblyLinearVelocity =
+                        Vector3.zero
+
+                    root.AssemblyAngularVelocity =
+                        Vector3.zero
+
+                end
+
+
+                task.wait(0.15)
+
+
+                local retryOk,
+                    retryErr =
+                    FireDirectPickup()
+
+
+                if not retryOk then
+
+                    warn(
+                        "[CHLISE HUB] EggPickup retry failed:",
+                        retryErr
+                    )
+
+                end
+
+
+                WaitForPickupResult(
+                    1.0
+                )
+
+            end
+
+
+            -- Final fallback: trigger the real ProximityPrompt so the
+            -- updated EggSpawning.Client performs its own CanSeeMazeEgg
+            -- check and FireServer call.
+            if not pickedUp
+                and targetPrompt
+                and targetPrompt.Parent
+                and targetPrompt.Enabled
+                and fireproximityprompt
+            then
+
+                pickupResponse =
+                    nil
+
+                pickupResponseReason =
+                    nil
+
+
+                pcall(function()
+
+                    local oldHold =
+                        targetPrompt.HoldDuration
+
+
+                    targetPrompt.HoldDuration =
+                        0
+
+
+                    fireproximityprompt(
+                        targetPrompt
+                    )
+
+
+                    task.delay(
+                        0.05,
+
+                        function()
+
+                            if targetPrompt
+                                and targetPrompt.Parent
+                            then
+
+                                targetPrompt.HoldDuration =
+                                    oldHold
+
+                            end
+
+                        end
+                    )
+
+                end)
+
+
+                WaitForPickupResult(
+                    1.0
+                )
+
+            end
+
+
+            if responseConnection then
+
+                responseConnection:
+                Disconnect()
+
+            end
+
+
             if not pickedUp then
+
+                if pickupResponseReason then
+
+                    warn(
+                        "[CHLISE HUB] EggPickup refused:",
+                        tostring(
+                            pickupResponseReason
+                        )
+                    )
+
+                end
+
 
                 task.wait(0.2)
                 continue
