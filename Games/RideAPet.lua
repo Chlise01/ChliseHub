@@ -2190,10 +2190,16 @@ return function(Context)
 
         print(
             string.format(
-                "[CHLISE HUB] Arrival travel %.1fs | distance %.1f | est. speed %.1f studs/s",
+                "[CHLISE HUB] Arrival travel %.1fs | distance %.1f | est. speed %.1f studs/s | riding=%s",
                 duration,
                 distance,
-                estimatedSpeed
+                estimatedSpeed,
+                tostring(
+                    LocalPlayer:
+                    GetAttribute(
+                        "IsRiding"
+                    )
+                )
             )
         )
 
@@ -2818,6 +2824,327 @@ return function(Context)
                 or "teleport state changed"
             )
         )
+
+    end
+
+
+    function TravelState.EnsureMountedForFarm()
+
+        local character =
+            LocalPlayer.Character
+
+
+        local backpack =
+            LocalPlayer:
+            FindFirstChild(
+                "Backpack"
+            )
+
+
+        if not character
+            or not backpack
+        then
+
+            return false,
+                "character/backpack missing"
+
+        end
+
+
+        if LocalPlayer:
+            GetAttribute(
+                "IsRiding"
+            )
+            == true
+        then
+
+            print(
+                "[CHLISE HUB] Farm ride: already riding"
+            )
+
+            return true,
+                "already riding"
+
+        end
+
+
+        local humanoid =
+            character:
+            FindFirstChildOfClass(
+                "Humanoid"
+            )
+
+
+        if not humanoid then
+
+            return false,
+                "humanoid missing"
+
+        end
+
+
+        local mounting =
+            GameRemotes:
+            FindFirstChild(
+                "Mounting"
+            )
+
+
+        if not mounting then
+
+            return false,
+                "Mounting remote missing"
+
+        end
+
+
+        local bestTool =
+            nil
+
+
+        local bestDisplaySpeed =
+            -math.huge
+
+
+        local bestName =
+            nil
+
+
+        local items =
+            backpack:
+            GetChildren()
+
+
+        local equipped =
+            character:
+            FindFirstChildOfClass(
+                "Tool"
+            )
+
+
+        if equipped then
+
+            table.insert(
+                items,
+                equipped
+            )
+
+        end
+
+
+        for _, tool
+            in ipairs(
+                items
+            )
+        do
+
+            if tool:IsA(
+                "Tool"
+            )
+            then
+
+                local cleanName =
+                    GetCleanPetName(
+                        tool.Name
+                    )
+
+
+                local petConfig =
+                    PetData[
+                        tool.Name
+                    ]
+                    or PetData[
+                        cleanName
+                    ]
+
+
+                if petConfig then
+
+                    local baseSpeed =
+                        tonumber(
+                            petConfig.WalkSpeed
+                            or petConfig.Speed
+                            or petConfig.MovementSpeed
+                        )
+                        or 0
+
+
+                    if baseSpeed > 0 then
+
+                        local weight =
+                            tonumber(
+                                tool:
+                                GetAttribute(
+                                    "Weight"
+                                )
+                            )
+                            or 10
+
+
+                        local mutation =
+                            tool:
+                            GetAttribute(
+                                "Mutation"
+                            )
+
+
+                        local spawnMutation =
+                            tool:
+                            GetAttribute(
+                                "SpawnMutation"
+                            )
+
+
+                        local multiplier =
+                            tonumber(
+                                Mutations:
+                                CombinedFactor(
+                                    mutation,
+                                    spawnMutation
+                                )
+                            )
+                            or 1
+
+
+                        local displaySpeed =
+                            PetAging:
+                            DisplaySpeedFor(
+                                baseSpeed,
+                                weight,
+                                multiplier
+                            )
+
+
+                        if displaySpeed
+                            and displaySpeed
+                                > bestDisplaySpeed
+                        then
+
+                            bestDisplaySpeed =
+                                displaySpeed
+
+                            bestTool =
+                                tool
+
+                            bestName =
+                                cleanName
+
+                        end
+
+                    end
+
+                end
+
+            end
+
+        end
+
+
+        if not bestTool then
+
+            return false,
+                "no rideable pet found"
+
+        end
+
+
+        -- TryMount in the current game requires the pet Tool to be equipped.
+        if bestTool.Parent
+            ~= character
+        then
+
+            humanoid:
+            EquipTool(
+                bestTool
+            )
+
+
+            local equipStarted =
+                os.clock()
+
+
+            while Runtime:IsCurrent()
+                and autoFarmActive
+                and bestTool.Parent
+                    ~= character
+                and os.clock()
+                    - equipStarted
+                    < 1.25
+            do
+
+                task.wait(0.05)
+
+            end
+
+        end
+
+
+        if bestTool.Parent
+            ~= character
+        then
+
+            return false,
+                "best pet failed to equip"
+
+        end
+
+
+        print(
+            string.format(
+                "[CHLISE HUB] Farm ride: mounting %s | display speed %.2f",
+                tostring(
+                    bestName
+                    or bestTool.Name
+                ),
+                tonumber(
+                    bestDisplaySpeed
+                )
+                    or 0
+            )
+        )
+
+
+        -- Current MountAndDismount.TryMount calls this with NO arguments.
+        mounting:
+        FireServer()
+
+
+        local mountStarted =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and autoFarmActive
+            and os.clock()
+                - mountStarted
+                < 2
+        do
+
+            if LocalPlayer:
+                GetAttribute(
+                    "IsRiding"
+                )
+                == true
+            then
+
+                print(
+                    "[CHLISE HUB] Farm ride: IsRiding = true"
+                )
+
+                return true,
+                    bestName
+                    or bestTool.Name
+
+            end
+
+
+            task.wait(0.05)
+
+        end
+
+
+        return false,
+            "IsRiding did not become true"
 
     end
 
@@ -6557,6 +6884,30 @@ return function(Context)
                 end
 
 
+                -- TEST: normal Auto Farm harus riding pet sebelum bergerak.
+                -- Ini meniru MountAndDismount.TryMount:
+                -- equip Pet Tool -> Mounting:FireServer().
+                local rideOk,
+                    rideReason =
+                    TravelState.EnsureMountedForFarm()
+
+
+                if not rideOk then
+
+                    warn(
+                        "[CHLISE HUB] Farm ride failed:",
+                        tostring(
+                            rideReason
+                        )
+                    )
+
+
+                    task.wait(0.5)
+                    continue
+
+                end
+
+
                 local travelOk,
                     travelReason =
                     TravelState.SmoothTravelToEgg(
@@ -6741,7 +7092,7 @@ return function(Context)
 
                     print(
                         string.format(
-                            "[CHLISE HUB] EggPickup fire | GUID=%s | flags=%s | grace=%s",
+                            "[CHLISE HUB] EggPickup fire | GUID=%s | flags=%s | grace=%s | riding=%s",
                             tostring(
                                 targetObject.Name
                             ),
@@ -6750,6 +7101,13 @@ return function(Context)
                             ),
                             tostring(
                                 pickupGrace
+                            )
+,
+                            tostring(
+                                LocalPlayer:
+                                GetAttribute(
+                                    "IsRiding"
+                                )
                             )
                         )
                     )
