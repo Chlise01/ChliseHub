@@ -95,6 +95,13 @@ return function(Context)
         )
 
 
+    local EggDeliveryRules =
+        require(
+            GameServices:
+            WaitForChild("EggDeliveryRules")
+        )
+
+
     local EggsData =
         require(
             GameData:
@@ -1745,7 +1752,7 @@ return function(Context)
     end
 
 
-    local function GetPlotArrivalPosition()
+    local function GetPlotBaseplate()
 
         local plot =
             GetPlot()
@@ -1773,30 +1780,158 @@ return function(Context)
             )
         then
 
-            return
-                baseplate.Position
-                + Vector3.new(
+            return baseplate
+        end
+
+
+        return nil
+    end
+
+
+    local function IsInsideEggDeliveryArea(
+        baseplate,
+        position
+    )
+
+        if not baseplate
+            or typeof(position)
+                ~= "Vector3"
+        then
+
+            return false
+        end
+
+
+        local ok,
+            result =
+            pcall(function()
+
+                return
+                    EggDeliveryRules:
+                    Contains(
+                        baseplate,
+                        position
+                    )
+
+            end)
+
+
+        return
+            ok
+            and result
+            == true
+    end
+
+
+    local function MoveIntoEggDeliveryArea(
+        character,
+        root,
+        baseplate
+    )
+
+        if not character
+            or not character.Parent
+            or not root
+            or not root.Parent
+            or not baseplate
+        then
+
+            return false
+        end
+
+
+        -- Mulai dari titik tengah permukaan baseplate.
+        local surfacePosition =
+            baseplate.CFrame:
+            PointToWorldSpace(
+                Vector3.new(
                     0,
-                    math.max(
-                        2,
-                        baseplate.Size.Y
-                            * 0.5
-                            + 1
-                    ),
+                    baseplate.Size.Y
+                        * 0.5
+                        + 2.5,
                     0
                 )
+            )
+
+
+        character:
+        PivotTo(
+            CFrame.new(
+                surfacePosition
+            )
+        )
+
+
+        root.AssemblyLinearVelocity =
+            Vector3.zero
+
+        root.AssemblyAngularVelocity =
+            Vector3.zero
+
+
+        -- Tunggu replikasi lalu cek dengan RULE YANG SAMA seperti client game.
+        local started =
+            os.clock()
+
+
+        while Runtime:IsCurrent()
+            and root.Parent
+            and os.clock()
+                - started
+                < 1.5
+        do
+
+            if IsInsideEggDeliveryArea(
+                baseplate,
+                root.Position
+            )
+            then
+
+                return true
+            end
+
+
+            -- Kalau titik tengah belum dianggap valid, coba sedikit lebih rendah.
+            local elapsed =
+                os.clock()
+                - started
+
+
+            if elapsed > 0.45 then
+
+                local adjusted =
+                    baseplate.CFrame:
+                    PointToWorldSpace(
+                        Vector3.new(
+                            0,
+                            baseplate.Size.Y
+                                * 0.5
+                                + 1.0,
+                            0
+                        )
+                    )
+
+
+                character:
+                PivotTo(
+                    CFrame.new(
+                        adjusted
+                    )
+                )
+
+            end
+
+
+            task.wait(0.05)
 
         end
 
 
-        local center =
-            GetPlotCenter()
-
-
         return
-            center
-            and center.Position
-            or nil
+            IsInsideEggDeliveryArea(
+                baseplate,
+                root.Position
+            )
     end
 
 
@@ -1812,29 +1947,44 @@ return function(Context)
         end
 
 
-        local arrivalPosition =
-            GetPlotArrivalPosition()
+        local character =
+            LocalPlayer.Character
 
 
-        if not arrivalPosition then
+        local baseplate =
+            GetPlotBaseplate()
+
+
+        if not character
+            or not baseplate
+        then
+
             return false
         end
 
 
-        root.CFrame =
-            CFrame.new(
-                arrivalPosition
+        -- Jangan fire remote sampai posisi client sendiri lolos
+        -- EggDeliveryRules.Contains(), sama seperti BreakTimer asli.
+        local inside =
+            MoveIntoEggDeliveryArea(
+                character,
+                root,
+                baseplate
             )
 
 
-        root.AssemblyLinearVelocity =
-            Vector3.zero
+        if not inside then
 
-        root.AssemblyAngularVelocity =
-            Vector3.zero
+            warn(
+                "[CHLISE HUB] Could not enter EggDeliveryRules area."
+            )
+
+            return false
+        end
 
 
-        task.wait(0.9)
+        -- Beri server sedikit waktu melihat HRP di posisi valid.
+        task.wait(0.35)
 
 
         local ids =
@@ -1859,6 +2009,17 @@ return function(Context)
         local function fire(
             idsToClaim
         )
+
+            if not IsInsideEggDeliveryArea(
+                baseplate,
+                root.Position
+            )
+            then
+
+                return false,
+                    "HRP no longer inside EggDeliveryRules area"
+            end
+
 
             return
                 pcall(function()
@@ -1901,7 +2062,7 @@ return function(Context)
         end
 
 
-        task.wait(0.5)
+        task.wait(0.55)
 
 
         local remaining =
@@ -1914,12 +2075,30 @@ return function(Context)
             and root.Parent
         then
 
+            -- Pastikan masih ada di area valid sebelum retry.
+            if not IsInsideEggDeliveryArea(
+                baseplate,
+                root.Position
+            )
+            then
+
+                MoveIntoEggDeliveryArea(
+                    character,
+                    root,
+                    baseplate
+                )
+
+                task.wait(0.25)
+
+            end
+
+
             fire(
                 remaining
             )
 
 
-            task.wait(0.5)
+            task.wait(0.55)
 
         end
 
