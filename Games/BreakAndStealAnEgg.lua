@@ -25,10 +25,11 @@ return function(Context)
     local SafeZoneQuery = require(Shared:WaitForChild("SafeZoneQuery"))
     local ZonesConfig = require(Shared:WaitForChild("ZonesConfig"))
     local ChaseState = require(Shared:WaitForChild("ChaseState"))
+    local EggRewards = require(Shared:WaitForChild("EggRewards"))
 
     local AnimalRenders
     pcall(function()
-        AnimalRenders = require(Shared:WaitForChild("AnimalRenders"))
+        AnimalRenders = require(Shared:WaitForChild("AnimalRenders", 5))
     end)
 
     -- Game objects
@@ -38,8 +39,7 @@ return function(Context)
     local Build = Workspace:WaitForChild(ZonesConfig.BuildFolderName or "Build")
     local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
     local Pickups = Workspace:WaitForChild("AnimalPickups")
-    local PromptAnchor = Workspace:WaitForChild("PromptAnchor")
-    local GlobalPrompt = PromptAnchor:WaitForChild("StealPrompt")
+    local CollectionService = game:GetService("CollectionService")
 
     -- Tunables
     local HIT_DISTANCE = 7
@@ -55,7 +55,6 @@ return function(Context)
     local BANK_TIMEOUT = 8
 
     local MOVE_REFRESH = 0.08
-    local MOVE_COMMAND_REFRESH = 0.75
     local MOVE_STUCK_SECONDS = 2
     local MOVE_STUCK_STUDS = 0.75
 
@@ -63,6 +62,9 @@ return function(Context)
     -- The script never overwrites WalkSpeed.
     local HOME_STAGING_DISTANCE = 12
     local HOME_INSIDE_DISTANCE = 4
+    local HOME_ENTRY_SPEED = 24
+    local HOME_CONFIRM_TIMEOUT = 8
+    local BANK_GRACE_SECONDS = 1.5
     local HOME_RETRY_WAIT = 0.12
     local DROPPED_PET_TIMEOUT = 12
 
@@ -175,38 +177,91 @@ return function(Context)
         end
     end
 
-    local function buildPetList()
-        local found = {}
-        local result = {}
+    -- UI labels are separate from raw names used by the game.
+    local zoneLabels, petLabels, eggLabels = {}, {}, {}
+    local function displayName(raw)
+        local name = (EggRewards.DisplayNames or {})[raw] or tostring(raw)
+        name = name:gsub("_", " "):gsub("(%l)(%u)", "%1 %2")
+            :gsub("(%u)(%u%l)", "%1 %2")
+        return (name:gsub("%S+", function(word)
+            if word == "T-Rex" then return word end
+            return word:sub(1, 1):upper() .. word:sub(2):lower()
+        end))
+    end
 
-        if type(AnimalRenders) == "table"
-            and type(AnimalRenders.Normal) == "table"
-        then
-            for name in pairs(AnimalRenders.Normal) do
-                if type(name) == "string" and name ~= "" then
-                    found[name] = true
+    local function decodeSelection(value, labels)
+        local result = {}
+        if type(value) == "string" then
+            result[labels[value] or value] = true
+        elseif type(value) == "table" then
+            for key, selected in pairs(value) do
+                local label = type(key) == "number" and selected
+                    or (selected == true and key)
+                if type(label) == "string" then
+                    result[labels[label] or label] = true
                 end
             end
         end
+        return result
+    end
 
-        for _, animal in ipairs(Pickups:GetChildren()) do
-            local name =
-                animal:GetAttribute("AnimalName")
-                or animal.Name
+    table.sort(MASTER_ZONES, function(a, b)
+        return (tonumber(a:match("%d+")) or 999) < (tonumber(b:match("%d+")) or 999)
+    end)
+    local ZONE_OPTIONS = {}
+    for _, raw in ipairs(MASTER_ZONES) do
+        local label = "Zone " .. (raw:match("%d+") or raw)
+        zoneLabels[label] = raw
+        table.insert(ZONE_OPTIONS, label)
+    end
 
-            if type(name) == "string" and name ~= "" then
-                found[name] = true
+    local function buildPetList()
+        local rows, found = {}, {}
+        local rarityOrder = {}
+        for i, rarity in ipairs({
+            "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic",
+            "Divine", "Cosmic", "Secret", "Celestial", "Inferno"
+        }) do rarityOrder[rarity] = i end
+        local function add(raw, zone, rarity)
+            if type(raw) ~= "string" or raw == "" or found[raw] then return end
+            found[raw] = true
+            table.insert(rows, {
+                raw = raw, name = displayName(raw),
+                zone = tonumber(zone), rarity = rarity or "Unknown"
+            })
+        end
+        for _, info in ipairs(EggRewards.Pool or {}) do
+            -- Extras have CashZone, which is a payout tier, not a spawn zone.
+            add(info.Name, info.Zone, info.Rarity)
+        end
+        if type(AnimalRenders) == "table" and type(AnimalRenders.Normal) == "table" then
+            for raw in pairs(AnimalRenders.Normal) do
+                add(raw, EggRewards.HomeZoneOf(raw), EggRewards.RarityOf(raw))
             end
         end
-
-        for name in pairs(found) do
-            table.insert(result, name)
+        for _, animal in ipairs(Pickups:GetChildren()) do
+            local raw = animal:GetAttribute("AnimalName") or animal.Name
+            add(raw, EggRewards.HomeZoneOf(raw), EggRewards.RarityOf(raw))
         end
-
-        table.sort(result, function(a, b)
-            return a:lower() < b:lower()
+        table.sort(rows, function(a, b)
+            if (a.zone or 999) ~= (b.zone or 999) then
+                return (a.zone or 999) < (b.zone or 999)
+            end
+            local ar, br = rarityOrder[a.rarity] or 999, rarityOrder[b.rarity] or 999
+            if ar ~= br then return ar < br end
+            if a.name ~= b.name then return a.name:lower() < b.name:lower() end
+            return a.raw < b.raw
         end)
-
+        local result = {}
+        for _, row in ipairs(rows) do
+            local prefix = row.zone and ("Zone " .. row.zone) or "Special"
+            local label = prefix .. " • " .. row.rarity .. " • " .. row.name
+            if petLabels[label] and petLabels[label] ~= row.raw then
+                label = label .. " (" .. row.raw .. ")"
+            end
+            petLabels[label] = row.raw
+            table.insert(result, label)
+        end
         return result
     end
 
@@ -237,96 +292,83 @@ return function(Context)
     -- Normal character movement.
     -- This intentionally does NOT raw-CFrame teleport long distances.
     local function stopMoving()
-        local _, humanoid, hrp = getCharacter()
-        humanoid:MoveTo(hrp.Position)
+        local character = LocalPlayer.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if humanoid then humanoid:Move(Vector3.zero, false) end
     end
 
-    local function walkTo(targetPosition, stopDistance, timeout, extraCheck)
+    local function walkTo(targetPosition, stopDistance, timeout, extraCheck, speedLimit)
         stopDistance = tonumber(stopDistance) or 3
-        timeout = tonumber(timeout) or 30
-
-        local _, humanoid, hrp = getCharacter()
-        local deadline = os.clock() + timeout
-
-        log(
-            "Walk speed sync",
-            "| WalkSpeed:",
-            tonumber(humanoid.WalkSpeed) or 16
-        )
-
-        local lastProgressPosition = hrp.Position
-        local lastProgressTime = os.clock()
-        local lastMoveCommand = 0
-
-        -- Important: jangan spam Humanoid:MoveTo terus-menerus.
-        -- Saat membawa pet, spam MoveTo + physics carry/guard bisa bikin stutter.
-        local function issueMove()
-            humanoid:MoveTo(targetPosition)
-            lastMoveCommand = os.clock()
+        local character, humanoid, hrp = getCharacter()
+        local deadline = os.clock() + (tonumber(timeout) or 30)
+        local lastPosition, lastProgress = hrp.Position, os.clock()
+        local arrived = false
+        local restoreSpeed = humanoid.WalkSpeed
+        local appliedSpeed
+        local runService = game:GetService("RunService")
+        local moveBinding = "ChliseBSAEWalk_" .. tostring(LocalPlayer.UserId)
+        runService:BindToRenderStep(moveBinding, Enum.RenderPriority.Character.Value + 1, function()
+            if autoFarmActive and hrp.Parent and humanoid.Health > 0 then
+                if speedLimit then
+                    -- Preserve updated boosts while limiting only the plot entry.
+                    if appliedSpeed == nil or humanoid.WalkSpeed ~= appliedSpeed then
+                        restoreSpeed = humanoid.WalkSpeed
+                    end
+                    appliedSpeed = math.min(restoreSpeed, speedLimit)
+                    humanoid.WalkSpeed = appliedSpeed
+                end
+                local delta = targetPosition - hrp.Position
+                local flat = Vector3.new(delta.X, 0, delta.Z)
+                humanoid:Move(flat.Magnitude > stopDistance and flat.Unit or Vector3.zero, false)
+            else
+                humanoid:Move(Vector3.zero, false)
+            end
+        end)
+        local ok, err = pcall(function()
+            while autoFarmActive and LocalPlayer.Character == character
+                and hrp.Parent and humanoid.Health > 0 and os.clock() < deadline do
+                if type(extraCheck) == "function" and extraCheck() then
+                    arrived = true
+                    break
+                end
+                local delta = hrp.Position - targetPosition
+                if Vector3.new(delta.X, 0, delta.Z).Magnitude <= stopDistance then
+                    arrived = true
+                    break
+                end
+                if (hrp.Position - lastPosition).Magnitude >= MOVE_STUCK_STUDS then
+                    lastPosition, lastProgress = hrp.Position, os.clock()
+                elseif os.clock() - lastProgress >= MOVE_STUCK_SECONDS then
+                    humanoid.Jump = true
+                    lastPosition, lastProgress = hrp.Position, os.clock()
+                end
+                task.wait(MOVE_REFRESH)
+            end
+        end)
+        runService:UnbindFromRenderStep(moveBinding)
+        humanoid:Move(Vector3.zero, false)
+        if appliedSpeed ~= nil and humanoid.WalkSpeed == appliedSpeed then
+            humanoid.WalkSpeed = restoreSpeed
         end
-
-        issueMove()
-
-        while autoFarmActive
-            and hrp.Parent
-            and humanoid.Health > 0
-            and os.clock() < deadline
-        do
-            if type(extraCheck) == "function" and extraCheck() then
-                stopMoving()
-                return true
-            end
-
-            local distance = (hrp.Position - targetPosition).Magnitude
-
-            if distance <= stopDistance then
-                stopMoving()
-                return true
-            end
-
-            -- Refresh MoveTo hanya sesekali, bukan tiap loop.
-            if os.clock() - lastMoveCommand >= MOVE_COMMAND_REFRESH then
-                issueMove()
-            end
-
-            local moved = (hrp.Position - lastProgressPosition).Magnitude
-
-            if moved >= MOVE_STUCK_STUDS then
-                lastProgressPosition = hrp.Position
-                lastProgressTime = os.clock()
-            elseif os.clock() - lastProgressTime >= MOVE_STUCK_SECONDS then
-                humanoid.Jump = true
-                issueMove()
-
-                lastProgressPosition = hrp.Position
-                lastProgressTime = os.clock()
-            end
-
-            task.wait(MOVE_REFRESH)
-        end
-
-        stopMoving()
-
-        if type(extraCheck) == "function" and extraCheck() then
-            return true
-        end
-
-        return (hrp.Position - targetPosition).Magnitude <= stopDistance
+        if not ok then error(err, 0) end
+        return arrived
     end
 
-    local function teleportTo(targetPosition, stopDistance, extraCheck)
+    local function teleportTo(targetPosition, stopDistance, extraCheck, timeout)
         stopDistance = tonumber(stopDistance) or 3
 
         local _, humanoid, hrp = getCharacter()
 
-        humanoid:MoveTo(hrp.Position)
+        humanoid:Move(Vector3.zero, false)
 
+        local deadline = os.clock() + (tonumber(timeout) or 60)
         local lastTime =
             os.clock()
 
         while autoFarmActive
             and hrp.Parent
             and humanoid.Health > 0
+            and os.clock() < deadline
         do
             if type(extraCheck) == "function"
                 and extraCheck()
@@ -339,7 +381,7 @@ return function(Context)
                 - hrp.Position
 
             local distance =
-                delta.Magnitude
+                Vector3.new(delta.X, 0, delta.Z).Magnitude
 
             if distance <= stopDistance then
                 hrp.AssemblyLinearVelocity = Vector3.zero
@@ -371,7 +413,7 @@ return function(Context)
 
             local nextPosition =
                 hrp.Position
-                + delta.Unit
+                + Vector3.new(delta.X, 0, delta.Z).Unit
                     * stepDistance
 
             local flatLook =
@@ -535,7 +577,8 @@ return function(Context)
             return teleportTo(
                 targetPosition,
                 stopDistance,
-                extraCheck
+                extraCheck,
+                timeout
             )
         end
 
@@ -661,142 +704,68 @@ return function(Context)
 
     local function walkHome(isBanked)
         local hitbox = getOwnedPlotHitbox()
-
         if not hitbox then
             warn("[CHLISE HUB] Owned plot hitbox not found.")
             return "failed"
         end
 
         local function bankedNow()
-            return
-                type(isBanked) == "function"
-                and isBanked() == true
+            return type(isBanked) == "function" and isBanked() == true
         end
-
+        local function inOwnedPlot()
+            local _, _, hrp = getCharacter()
+            return SafeZoneQuery.IsPositionInOwnedPlot(LocalPlayer.UserId, hrp.Position)
+        end
         local function interrupted()
-            if bankedNow() then
-                return true
-            end
-
-            return
-                type(isCarrying) == "function"
-                and not isCarrying()
+            return bankedNow() or not isCarrying()
         end
-
         local _, _, hrp = getCharacter()
-
-        local stagingPosition,
-            insidePosition =
-            getHomeEntryPoints(
-                hitbox,
-                hrp.Position
-            )
-
-        log(
-            "Returning home",
-            "| Mode:", movementMode,
-            "| WalkSpeed:", getCurrentMoveSpeed(),
-            "| Inside:", HOME_INSIDE_DISTANCE
-        )
-
-        -- Tween/Teleport only handles the long part.
-        -- Safe-zone crossing still uses the real Humanoid walk.
-        if movementMode == "Tween" then
-            tweenTo(
-                stagingPosition,
-                2.25,
-                60,
-                interrupted
-            )
-        elseif movementMode == "Teleport" then
-            teleportTo(
-                stagingPosition,
-                2.5,
-                interrupted
-            )
-        end
-
-        if bankedNow() then
-            return "banked"
-        end
-
-        if not isCarrying() then
-            return "dropped"
-        end
-
-        -- Cross only a few studs into the owned safe zone.
-        walkTo(
-            insidePosition,
-            1.25,
-            30,
-            interrupted
-        )
-
-        if bankedNow() then
-            return "banked"
-        end
-
-        if not isCarrying() then
-            return "dropped"
-        end
-
-        -- Once the pet is in the safe zone, do not start a new egg
-        -- while the guardian chase state is still active.
-        -- Keep retrying the shallow safe position until chase is gone.
-        while autoFarmActive
-            and isCarrying()
-            and isBeingChased()
-            and not bankedNow()
-        do
-            local _, _, currentHRP =
-                getCharacter()
-
-            if not isBankablePosition(currentHRP.Position) then
-                walkTo(
-                    insidePosition,
-                    1.0,
-                    8,
-                    interrupted
-                )
+        local stagingPosition, insidePosition = getHomeEntryPoints(hitbox, hrp.Position)
+        if not inOwnedPlot() then
+            -- End CFrame travel outside the plot, then cross using normal physics.
+            local reached
+            if movementMode == "Tween" then
+                reached = tweenTo(stagingPosition, 1, 60, interrupted)
+            elseif movementMode == "Teleport" then
+                reached = teleportTo(stagingPosition, 1, interrupted, 60)
             else
-                -- Re-issue a normal walk target without going deep into base.
-                local _, humanoid =
-                    getCharacter()
-
-                humanoid:MoveTo(insidePosition)
+                reached = walkTo(stagingPosition, 1, 60, interrupted)
             end
+            if not reached and isCarrying() and not bankedNow() then return "failed" end
+        end
 
+        local deadline = os.clock() + HOME_CONFIRM_TIMEOUT
+        local carryMissingSince
+        while autoFarmActive and os.clock() < deadline do
+            if bankedNow() then
+                stopMoving()
+                return "banked"
+            end
+            local owned = inOwnedPlot()
+            if not isCarrying() then
+                stopMoving()
+                if not owned then return "dropped" end
+                carryMissingSince = carryMissingSince or os.clock()
+                if os.clock() - carryMissingSince >= BANK_GRACE_SECONDS then
+                    return "dropped"
+                end
+            else
+                carryMissingSince = nil
+                if not owned then
+                    -- Fast WalkSpeed can skip a whole plot in one frame.
+                    -- Cap just this crossing and restore the latest game speed.
+                    walkTo(insidePosition, 0.75, math.min(3, deadline - os.clock()),
+                        function() return interrupted() or inOwnedPlot() end,
+                        HOME_ENTRY_SPEED)
+                else
+                    stopMoving()
+                end
+            end
             task.wait(HOME_RETRY_WAIT)
         end
-
-        if bankedNow() then
-            return "banked"
-        end
-
-        if not isCarrying() then
-            return "dropped"
-        end
-
-        local _, _, currentHRP =
-            getCharacter()
-
-        local bankable =
-            isBankablePosition(
-                currentHRP.Position
-            )
-
-        log(
-            "Safe-zone state",
-            "| Bankable:", bankable,
-            "| Chased:", isBeingChased(),
-            "| Carrying:", isCarrying()
-        )
-
-        if bankable and not isBeingChased() then
-            return "safe"
-        end
-
-        return "failed"
+        stopMoving()
+        -- Arrival alone is not evidence that the server banked the pet.
+        return bankedNow() and "banked" or "failed"
     end
 
     -- Pickaxe
@@ -910,31 +879,27 @@ return function(Context)
     end
 
     local function buildEggList()
-        local found = {}
-        local result = {}
-
+        local result, found = {}, {}
+        local function add(zoneName, raw)
+            if type(raw) ~= "string" or found[raw] then return end
+            found[raw] = true
+            local label = "Zone " .. (zoneName:match("%d+") or zoneName)
+                .. " • " .. displayName(raw)
+            eggLabels[label] = raw
+            table.insert(result, label)
+        end
         for _, zoneName in ipairs(MASTER_ZONES) do
+            local config = (EggRewards.ZoneEggs or {})[zoneName]
+            for _, raw in ipairs(config and config.Eggs or {}) do add(zoneName, raw) end
             local zone = ZoneBuilds:FindFirstChild(zoneName)
             local eggs = zone and zone:FindFirstChild("Eggs")
-
             if eggs then
                 for _, container in ipairs(eggs:GetChildren()) do
                     local egg = resolveEgg(container)
-
-                    if egg then
-                        local name = getEggName(egg)
-
-                        if not found[name] then
-                            found[name] = true
-                            table.insert(result, name)
-                        end
-                    end
+                    if egg then add(zoneName, getEggName(egg)) end
                 end
             end
         end
-
-        table.sort(result)
-
         return result
     end
 
@@ -1191,52 +1156,48 @@ return function(Context)
 
         local distance = modelDistanceToPoint(animal, position)
 
-        if distance <= 1.5 then
-            return true
+        if distance > 6 then return false end
+        local name = animal:GetAttribute("AnimalName") or animal.Name
+        local objectText = normalizeText(prompt.ObjectText)
+        local targetText = normalizeText(displayName(name))
+        local rawText = normalizeText(name)
+        local nameMatches = objectText:find(targetText, 1, true)
+            or objectText:find(rawText, 1, true)
+        local weight = tonumber(animal:GetAttribute("WeightKg"))
+        local shownWeight = promptKg(prompt)
+        if nameMatches then
+            return not weight or not shownWeight or math.abs(weight - shownWeight) <= 1.1
         end
-
-        if distance <= 6 then
-            local weight = animal:GetAttribute("WeightKg")
-            local shownWeight = promptKg(prompt)
-
-            if typeof(weight) == "number"
-                and typeof(shownWeight) == "number"
-                and math.abs(weight - shownWeight) <= 1.1
-            then
-                return true
-            end
-
-            local animalName = animal:GetAttribute("AnimalName") or animal.Name
-            local objectText = normalizeText(prompt.ObjectText)
-            local targetText = normalizeText(animalName)
-
-            if targetText ~= ""
-                and objectText:find(targetText, 1, true)
-            then
-                return true
-            end
-        end
-
-        return false
+        -- Only use geometry when a prompt has no identifying text.
+        return objectText == "" and distance <= 1.5
     end
 
     local function findCurrentPrompt(animal)
+        local candidates = {}
         for _, object in ipairs(animal:GetDescendants()) do
-            if object:IsA("ProximityPrompt")
-                and object.Enabled
-                and promptMatchesAnimal(object, animal)
-            then
-                return object
+            if object:IsA("ProximityPrompt") then candidates[object] = true end
+        end
+        -- SurfacePrompt.Attach reparents each prompt to its own Workspace anchor.
+        for _, object in ipairs(CollectionService:GetTagged("SmartPrompt")) do
+            if object:IsA("ProximityPrompt") then candidates[object] = true end
+        end
+        for _, anchor in ipairs(Workspace:GetChildren()) do
+            if anchor.Name == "PromptAnchor" then
+                for _, object in ipairs(anchor:GetDescendants()) do
+                    if object:IsA("ProximityPrompt") then candidates[object] = true end
+                end
             end
         end
-
-        if GlobalPrompt.Enabled
-            and promptMatchesAnimal(GlobalPrompt, animal)
-        then
-            return GlobalPrompt
+        local _, _, hrp = getCharacter()
+        local best, bestDistance = nil, math.huge
+        for prompt in pairs(candidates) do
+            if prompt.Enabled and promptMatchesAnimal(prompt, animal) then
+                local position = getPromptPosition(prompt)
+                local distance = position and (position - hrp.Position).Magnitude or math.huge
+                if distance < bestDistance then best, bestDistance = prompt, distance end
+            end
         end
-
-        return nil
+        return best
     end
 
     local function waitStealPrompt(animal)
@@ -1284,11 +1245,9 @@ return function(Context)
     end
 
     isBeingChased = function()
-        local ok, active = pcall(function()
-            return ChaseState.IsActive(LocalPlayer)
-        end)
-
-        return ok and active == true
+        -- IsActive also includes Carrying; only this attribute identifies chase.
+        local attribute = ChaseState.ChasedAttribute or "BeingChased"
+        return LocalPlayer:GetAttribute(attribute) ~= nil
     end
 
     local function waitUntilCarrying(timeout)
@@ -1333,9 +1292,7 @@ return function(Context)
         local hatchId =
             animal:GetAttribute("HatchId")
 
-        if signature.HatchId ~= nil
-            and hatchId ~= nil
-        then
+        if signature.HatchId ~= nil then
             return
                 tostring(hatchId)
                 == tostring(signature.HatchId)
@@ -1437,78 +1394,52 @@ return function(Context)
     end
 
     local function pickUpAnimal(animal, animalName)
-        if not animal or not animal.Parent then
-            return false
-        end
-
-        local petPosition =
-            animal:GetPivot().Position
-
-        if not walkNear(
-            petPosition,
-            PET_APPROACH_DISTANCE,
-            35
-        ) then
-            log(
-                "Failed to reach pet:",
-                animalName
-            )
-
-            return false
-        end
-
-        local prompt =
-            waitStealPrompt(animal)
-
-        if not prompt then
-            warn(
-                "[CHLISE HUB] StealPrompt not found:",
-                animalName
-            )
-
-            return false
-        end
-
-        local promptPosition =
-            getPromptPosition(prompt)
-
-        if promptPosition then
-            local _, _, hrp =
-                getCharacter()
-
-            if (
-                hrp.Position
-                - promptPosition
-            ).Magnitude > 7 then
-                if not walkNear(
-                    promptPosition,
-                    2.5,
-                    15
-                ) then
+        if not animal or not animal.Parent then return false end
+        local signature = getAnimalSignature(animal)
+        local deadline = os.clock() + 35
+        while autoFarmActive and os.clock() < deadline do
+            if isCarrying() then return true end
+            if not animal:IsDescendantOf(Pickups) then
+                local replacement
+                for _, candidate in ipairs(Pickups:GetChildren()) do
+                    if matchesAnimalSignature(candidate, signature) then
+                        replacement = candidate
+                        break
+                    end
+                end
+                if not replacement then return false end
+                animal = replacement
+            end
+            local targetPosition = animal:GetPivot().Position
+            local prompt = findCurrentPrompt(animal)
+            local promptPosition = prompt and getPromptPosition(prompt)
+            local _, _, hrp = getCharacter()
+            local range = prompt and prompt.MaxActivationDistance or PET_APPROACH_DISTANCE
+            local distance = promptPosition and (hrp.Position - promptPosition).Magnitude
+                or modelDistanceToPoint(animal, hrp.Position)
+            if distance > math.max(1, range - 0.5) then
+                -- Short approaches refresh position when the ragdoll rolls or slides.
+                local approach = getApproachPosition(promptPosition or targetPosition, 2)
+                moveTo(approach, 1, math.min(2, deadline - os.clock()), function()
+                    return isCarrying() or not animal:IsDescendantOf(Pickups)
+                        or (animal:GetPivot().Position - targetPosition).Magnitude > 2
+                end)
+            elseif prompt and prompt.Parent and prompt.Enabled
+                and promptMatchesAnimal(prompt, animal) then
+                if type(fireproximityprompt) ~= "function" then
+                    warn("[CHLISE HUB] Prompt activation is unavailable.")
                     return false
                 end
+                local ok, err = pcall(fireproximityprompt, prompt)
+                if not ok then log("Pickup retry:", err) end
+                if waitUntilCarrying(math.min(0.6, math.max(0, deadline - os.clock()))) then
+                    return true
+                end
             end
+            task.wait(0.1)
         end
-
-        log(
-            "Fire steal:",
-            animalName
-        )
-
-        fireproximityprompt(prompt)
-
-        if not waitUntilCarrying(
-            CARRY_TIMEOUT
-        ) then
-            warn(
-                "[CHLISE HUB] Carry state not detected:",
-                animalName
-            )
-
-            return false
-        end
-
-        return true
+        log("Pickup timed out:", animalName)
+        return false
     end
 
     local function stealAndBank(animal)
@@ -1565,13 +1496,6 @@ return function(Context)
             signature.HatchId
         )
 
-        if not pickUpAnimal(
-            animal,
-            animalName
-        ) then
-            return false
-        end
-
         local banked = false
 
         local bankConnection =
@@ -1603,19 +1527,28 @@ return function(Context)
             return banked
         end
 
+        local recoveryOK, recoveryError = pcall(function()
+            if not pickUpAnimal(animal, animalName) then return false end
         -- If the guardian knocks the pet out of our hands,
         -- locate the same HatchId and pick it up again.
         while autoFarmActive
             and not banked
         do
             if not isCarrying() then
+                local _, _, currentHRP = getCharacter()
+                if isBankablePosition(currentHRP.Position) then
+                    local graceDeadline = os.clock() + BANK_GRACE_SECONDS
+                    while autoFarmActive and not banked and os.clock() < graceDeadline do
+                        task.wait(0.03)
+                    end
+                    if banked then break end
+                end
                 local dropped =
                     waitForDroppedAnimal(
                         signature
                     )
 
                 if not dropped then
-                    bankConnection:Disconnect()
 
                     warn(
                         "[CHLISE HUB] Dropped pet not found:",
@@ -1694,9 +1627,16 @@ return function(Context)
             end
         end
 
+        end)
+
         bankConnection:Disconnect()
+        if not recoveryOK then error(recoveryError, 0) end
 
         if banked then
+            stopMoving()
+            while autoFarmActive and isBeingChased() do
+                task.wait(HOME_RETRY_WAIT)
+            end
             log(
                 "Cycle complete:",
                 animalName
@@ -1721,6 +1661,11 @@ return function(Context)
                 and not Window.Destroyed
             do
                 local ok, err = pcall(function()
+                    if isBeingChased() or isCarrying() then
+                        stopMoving()
+                        task.wait(HOME_RETRY_WAIT)
+                        return
+                    end
                     local egg, zoneName, distance = findBestEgg()
 
                     if not egg then
@@ -1796,12 +1741,12 @@ return function(Context)
     FarmSection:AddDropdown(
         "BSAEZones",
         "Zone Selection",
-        MASTER_ZONES,
+        ZONE_OPTIONS,
         true,
         selectedZones,
 
         function(value)
-            selectedZones = value
+            selectedZones = decodeSelection(value, zoneLabels)
         end
     )
 
@@ -1813,7 +1758,7 @@ return function(Context)
         selectedEggs,
 
         function(value)
-            selectedEggs = value
+            selectedEggs = decodeSelection(value, eggLabels)
         end
     )
 
@@ -1825,7 +1770,7 @@ return function(Context)
         selectedPets,
 
         function(value)
-            selectedPets = value
+            selectedPets = decodeSelection(value, petLabels)
         end
     )
 
