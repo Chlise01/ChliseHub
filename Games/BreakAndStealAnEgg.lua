@@ -16,6 +16,7 @@ return function(Context)
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local Workspace = game:GetService("Workspace")
     local ProximityPromptService = game:GetService("ProximityPromptService")
+    local TweenService = game:GetService("TweenService")
 
     local LocalPlayer = Players.LocalPlayer
 
@@ -52,6 +53,8 @@ return function(Context)
     local MOVE_STUCK_SECONDS = 2
     local MOVE_STUCK_STUDS = 0.75
 
+    local TWEEN_SPEED = 80
+
     -- State
     local autoFarmActive = false
     local farmLoopRunning = false
@@ -60,6 +63,8 @@ return function(Context)
     local selectedZones = {}
     local selectedEggs = {}
     local minimumPetWeight = 0
+
+    local movementMode = "Walk"
 
     local function log(...)
         if debugEnabled then
@@ -217,6 +222,145 @@ return function(Context)
         return (hrp.Position - targetPosition).Magnitude <= stopDistance
     end
 
+    local function teleportTo(targetPosition, stopDistance, extraCheck)
+        local _, humanoid, hrp = getCharacter()
+
+        humanoid:MoveTo(hrp.Position)
+
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+
+        local lookVector = hrp.CFrame.LookVector
+
+        hrp.CFrame = CFrame.lookAt(
+            targetPosition,
+            targetPosition + lookVector
+        )
+
+        task.wait(0.05)
+
+        if type(extraCheck) == "function" and extraCheck() then
+            return true
+        end
+
+        return
+            (hrp.Position - targetPosition).Magnitude
+            <= (tonumber(stopDistance) or 3)
+    end
+
+    local function tweenTo(targetPosition, stopDistance, timeout, extraCheck)
+        stopDistance = tonumber(stopDistance) or 3
+        timeout = tonumber(timeout) or 30
+
+        local _, humanoid, hrp = getCharacter()
+
+        humanoid:MoveTo(hrp.Position)
+
+        local distance = (hrp.Position - targetPosition).Magnitude
+
+        if distance <= stopDistance then
+            return true
+        end
+
+        local duration = math.max(0.05, distance / TWEEN_SPEED)
+        duration = math.min(duration, timeout)
+
+        local lookVector = hrp.CFrame.LookVector
+
+        local targetCFrame = CFrame.lookAt(
+            targetPosition,
+            targetPosition + lookVector
+        )
+
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+
+        local tween = TweenService:Create(
+            hrp,
+            TweenInfo.new(
+                duration,
+                Enum.EasingStyle.Linear,
+                Enum.EasingDirection.Out
+            ),
+            {
+                CFrame = targetCFrame
+            }
+        )
+
+        tween:Play()
+
+        local deadline = os.clock() + timeout
+
+        while autoFarmActive
+            and hrp.Parent
+            and humanoid.Health > 0
+            and os.clock() < deadline
+        do
+            if type(extraCheck) == "function" and extraCheck() then
+                tween:Cancel()
+                return true
+            end
+
+            if (hrp.Position - targetPosition).Magnitude <= stopDistance then
+                tween:Cancel()
+
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+
+                return true
+            end
+
+            if tween.PlaybackState == Enum.PlaybackState.Completed then
+                break
+            end
+
+            task.wait(0.03)
+        end
+
+        if tween.PlaybackState == Enum.PlaybackState.Playing then
+            tween:Cancel()
+        end
+
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+
+        if type(extraCheck) == "function" and extraCheck() then
+            return true
+        end
+
+        return
+            (hrp.Position - targetPosition).Magnitude
+            <= stopDistance
+    end
+
+    local function moveTo(targetPosition, stopDistance, timeout, extraCheck)
+        log("Movement:", movementMode)
+
+        if movementMode == "Teleport" then
+            return teleportTo(
+                targetPosition,
+                stopDistance,
+                extraCheck
+            )
+        end
+
+        if movementMode == "Tween" then
+            return tweenTo(
+                targetPosition,
+                stopDistance,
+                timeout,
+                extraCheck
+            )
+        end
+
+        return walkTo(
+            targetPosition,
+            stopDistance,
+            timeout,
+            extraCheck
+        )
+    end
+
     local function getApproachPosition(targetPosition, desiredDistance)
         local _, _, hrp = getCharacter()
 
@@ -240,7 +384,7 @@ return function(Context)
 
     local function walkNear(targetPosition, desiredDistance, timeout)
         local approachPosition = getApproachPosition(targetPosition, desiredDistance)
-        return walkTo(approachPosition, 2, timeout)
+        return moveTo(approachPosition, 2, timeout)
     end
 
     local function walkHome()
@@ -255,13 +399,13 @@ return function(Context)
 
         local targetPosition = Vector3.new(
             hitbox.Position.X,
-            hrp.Position.Y,
+            hitbox.Position.Y + (hitbox.Size.Y * 0.5) + 1.5,
             hitbox.Position.Z
         )
 
         log("Returning home:", hitbox:GetFullName())
 
-        walkTo(
+        moveTo(
             targetPosition,
             2.5,
             60,
@@ -1025,6 +1169,28 @@ return function(Context)
         end
     )
 
+    FarmSection:AddDropdown(
+        "BSAEMovementMode",
+        "Movement Mode",
+        {
+            "Walk",
+            "Tween",
+            "Teleport"
+        },
+        false,
+        movementMode,
+
+        function(value)
+            if value == "Walk"
+                or value == "Tween"
+                or value == "Teleport"
+            then
+                movementMode = value
+                log("Movement mode changed:", movementMode)
+            end
+        end
+    )
+
     FarmSection:AddTextbox(
         "BSAEMinimumPetWeight",
         "Minimum Pet Weight",
@@ -1075,6 +1241,25 @@ return function(Context)
             SettingsTab,
             "Break & Steal"
         )
+
+    SettingsSection:AddTextbox(
+        "BSAETweenSpeed",
+        "Tween Speed",
+        "Default: 80",
+
+        function(value)
+            local parsed =
+                tonumber(
+                    tostring(value or ""):
+                    gsub(",", ".")
+                )
+
+            if parsed and parsed >= 20 and parsed <= 250 then
+                TWEEN_SPEED = parsed
+                log("Tween speed:", TWEEN_SPEED)
+            end
+        end
+    )
 
     SettingsSection:AddToggle(
         "BSAEDebug",
