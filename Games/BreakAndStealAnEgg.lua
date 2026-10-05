@@ -8,7 +8,7 @@
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
--- Return home: walks straight to owned safe-zone center; no plot-edge/interior detour
+-- Return home: fixed safe-zone coordinate; uses current WalkSpeed with no return-speed cap
 
 return function(Context)
     local Window = Context.Window
@@ -76,7 +76,11 @@ return function(Context)
 
     -- Movement speed is synced 1:1 to the Humanoid's current WalkSpeed.
     -- The script never overwrites WalkSpeed.
-    local HOME_ENTRY_SPEED = 24
+    local HOME_TARGET_POSITION = Vector3.new(
+        -905.5198364257812,
+        -54.10763931274414,
+        0
+    )
     local HOME_CONFIRM_TIMEOUT = 8
     local BANK_GRACE_SECONDS = 1.5
     local HOME_RETRY_WAIT = 0.12
@@ -1462,17 +1466,11 @@ return function(Context)
         return moveTo(approachPosition, 2, timeout)
     end
 
-    local function getSafeZoneCenterPosition(
-        hitbox,
-        fromPosition
-    )
-        -- Go straight to the CENTER of the owned safe-zone hitbox.
-        -- No staging point, no plot-edge calculation, no map-interior detour.
-        return Vector3.new(
-            hitbox.Position.X,
-            fromPosition.Y,
-            hitbox.Position.Z
-        )
+    local function getHomeTargetPosition()
+        -- Fixed safe-zone target supplied from the live map.
+        -- Using one fixed point prevents the return path from turning toward
+        -- the plot edge/model when carrying a pet.
+        return HOME_TARGET_POSITION
     end
 
     local function walkHome(isBanked)
@@ -1514,10 +1512,7 @@ return function(Context)
             getCharacter()
 
         local centerPosition =
-            getSafeZoneCenterPosition(
-                hitbox,
-                hrp.Position
-            )
+            getHomeTargetPosition()
 
         -- If already inside the safe zone, stop immediately and let
         -- the normal bank event finish. Do not walk deeper into the plot.
@@ -1545,16 +1540,14 @@ return function(Context)
                     )
 
             else
-                -- Walk in one straight direction toward the safe-zone center.
-                -- We keep the final speed cap only to prevent very high speed
-                -- from skipping through the whole safe zone in one frame.
+                -- Walk in one straight direction toward the fixed safe-zone target.
+                -- No speed cap: keep the player's current/boosted WalkSpeed.
                 reached =
                     walkTo(
                         centerPosition,
                         2,
                         60,
-                        interrupted,
-                        HOME_ENTRY_SPEED
+                        interrupted
                     )
             end
 
@@ -1612,14 +1605,8 @@ return function(Context)
                 else
                     -- If knocked back out, simply head straight to the
                     -- safe-zone center again.
-                    local _, _, currentHRP =
-                        getCharacter()
-
                     local retryCenter =
-                        getSafeZoneCenterPosition(
-                            hitbox,
-                            currentHRP.Position
-                        )
+                        getHomeTargetPosition()
 
                     walkTo(
                         retryCenter,
@@ -1632,8 +1619,7 @@ return function(Context)
                                     - os.clock()
                             )
                         ),
-                        interrupted,
-                        HOME_ENTRY_SPEED
+                        interrupted
                     )
                 end
             end
