@@ -54,7 +54,9 @@ return function(Context)
     local MOVE_STUCK_SECONDS = 2
     local MOVE_STUCK_STUDS = 0.75
 
-    local TWEEN_SPEED = 80
+    -- Tween/step movement follows the player's current legitimate WalkSpeed.
+    -- Small multiplier stays at 1.0 by default so displacement speed matches the game.
+    local MOVE_SPEED_MULTIPLIER = 1.0
 
     -- Saat pulang, jangan berhenti tepat saat baru masuk safe zone.
     -- Target dibuat lebih dalam ke plot supaya guard tidak sempat hit dari pinggir.
@@ -83,6 +85,25 @@ return function(Context)
         local humanoid = character:WaitForChild("Humanoid")
         local hrp = character:WaitForChild("HumanoidRootPart")
         return character, humanoid, hrp
+    end
+
+    local function getCurrentMoveSpeed()
+        local _, humanoid = getCharacter()
+
+        local speed =
+            tonumber(humanoid.WalkSpeed)
+            or 16
+
+        -- Never let a temporary zero/invalid value create an infinite tween.
+        speed =
+            math.max(
+                speed,
+                1
+            )
+
+        return
+            speed
+            * MOVE_SPEED_MULTIPLIER
     end
 
     -- Selection helpers
@@ -171,6 +192,8 @@ return function(Context)
         return ok and result == true
     end
 
+    local isBeingChased
+
     -- Normal character movement.
     -- This intentionally does NOT raw-CFrame teleport long distances.
     local function stopMoving()
@@ -246,29 +269,113 @@ return function(Context)
     end
 
     local function teleportTo(targetPosition, stopDistance, extraCheck)
+        stopDistance = tonumber(stopDistance) or 3
+
         local _, humanoid, hrp = getCharacter()
 
         humanoid:MoveTo(hrp.Position)
 
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
+        local lastTime =
+            os.clock()
 
-        local lookVector = hrp.CFrame.LookVector
+        while autoFarmActive
+            and hrp.Parent
+            and humanoid.Health > 0
+        do
+            if type(extraCheck) == "function"
+                and extraCheck()
+            then
+                return true
+            end
 
-        hrp.CFrame = CFrame.lookAt(
-            targetPosition,
-            targetPosition + lookVector
-        )
+            local delta =
+                targetPosition
+                - hrp.Position
 
-        task.wait(0.05)
+            local distance =
+                delta.Magnitude
 
-        if type(extraCheck) == "function" and extraCheck() then
-            return true
+            if distance <= stopDistance then
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+                return true
+            end
+
+            local now =
+                os.clock()
+
+            local dt =
+                math.clamp(
+                    now - lastTime,
+                    1 / 120,
+                    0.12
+                )
+
+            lastTime =
+                now
+
+            local allowedSpeed =
+                getCurrentMoveSpeed()
+
+            local stepDistance =
+                math.min(
+                    distance,
+                    allowedSpeed * dt
+                )
+
+            local nextPosition =
+                hrp.Position
+                + delta.Unit
+                    * stepDistance
+
+            local flatLook =
+                Vector3.new(
+                    delta.X,
+                    0,
+                    delta.Z
+                )
+
+            if flatLook.Magnitude < 0.01 then
+                flatLook =
+                    Vector3.new(
+                        hrp.CFrame.LookVector.X,
+                        0,
+                        hrp.CFrame.LookVector.Z
+                    )
+            end
+
+            if flatLook.Magnitude < 0.01 then
+                flatLook =
+                    Vector3.new(0, 0, -1)
+            else
+                flatLook =
+                    flatLook.Unit
+            end
+
+            -- Keep Y exactly on the travel line; do not pitch upward.
+            local finalPosition =
+                Vector3.new(
+                    nextPosition.X,
+                    hrp.Position.Y,
+                    nextPosition.Z
+                )
+
+            hrp.AssemblyLinearVelocity =
+                Vector3.zero
+
+            hrp.AssemblyAngularVelocity =
+                Vector3.zero
+
+            hrp.CFrame =
+                CFrame.lookAt(
+                    finalPosition,
+                    finalPosition + flatLook
+                )
+
+            task.wait()
         end
 
-        return
-            (hrp.Position - targetPosition).Magnitude
-            <= (tonumber(stopDistance) or 3)
+        return false
     end
 
     local function tweenTo(targetPosition, stopDistance, timeout, extraCheck)
@@ -285,8 +392,27 @@ return function(Context)
             return true
         end
 
-        local duration = math.max(0.05, distance / TWEEN_SPEED)
-        duration = math.min(duration, timeout)
+        local syncedSpeed =
+            getCurrentMoveSpeed()
+
+        local duration =
+            math.max(
+                0.05,
+                distance / syncedSpeed
+            )
+
+        duration =
+            math.min(
+                duration,
+                timeout
+            )
+
+        log(
+            "Tween speed sync",
+            "| WalkSpeed:", syncedSpeed,
+            "| Distance:", distance,
+            "| Duration:", duration
+        )
 
         local lookVector = hrp.CFrame.LookVector
 
@@ -992,7 +1118,7 @@ return function(Context)
         return ok and carrying == true
     end
 
-    local function isBeingChased()
+    isBeingChased = function()
         local ok, active = pcall(function()
             return ChaseState.IsActive(LocalPlayer)
         end)
@@ -1309,7 +1435,12 @@ return function(Context)
                 local homeHitbox = getOwnedPlotHitbox()
 
                 if homeHitbox then
-                    log("Owned plot:", homeHitbox:GetFullName())
+                    log(
+                        "Owned plot:",
+                        homeHitbox:GetFullName(),
+                        "| WalkSpeed:",
+                        getCurrentMoveSpeed()
+                    )
                 else
                     warn("[CHLISE HUB] Owned plot was not detected yet.")
                 end
@@ -1326,25 +1457,6 @@ return function(Context)
             SettingsTab,
             "Break & Steal"
         )
-
-    SettingsSection:AddTextbox(
-        "BSAETweenSpeed",
-        "Tween Speed",
-        "Default: 80",
-
-        function(value)
-            local parsed =
-                tonumber(
-                    tostring(value or ""):
-                    gsub(",", ".")
-                )
-
-            if parsed and parsed >= 20 and parsed <= 250 then
-                TWEEN_SPEED = parsed
-                log("Tween speed:", TWEEN_SPEED)
-            end
-        end
-    )
 
     SettingsSection:AddToggle(
         "BSAEDebug",
