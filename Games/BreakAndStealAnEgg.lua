@@ -1326,114 +1326,360 @@ return function(Context)
         return minimumPetWeight <= 0 or (weight ~= nil and weight >= minimumPetWeight)
     end
 
-    local function waitResultPet(before, zoneName, eggPosition, brokenEgg, hatchId)
-        local deadline = os.clock() + PICKUP_SPAWN_TIMEOUT
-        local resolved, accepted = false, nil
+    -- Hatch pipeline
+    --
+    -- Important behavior:
+    -- After Egg A breaks, the script does NOT stand still waiting for A to hatch.
+    -- It immediately starts attacking Egg B while still watching A's result.
+    -- If A hatches into an accepted pet, attacking B is interrupted immediately
+    -- and the script returns to collect A.
+    --
+    -- Keep a small persistent pending queue so an Egg B that also breaks is not
+    -- forgotten while Egg A is being collected/banked.
+    local MAX_PENDING_HATCHES = 2
+    local pendingHatches = {}
 
-        local function scanResult()
-            if resolved then return end
-            local best, bestDistance = nil, math.huge
-            for _, animal in ipairs(Pickups:GetChildren()) do
-                if not before[animal] and animal:IsA("Model")
-                    and animal:GetAttribute("Hatched") == true then
-                    local animalZone = normalizeZone(animal:GetAttribute("ZoneId"))
-                    local candidateId = animal:GetAttribute("HatchId")
-                    local identityMatches = hatchId == nil
-                        or (candidateId ~= nil and tostring(candidateId) == tostring(hatchId))
-                    if identityMatches and (not animalZone or animalZone == zoneName) then
-                        local distance = (animal:GetPivot().Position - eggPosition).Magnitude
-                        if distance <= MAX_PICKUP_SPAWN_DISTANCE and distance < bestDistance then
-                            best, bestDistance = animal, distance
+    local function makePendingHatch(
+        before,
+        zoneName,
+        eggPosition,
+        brokenEgg,
+        hatchId,
+        eggName
+    )
+        return {
+            Before = before,
+            ZoneName = zoneName,
+            EggPosition = eggPosition,
+            BrokenEgg = brokenEgg,
+            HatchId = hatchId,
+            EggName = eggName,
+            Deadline = os.clock() + PICKUP_SPAWN_TIMEOUT
+        }
+    end
+
+    local function scanPendingHatches()
+        local index = 1
+
+        while index <= #pendingHatches do
+            local pending =
+                pendingHatches[index]
+
+            local best
+            local bestDistance =
+                math.huge
+
+            for _, animal
+                in ipairs(
+                    Pickups:GetChildren()
+                )
+            do
+                if not pending.Before[animal]
+                    and animal:IsA("Model")
+                    and animal:GetAttribute(
+                        "Hatched"
+                    ) == true
+                then
+                    local animalZone =
+                        normalizeZone(
+                            animal:GetAttribute(
+                                "ZoneId"
+                            )
+                        )
+
+                    local candidateId =
+                        animal:GetAttribute(
+                            "HatchId"
+                        )
+
+                    local identityMatches =
+                        pending.HatchId == nil
+                        or (
+                            candidateId ~= nil
+                            and tostring(candidateId)
+                                == tostring(
+                                    pending.HatchId
+                                )
+                        )
+
+                    if identityMatches
+                        and (
+                            not animalZone
+                            or animalZone
+                                == pending.ZoneName
+                        )
+                    then
+                        local distance =
+                            (
+                                animal:GetPivot().Position
+                                - pending.EggPosition
+                            ).Magnitude
+
+                        if distance
+                                <= MAX_PICKUP_SPAWN_DISTANCE
+                            and distance
+                                < bestDistance
+                        then
+                            best = animal
+                            bestDistance =
+                                distance
                         end
                     end
                 end
             end
-            if not best then return end
-            -- Wait for metadata replication instead of rejecting an unknown weight.
-            local rawName = best:GetAttribute("AnimalName") or best.Name
-            if minimumPetWeight > 0 and isSelected(selectedPets, rawName)
-                and tonumber(best:GetAttribute("WeightKg")) == nil then return end
-            resolved = true
-            if petMatchesFilter(best) then
-                accepted = best
-                log("Hatch accepted, return for pickup:", rawName)
+
+            if best then
+                local rawName =
+                    best:GetAttribute(
+                        "AnimalName"
+                    )
+                    or best.Name
+
+                -- Give replicated weight metadata a moment to arrive when
+                -- the user has an active minimum-weight filter.
+                if minimumPetWeight > 0
+                    and isSelected(
+                        selectedPets,
+                        rawName
+                    )
+                    and tonumber(
+                        best:GetAttribute(
+                            "WeightKg"
+                        )
+                    ) == nil
+                then
+                    index += 1
+                else
+                    table.remove(
+                        pendingHatches,
+                        index
+                    )
+
+                    if petMatchesFilter(best) then
+                        log(
+                            "Pending hatch accepted:",
+                            rawName,
+                            "| From:",
+                            pending.EggName,
+                            "| Remaining pending:",
+                            #pendingHatches
+                        )
+
+                        return best
+                    end
+
+                    log(
+                        "Pending hatch rejected:",
+                        rawName,
+                        "| From:",
+                        pending.EggName,
+                        "| Continue breaking eggs"
+                    )
+                end
+
+            elseif os.clock()
+                    >= pending.Deadline
+            then
+                log(
+                    "Pending hatch timed out:",
+                    pending.EggName
+                )
+
+                table.remove(
+                    pendingHatches,
+                    index
+                )
+
             else
-                log("Hatch rejected, continue to next egg:", rawName)
+                index += 1
             end
         end
 
-        local function interruptTravel()
-            scanResult()
-            return accepted ~= nil or os.clock() >= deadline
-                or isCarrying() or isBeingChased()
-        end
-
-        scanResult()
-        if autoFarmActive and not accepted and not isCarrying() and not isBeingChased() then
-            local nextEgg = findBestEgg(brokenEgg)
-            if nextEgg then
-                log("Pre-position at next egg:", getEggName(nextEgg))
-                moveTo(getApproachPosition(nextEgg.Position, EGG_APPROACH_DISTANCE),
-                    2, math.max(0.05, deadline - os.clock()), interruptTravel)
-            end
-        end
-        while autoFarmActive and not resolved and os.clock() < deadline do
-            scanResult()
-            if not resolved then task.wait(0.04) end
-        end
-        if accepted then stopMoving() end
-        return accepted
+        return nil
     end
 
-    local function breakEgg(egg, zoneName)
+    local function waitHitDelayWatchingPending(
+        duration
+    )
+        local deadline =
+            os.clock()
+            + duration
+
+        while autoFarmActive
+            and currentActivity == "Farm"
+            and os.clock() < deadline
+        do
+            local accepted =
+                scanPendingHatches()
+
+            if accepted then
+                return accepted
+            end
+
+            task.wait(0.03)
+        end
+
+        return nil
+    end
+
+    local function attackEggWhileWatchingPending(
+        egg,
+        zoneName
+    )
         if not validEgg(egg) then
-            return nil
+            return nil, false
         end
 
-        if not ensurePickaxe() then
-            return nil
+        local before =
+            snapshotPickups()
+
+        local eggPosition =
+            egg.Position
+
+        local hatchId =
+            egg:GetAttribute(
+                "HatchId"
+            )
+
+        local eggName =
+            getEggName(egg)
+
+        local acceptedDuringMove
+
+        local function interruptForPending()
+            acceptedDuringMove =
+                scanPendingHatches()
+
+            return acceptedDuringMove ~= nil
+                or isCarrying()
+                or isBeingChased()
+                or not autoFarmActive
+                or currentActivity
+                    ~= "Farm"
         end
 
-        local before = snapshotPickups()
-        local eggPosition = egg.Position
-        local hatchId = egg:GetAttribute("HatchId")
+        local _, _, hrp =
+            getCharacter()
 
-        local _, _, hrp = getCharacter()
-        local distance = (hrp.Position - eggPosition).Magnitude
+        local distance =
+            (
+                hrp.Position
+                - eggPosition
+            ).Magnitude
 
         log(
             "Target:",
-            getEggName(egg),
+            eggName,
             "| HP:",
             egg:GetAttribute("Health"),
             "| Zone:",
             zoneName,
             "| Distance:",
-            string.format("%.2f", distance)
+            string.format(
+                "%.2f",
+                distance
+            ),
+            "| Pending:",
+            #pendingHatches
         )
 
         if distance > HIT_DISTANCE then
-            if not walkNear(eggPosition, EGG_APPROACH_DISTANCE, 45) then
-                log("Failed to reach egg.")
-                return nil
+            moveTo(
+                getApproachPosition(
+                    eggPosition,
+                    EGG_APPROACH_DISTANCE
+                ),
+                2,
+                45,
+                interruptForPending
+            )
+
+            if acceptedDuringMove then
+                return
+                    acceptedDuringMove,
+                    false
             end
+
+            if not autoFarmActive
+                or currentActivity
+                    ~= "Farm"
+            then
+                return nil, false
+            end
+        end
+
+        local acceptedBeforeEquip =
+            scanPendingHatches()
+
+        if acceptedBeforeEquip then
+            return
+                acceptedBeforeEquip,
+                false
+        end
+
+        if not ensurePickaxe() then
+            return nil, false
         end
 
         if not usePickaxe() then
-            return nil
+            return nil, false
         end
 
-        while autoFarmActive and validEgg(egg) do
-            local _, _, currentHRP = getCharacter()
-            local currentDistance = (currentHRP.Position - egg.Position).Magnitude
+        while autoFarmActive
+            and currentActivity == "Farm"
+            and validEgg(egg)
+        do
+            local accepted =
+                scanPendingHatches()
 
-            if currentDistance > HIT_DISTANCE then
-                if not walkNear(egg.Position, EGG_APPROACH_DISTANCE, 20) then
-                    return nil
+            if accepted then
+                stopMoving()
+
+                return
+                    accepted,
+                    false
+            end
+
+            local _, _, currentHRP =
+                getCharacter()
+
+            local currentDistance =
+                (
+                    currentHRP.Position
+                    - egg.Position
+                ).Magnitude
+
+            if currentDistance
+                > HIT_DISTANCE
+            then
+                acceptedDuringMove = nil
+
+                moveTo(
+                    getApproachPosition(
+                        egg.Position,
+                        EGG_APPROACH_DISTANCE
+                    ),
+                    2,
+                    20,
+                    interruptForPending
+                )
+
+                if acceptedDuringMove then
+                    return
+                        acceptedDuringMove,
+                        false
+                end
+
+                if not validEgg(egg) then
+                    break
                 end
             end
 
-            local tier = LocalPlayer:GetAttribute("PickaxeTier") or 1
+            local tier =
+                LocalPlayer:GetAttribute(
+                    "PickaxeTier"
+                )
+                or 1
 
             EggHitRequest:FireServer(
                 egg,
@@ -1442,28 +1688,140 @@ return function(Context)
 
             log(
                 "Hit",
+                "| Egg:",
+                eggName,
                 "| Tier:",
                 tier,
                 "| HP:",
-                egg:GetAttribute("Health")
+                egg:GetAttribute(
+                    "Health"
+                ),
+                "| Pending:",
+                #pendingHatches
             )
 
-            task.wait(HIT_DELAY)
+            local acceptedDuringDelay =
+                waitHitDelayWatchingPending(
+                    HIT_DELAY
+                )
+
+            if acceptedDuringDelay then
+                stopMoving()
+
+                return
+                    acceptedDuringDelay,
+                    false
+            end
         end
 
-        if not autoFarmActive then
-            return nil
+        if not autoFarmActive
+            or currentActivity ~= "Farm"
+        then
+            return nil, false
         end
 
-        log("Egg done:", getEggName(egg))
+        if validEgg(egg) then
+            return nil, false
+        end
 
-        return waitResultPet(
-            before,
-            zoneName,
-            eggPosition,
-            egg,
-            hatchId or egg:GetAttribute("HatchId")
+        log(
+            "Egg done:",
+            eggName,
+            "| Queue hatch result"
         )
+
+        table.insert(
+            pendingHatches,
+            makePendingHatch(
+                before,
+                zoneName,
+                eggPosition,
+                egg,
+                hatchId
+                    or egg:GetAttribute(
+                        "HatchId"
+                    ),
+                eggName
+            )
+        )
+
+        return nil, true
+    end
+
+    local function breakEgg(
+        initialEgg,
+        initialZoneName
+    )
+        local targetEgg =
+            initialEgg
+
+        local targetZone =
+            initialZoneName
+
+        while autoFarmActive
+            and currentActivity == "Farm"
+        do
+            -- First priority is always an already-hatched accepted pet.
+            local accepted =
+                scanPendingHatches()
+
+            if accepted then
+                stopMoving()
+                return accepted
+            end
+
+            -- Two outstanding eggs is enough to pipeline:
+            -- A can be hatching while B is already being broken.
+            -- Avoid producing an unbounded pile of uncollected hatch results.
+            if #pendingHatches
+                >= MAX_PENDING_HATCHES
+            then
+                task.wait(0.03)
+                continue
+            end
+
+            if not targetEgg
+                or not validEgg(targetEgg)
+            then
+                targetEgg,
+                targetZone =
+                    findBestEgg()
+            end
+
+            if not targetEgg then
+                -- No breakable egg right now, but a broken egg may still
+                -- be hatching. Keep watching it instead of ending the cycle.
+                if #pendingHatches > 0 then
+                    task.wait(0.05)
+                    continue
+                end
+
+                return nil
+            end
+
+            local acceptedWhileBreaking,
+                brokeTarget =
+                attackEggWhileWatchingPending(
+                    targetEgg,
+                    targetZone
+                )
+
+            if acceptedWhileBreaking then
+                return
+                    acceptedWhileBreaking
+            end
+
+            -- Whether it broke or became invalid, choose another target.
+            -- If it broke, its hatch result is already in pendingHatches.
+            targetEgg = nil
+            targetZone = nil
+
+            if not brokeTarget then
+                task.wait(0.03)
+            end
+        end
+
+        return nil
     end
 
     -- Prompt helpers
