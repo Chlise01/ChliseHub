@@ -820,7 +820,7 @@ return function(Context)
 
     local MASTER_EGGS = buildEggList()
 
-    local function findBestEgg()
+    local function findBestEgg(excludedEgg)
         local _, _, hrp = getCharacter()
 
         local bestEgg
@@ -836,7 +836,7 @@ return function(Context)
                     for _, container in ipairs(eggs:GetChildren()) do
                         local egg = resolveEgg(container)
 
-                        if validEgg(egg) then
+                        if egg ~= excludedEgg and validEgg(egg) then
                             local eggName = getEggName(egg)
 
                             if isSelected(selectedEggs, eggName) then
@@ -868,51 +868,70 @@ return function(Context)
         return snapshot
     end
 
-    local function waitResultPet(before, zoneName, eggPosition)
+    local function petMatchesFilter(animal)
+        local rawName = animal:GetAttribute("AnimalName") or animal.Name
+        local weight = tonumber(animal:GetAttribute("WeightKg"))
+        if not isSelected(selectedPets, rawName) then return false end
+        return minimumPetWeight <= 0 or (weight ~= nil and weight >= minimumPetWeight)
+    end
+
+    local function waitResultPet(before, zoneName, eggPosition, brokenEgg, hatchId)
         local deadline = os.clock() + PICKUP_SPAWN_TIMEOUT
+        local resolved, accepted = false, nil
 
-        while autoFarmActive and os.clock() < deadline do
-            local best
-            local bestDistance = math.huge
-
+        local function scanResult()
+            if resolved then return end
+            local best, bestDistance = nil, math.huge
             for _, animal in ipairs(Pickups:GetChildren()) do
-                if not before[animal] and animal:IsA("Model") then
-                    local hatched = animal:GetAttribute("Hatched")
+                if not before[animal] and animal:IsA("Model")
+                    and animal:GetAttribute("Hatched") == true then
                     local animalZone = normalizeZone(animal:GetAttribute("ZoneId"))
-
-                    if hatched == true
-                        and (not animalZone or animalZone == zoneName)
-                    then
-                        local position = animal:GetPivot().Position
-                        local distance = (position - eggPosition).Magnitude
-
-                        if distance <= MAX_PICKUP_SPAWN_DISTANCE
-                            and distance < bestDistance
-                        then
-                            best = animal
-                            bestDistance = distance
+                    local candidateId = animal:GetAttribute("HatchId")
+                    local identityMatches = hatchId == nil
+                        or (candidateId ~= nil and tostring(candidateId) == tostring(hatchId))
+                    if identityMatches and (not animalZone or animalZone == zoneName) then
+                        local distance = (animal:GetPivot().Position - eggPosition).Magnitude
+                        if distance <= MAX_PICKUP_SPAWN_DISTANCE and distance < bestDistance then
+                            best, bestDistance = animal, distance
                         end
                     end
                 end
             end
-
-            if best then
-                log(
-                    "Result pet:",
-                    best:GetAttribute("AnimalName") or best.Name,
-                    "| SpawnDist:",
-                    string.format("%.2f", bestDistance)
-                )
-
-                task.wait(0.15)
-
-                return best
+            if not best then return end
+            -- Wait for metadata replication instead of rejecting an unknown weight.
+            local rawName = best:GetAttribute("AnimalName") or best.Name
+            if minimumPetWeight > 0 and isSelected(selectedPets, rawName)
+                and tonumber(best:GetAttribute("WeightKg")) == nil then return end
+            resolved = true
+            if petMatchesFilter(best) then
+                accepted = best
+                log("Hatch accepted, return for pickup:", rawName)
+            else
+                log("Hatch rejected, continue to next egg:", rawName)
             end
-
-            task.wait(0.04)
         end
 
-        return nil
+        local function interruptTravel()
+            scanResult()
+            return accepted ~= nil or os.clock() >= deadline
+                or isCarrying() or isBeingChased()
+        end
+
+        scanResult()
+        if autoFarmActive and not accepted and not isCarrying() and not isBeingChased() then
+            local nextEgg = findBestEgg(brokenEgg)
+            if nextEgg then
+                log("Pre-position at next egg:", getEggName(nextEgg))
+                moveTo(getApproachPosition(nextEgg.Position, EGG_APPROACH_DISTANCE),
+                    2, math.max(0.05, deadline - os.clock()), interruptTravel)
+            end
+        end
+        while autoFarmActive and not resolved and os.clock() < deadline do
+            scanResult()
+            if not resolved then task.wait(0.04) end
+        end
+        if accepted then stopMoving() end
+        return accepted
     end
 
     local function breakEgg(egg, zoneName)
@@ -926,6 +945,7 @@ return function(Context)
 
         local before = snapshotPickups()
         local eggPosition = egg.Position
+        local hatchId = egg:GetAttribute("HatchId")
 
         local _, _, hrp = getCharacter()
         local distance = (hrp.Position - eggPosition).Magnitude
@@ -989,7 +1009,9 @@ return function(Context)
         return waitResultPet(
             before,
             zoneName,
-            eggPosition
+            eggPosition,
+            egg,
+            hatchId or egg:GetAttribute("HatchId")
         )
     end
 
@@ -1372,33 +1394,8 @@ return function(Context)
             signature.WeightKg
             or 0
 
-        if minimumPetWeight > 0
-            and weight < minimumPetWeight
-        then
-            log(
-                "Discard hatch result:",
-                animalName,
-                "| Weight:",
-                weight,
-                "| Minimum:",
-                minimumPetWeight
-            )
-
-            return false
-        end
-
-        if not isSelected(
-            selectedPets,
-            animalName
-        ) then
-            log(
-                "Discard hatch result:",
-                animalName,
-                "| Pet filter mismatch"
-            )
-
-            -- The pet has not been picked up yet, so "discard"
-            -- means leave/ignore this hatch result.
+        if not petMatchesFilter(animal) then
+            log("Discard hatch result:", animalName, "| Filter mismatch")
             return false
         end
 
@@ -1611,10 +1608,8 @@ return function(Context)
 
                         stealAndBank(animal)
                     else
-                        log("Result pet not found.")
+                        log("No matching hatch; continue farming.")
                     end
-
-                    task.wait(0.15)
                 end)
 
                 if not ok then
