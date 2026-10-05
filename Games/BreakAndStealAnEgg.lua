@@ -26,6 +26,11 @@ return function(Context)
     local ZonesConfig = require(Shared:WaitForChild("ZonesConfig"))
     local ChaseState = require(Shared:WaitForChild("ChaseState"))
 
+    local AnimalRenders
+    pcall(function()
+        AnimalRenders = require(Shared:WaitForChild("AnimalRenders"))
+    end)
+
     -- Game objects
     local EggHitRequest = ReplicatedStorage:WaitForChild("EggHitRequest")
     local AnimalBankedRemote = ReplicatedStorage:WaitForChild("AnimalBankedRemote")
@@ -54,14 +59,12 @@ return function(Context)
     local MOVE_STUCK_SECONDS = 2
     local MOVE_STUCK_STUDS = 0.75
 
-    -- Tween/step movement follows the player's current legitimate WalkSpeed.
-    -- Small multiplier stays at 1.0 by default so displacement speed matches the game.
-    local MOVE_SPEED_MULTIPLIER = 1.0
-
-    -- Saat pulang, jangan berhenti tepat saat baru masuk safe zone.
-    -- Target dibuat lebih dalam ke plot supaya guard tidak sempat hit dari pinggir.
-    local HOME_DEEP_DISTANCE = 10
-    local HOME_EDGE_MARGIN = 3
+    -- Movement speed is synced 1:1 to the Humanoid's current WalkSpeed.
+    -- The script never overwrites WalkSpeed.
+    local HOME_STAGING_DISTANCE = 12
+    local HOME_INSIDE_DISTANCE = 4
+    local HOME_RETRY_WAIT = 0.12
+    local DROPPED_PET_TIMEOUT = 12
 
     -- State
     local autoFarmActive = false
@@ -70,6 +73,7 @@ return function(Context)
 
     local selectedZones = {}
     local selectedEggs = {}
+    local selectedPets = {}
     local minimumPetWeight = 0
 
     local movementMode = "Walk"
@@ -101,9 +105,7 @@ return function(Context)
                 1
             )
 
-        return
-            speed
-            * MOVE_SPEED_MULTIPLIER
+        return speed
     end
 
     -- Selection helpers
@@ -173,6 +175,43 @@ return function(Context)
         end
     end
 
+    local function buildPetList()
+        local found = {}
+        local result = {}
+
+        if type(AnimalRenders) == "table"
+            and type(AnimalRenders.Normal) == "table"
+        then
+            for name in pairs(AnimalRenders.Normal) do
+                if type(name) == "string" and name ~= "" then
+                    found[name] = true
+                end
+            end
+        end
+
+        for _, animal in ipairs(Pickups:GetChildren()) do
+            local name =
+                animal:GetAttribute("AnimalName")
+                or animal.Name
+
+            if type(name) == "string" and name ~= "" then
+                found[name] = true
+            end
+        end
+
+        for name in pairs(found) do
+            table.insert(result, name)
+        end
+
+        table.sort(result, function(a, b)
+            return a:lower() < b:lower()
+        end)
+
+        return result
+    end
+
+    local MASTER_PETS = buildPetList()
+
     -- Owned plot / home
     local function getOwnedPlotHitbox()
         local hitbox = SafeZoneQuery.GetOwnedPlotHitbox(LocalPlayer.UserId)
@@ -192,6 +231,7 @@ return function(Context)
         return ok and result == true
     end
 
+    local isCarrying
     local isBeingChased
 
     -- Normal character movement.
@@ -207,6 +247,12 @@ return function(Context)
 
         local _, humanoid, hrp = getCharacter()
         local deadline = os.clock() + timeout
+
+        log(
+            "Walk speed sync",
+            "| WalkSpeed:",
+            tonumber(humanoid.WalkSpeed) or 16
+        )
 
         local lastProgressPosition = hrp.Position
         local lastProgressTime = os.clock()
@@ -537,9 +583,23 @@ return function(Context)
     end
 
     local function getHomeEntryPoints(hitbox, fromPosition)
-        local flatFrom = Vector3.new(fromPosition.X, hitbox.Position.Y, fromPosition.Z)
-        local localFrom = hitbox.CFrame:PointToObjectSpace(flatFrom)
-        local direction = Vector3.new(localFrom.X, 0, localFrom.Z)
+        local flatFrom =
+            Vector3.new(
+                fromPosition.X,
+                hitbox.Position.Y,
+                fromPosition.Z
+            )
+
+        local localFrom =
+            hitbox.CFrame:
+            PointToObjectSpace(flatFrom)
+
+        local direction =
+            Vector3.new(
+                localFrom.X,
+                0,
+                localFrom.Z
+            )
 
         if direction.Magnitude < 0.05 then
             direction = Vector3.new(0, 0, 1)
@@ -559,79 +619,184 @@ return function(Context)
             tz = half.Z / math.abs(direction.Z)
         end
 
-        local edgeDistance = math.min(tx, tz)
-        local stagingLocal = direction * (edgeDistance + 14)
-        local insideLocal = direction * math.max(edgeDistance - 7, 0)
+        local edgeDistance =
+            math.min(tx, tz)
 
-        local stagingWorld = hitbox.CFrame:PointToWorldSpace(stagingLocal)
-        local insideWorld = hitbox.CFrame:PointToWorldSpace(insideLocal)
+        local stagingLocal =
+            direction
+            * (
+                edgeDistance
+                + HOME_STAGING_DISTANCE
+            )
 
-        -- Keep current player height for the whole return path.
+        -- Only a little bit inside the safe zone.
+        local insideLocal =
+            direction
+            * math.max(
+                edgeDistance
+                    - HOME_INSIDE_DISTANCE,
+                0
+            )
+
+        local stagingWorld =
+            hitbox.CFrame:
+            PointToWorldSpace(stagingLocal)
+
+        local insideWorld =
+            hitbox.CFrame:
+            PointToWorldSpace(insideLocal)
+
         return
-            Vector3.new(stagingWorld.X, fromPosition.Y, stagingWorld.Z),
-            Vector3.new(insideWorld.X, fromPosition.Y, insideWorld.Z)
+            Vector3.new(
+                stagingWorld.X,
+                fromPosition.Y,
+                stagingWorld.Z
+            ),
+            Vector3.new(
+                insideWorld.X,
+                fromPosition.Y,
+                insideWorld.Z
+            )
     end
 
-    local function walkHome()
+    local function walkHome(isBanked)
         local hitbox = getOwnedPlotHitbox()
 
         if not hitbox then
             warn("[CHLISE HUB] Owned plot hitbox not found.")
-            return false
+            return "failed"
+        end
+
+        local function bankedNow()
+            return
+                type(isBanked) == "function"
+                and isBanked() == true
+        end
+
+        local function interrupted()
+            if bankedNow() then
+                return true
+            end
+
+            return
+                type(isCarrying) == "function"
+                and not isCarrying()
         end
 
         local _, _, hrp = getCharacter()
-        local stagingPosition, insidePosition =
-            getHomeEntryPoints(hitbox, hrp.Position)
+
+        local stagingPosition,
+            insidePosition =
+            getHomeEntryPoints(
+                hitbox,
+                hrp.Position
+            )
 
         log(
             "Returning home",
             "| Mode:", movementMode,
-            "| Staging:", stagingPosition,
-            "| Inside:", insidePosition
+            "| WalkSpeed:", getCurrentMoveSpeed(),
+            "| Inside:", HOME_INSIDE_DISTANCE
         )
 
-        -- Tween/Teleport stop OUTSIDE the safe-zone boundary.
+        -- Tween/Teleport only handles the long part.
+        -- Safe-zone crossing still uses the real Humanoid walk.
         if movementMode == "Tween" then
-            if not tweenTo(stagingPosition, 2.5, 60) then
-                warn("[CHLISE HUB] Tween failed to reach home staging point.")
-                return false
-            end
+            tweenTo(
+                stagingPosition,
+                2.25,
+                60,
+                interrupted
+            )
         elseif movementMode == "Teleport" then
-            if not teleportTo(stagingPosition, 3) then
-                warn("[CHLISE HUB] Teleport failed to reach home staging point.")
-                return false
-            end
+            teleportTo(
+                stagingPosition,
+                2.5,
+                interrupted
+            )
         end
 
-        -- Safe-zone crossing is always normal Walk.
-        -- Walk mode simply walks here from its current position.
-        if not walkTo(insidePosition, 2.25, 30) then
-            warn("[CHLISE HUB] Failed to cross owned plot safe zone.")
-            return false
+        if bankedNow() then
+            return "banked"
         end
 
-        -- Give the server a moment to release the chase state.
-        local chaseDeadline = os.clock() + 3
+        if not isCarrying() then
+            return "dropped"
+        end
 
+        -- Cross only a few studs into the owned safe zone.
+        walkTo(
+            insidePosition,
+            1.25,
+            30,
+            interrupted
+        )
+
+        if bankedNow() then
+            return "banked"
+        end
+
+        if not isCarrying() then
+            return "dropped"
+        end
+
+        -- Once the pet is in the safe zone, do not start a new egg
+        -- while the guardian chase state is still active.
+        -- Keep retrying the shallow safe position until chase is gone.
         while autoFarmActive
-            and os.clock() < chaseDeadline
+            and isCarrying()
             and isBeingChased()
+            and not bankedNow()
         do
-            task.wait(0.05)
+            local _, _, currentHRP =
+                getCharacter()
+
+            if not isBankablePosition(currentHRP.Position) then
+                walkTo(
+                    insidePosition,
+                    1.0,
+                    8,
+                    interrupted
+                )
+            else
+                -- Re-issue a normal walk target without going deep into base.
+                local _, humanoid =
+                    getCharacter()
+
+                humanoid:MoveTo(insidePosition)
+            end
+
+            task.wait(HOME_RETRY_WAIT)
         end
 
-        local _, _, currentHRP = getCharacter()
-        local bankable = isBankablePosition(currentHRP.Position)
+        if bankedNow() then
+            return "banked"
+        end
+
+        if not isCarrying() then
+            return "dropped"
+        end
+
+        local _, _, currentHRP =
+            getCharacter()
+
+        local bankable =
+            isBankablePosition(
+                currentHRP.Position
+            )
 
         log(
-            "SAFE ZONE CROSSED",
+            "Safe-zone state",
             "| Bankable:", bankable,
             "| Chased:", isBeingChased(),
-            "| Position:", currentHRP.Position
+            "| Carrying:", isCarrying()
         )
 
-        return bankable
+        if bankable and not isBeingChased() then
+            return "safe"
+        end
+
+        return "failed"
     end
 
     -- Pickaxe
@@ -1110,7 +1275,7 @@ return function(Context)
     end
 
     -- Carry state from the game's own ChaseState module.
-    local function isCarrying()
+    isCarrying = function()
         local ok, carrying = pcall(function()
             return ChaseState.IsCarrying(LocalPlayer)
         end)
@@ -1140,19 +1305,232 @@ return function(Context)
         return false
     end
 
+    local function getAnimalSignature(animal)
+        return {
+            HatchId = animal:GetAttribute("HatchId"),
+            AnimalName =
+                animal:GetAttribute("AnimalName")
+                or animal.Name,
+            WeightKg =
+                tonumber(
+                    animal:GetAttribute("WeightKg")
+                ),
+            ZoneId =
+                normalizeZone(
+                    animal:GetAttribute("ZoneId")
+                )
+        }
+    end
+
+    local function matchesAnimalSignature(animal, signature)
+        if not animal
+            or not animal.Parent
+            or not animal:IsA("Model")
+        then
+            return false
+        end
+
+        local hatchId =
+            animal:GetAttribute("HatchId")
+
+        if signature.HatchId ~= nil
+            and hatchId ~= nil
+        then
+            return
+                tostring(hatchId)
+                == tostring(signature.HatchId)
+        end
+
+        local name =
+            animal:GetAttribute("AnimalName")
+            or animal.Name
+
+        if name ~= signature.AnimalName then
+            return false
+        end
+
+        local zone =
+            normalizeZone(
+                animal:GetAttribute("ZoneId")
+            )
+
+        if signature.ZoneId
+            and zone
+            and zone ~= signature.ZoneId
+        then
+            return false
+        end
+
+        local weight =
+            tonumber(
+                animal:GetAttribute("WeightKg")
+            )
+
+        if signature.WeightKg
+            and weight
+            and math.abs(
+                weight - signature.WeightKg
+            ) > 1.1
+        then
+            return false
+        end
+
+        return true
+    end
+
+    local function waitForDroppedAnimal(signature)
+        local deadline =
+            os.clock()
+            + DROPPED_PET_TIMEOUT
+
+        while autoFarmActive
+            and os.clock() < deadline
+        do
+            local _, _, hrp =
+                getCharacter()
+
+            local best
+            local bestDistance =
+                math.huge
+
+            for _, candidate
+                in ipairs(Pickups:GetChildren())
+            do
+                if matchesAnimalSignature(
+                    candidate,
+                    signature
+                ) then
+                    local position =
+                        candidate:GetPivot().Position
+
+                    local distance =
+                        (
+                            position
+                            - hrp.Position
+                        ).Magnitude
+
+                    if distance < bestDistance then
+                        best = candidate
+                        bestDistance = distance
+                    end
+                end
+            end
+
+            if best then
+                log(
+                    "Dropped pet found:",
+                    signature.AnimalName,
+                    "| Distance:",
+                    string.format(
+                        "%.2f",
+                        bestDistance
+                    )
+                )
+
+                return best
+            end
+
+            task.wait(0.05)
+        end
+
+        return nil
+    end
+
+    local function pickUpAnimal(animal, animalName)
+        if not animal or not animal.Parent then
+            return false
+        end
+
+        local petPosition =
+            animal:GetPivot().Position
+
+        if not walkNear(
+            petPosition,
+            PET_APPROACH_DISTANCE,
+            35
+        ) then
+            log(
+                "Failed to reach pet:",
+                animalName
+            )
+
+            return false
+        end
+
+        local prompt =
+            waitStealPrompt(animal)
+
+        if not prompt then
+            warn(
+                "[CHLISE HUB] StealPrompt not found:",
+                animalName
+            )
+
+            return false
+        end
+
+        local promptPosition =
+            getPromptPosition(prompt)
+
+        if promptPosition then
+            local _, _, hrp =
+                getCharacter()
+
+            if (
+                hrp.Position
+                - promptPosition
+            ).Magnitude > 7 then
+                if not walkNear(
+                    promptPosition,
+                    2.5,
+                    15
+                ) then
+                    return false
+                end
+            end
+        end
+
+        log(
+            "Fire steal:",
+            animalName
+        )
+
+        fireproximityprompt(prompt)
+
+        if not waitUntilCarrying(
+            CARRY_TIMEOUT
+        ) then
+            warn(
+                "[CHLISE HUB] Carry state not detected:",
+                animalName
+            )
+
+            return false
+        end
+
+        return true
+    end
+
     local function stealAndBank(animal)
         if not animal or not animal.Parent then
             return false
         end
 
-        local animalName = animal:GetAttribute("AnimalName") or animal.Name
-        local weight = tonumber(animal:GetAttribute("WeightKg")) or 0
+        local signature =
+            getAnimalSignature(animal)
+
+        local animalName =
+            signature.AnimalName
+
+        local weight =
+            signature.WeightKg
+            or 0
 
         if minimumPetWeight > 0
             and weight < minimumPetWeight
         then
             log(
-                "Skip pet:",
+                "Discard hatch result:",
                 animalName,
                 "| Weight:",
                 weight,
@@ -1163,64 +1541,37 @@ return function(Context)
             return false
         end
 
+        if not isSelected(
+            selectedPets,
+            animalName
+        ) then
+            log(
+                "Discard hatch result:",
+                animalName,
+                "| Pet filter mismatch"
+            )
+
+            -- The pet has not been picked up yet, so "discard"
+            -- means leave/ignore this hatch result.
+            return false
+        end
+
         log(
-            "Pet target:",
+            "Pet accepted:",
             animalName,
             "| Weight:",
-            weight
+            weight,
+            "| HatchId:",
+            signature.HatchId
         )
 
-        local petPosition = animal:GetPivot().Position
-
-        if not walkNear(petPosition, PET_APPROACH_DISTANCE, 35) then
-            log("Failed to reach pet:", animalName)
+        if not pickUpAnimal(
+            animal,
+            animalName
+        ) then
             return false
         end
 
-        local prompt = waitStealPrompt(animal)
-
-        if not prompt then
-            warn("[CHLISE HUB] StealPrompt not found:", animalName)
-            return false
-        end
-
-        log(
-            "Prompt ready:",
-            prompt:GetFullName(),
-            "| Object:",
-            prompt.ObjectText
-        )
-
-        local promptPosition = getPromptPosition(prompt)
-
-        if promptPosition then
-            local _, _, hrp = getCharacter()
-            local promptDistance = (hrp.Position - promptPosition).Magnitude
-
-            if promptDistance > 7 then
-                if not walkNear(promptPosition, 2.5, 15) then
-                    return false
-                end
-            end
-        end
-
-        log("Fire steal:", animalName)
-
-        fireproximityprompt(prompt)
-
-        if not waitUntilCarrying(CARRY_TIMEOUT) then
-            warn("[CHLISE HUB] Carry state not detected:", animalName)
-            return false
-        end
-
-        log(
-            "Carry detected:",
-            animalName,
-            "| BeingChased:",
-            isBeingChased()
-        )
-
-        -- Start listening for bank confirmation before returning home.
         local banked = false
 
         local bankConnection =
@@ -1248,31 +1599,112 @@ return function(Context)
                 end
             end)
 
-        local homeReached = walkHome()
-
-        if not homeReached then
-            bankConnection:Disconnect()
-            warn("[CHLISE HUB] Failed to reach owned plot.")
-            return false
+        local function bankedNow()
+            return banked
         end
 
-        local deadline = os.clock() + BANK_TIMEOUT
-
+        -- If the guardian knocks the pet out of our hands,
+        -- locate the same HatchId and pick it up again.
         while autoFarmActive
             and not banked
-            and os.clock() < deadline
         do
-            task.wait(0.02)
+            if not isCarrying() then
+                local dropped =
+                    waitForDroppedAnimal(
+                        signature
+                    )
+
+                if not dropped then
+                    bankConnection:Disconnect()
+
+                    warn(
+                        "[CHLISE HUB] Dropped pet not found:",
+                        animalName
+                    )
+
+                    return false
+                end
+
+                log(
+                    "Retry pickup:",
+                    animalName
+                )
+
+                if not pickUpAnimal(
+                    dropped,
+                    animalName
+                ) then
+                    task.wait(0.15)
+                    continue
+                end
+            end
+
+            local homeState =
+                walkHome(
+                    bankedNow
+                )
+
+            if banked then
+                break
+            end
+
+            if homeState == "dropped" then
+                log(
+                    "Pet dropped on return, recovering:",
+                    animalName
+                )
+
+                task.wait(0.05)
+                continue
+            end
+
+            if homeState == "safe" then
+                -- Chase is already gone. Give the normal bank
+                -- event a moment, while still watching for drops.
+                local deadline =
+                    os.clock()
+                    + BANK_TIMEOUT
+
+                while autoFarmActive
+                    and not banked
+                    and isCarrying()
+                    and not isBeingChased()
+                    and os.clock() < deadline
+                do
+                    task.wait(0.03)
+                end
+
+                if not isCarrying()
+                    and not banked
+                then
+                    log(
+                        "Pet dropped inside/near safe zone, recovering:",
+                        animalName
+                    )
+
+                    continue
+                end
+            elseif homeState == "failed" then
+                warn(
+                    "[CHLISE HUB] Home retry required:",
+                    animalName
+                )
+
+                task.wait(0.12)
+            end
         end
 
         bankConnection:Disconnect()
 
         if banked then
-            log("Cycle complete:", animalName)
+            log(
+                "Cycle complete:",
+                animalName
+            )
+
             return true
         end
 
-        warn("[CHLISE HUB] Bank timeout:", animalName)
         return false
     end
 
@@ -1312,6 +1744,11 @@ return function(Context)
                     end
 
                     if animal and animal.Parent then
+                        log(
+                            "Hatched:",
+                            animal:GetAttribute("AnimalName") or animal.Name
+                        )
+
                         stealAndBank(animal)
                     else
                         log("Result pet not found.")
@@ -1381,6 +1818,18 @@ return function(Context)
     )
 
     FarmSection:AddDropdown(
+        "BSAEPetFilter",
+        "Pet Filter",
+        MASTER_PETS,
+        true,
+        selectedPets,
+
+        function(value)
+            selectedPets = value
+        end
+    )
+
+    FarmSection:AddDropdown(
         "BSAEMovementMode",
         "Movement Mode",
         {
@@ -1439,7 +1888,9 @@ return function(Context)
                         "Owned plot:",
                         homeHitbox:GetFullName(),
                         "| WalkSpeed:",
-                        getCurrentMoveSpeed()
+                        getCurrentMoveSpeed(),
+                        "| PetFilters:",
+                        #MASTER_PETS
                     )
                 else
                     warn("[CHLISE HUB] Owned plot was not detected yet.")
