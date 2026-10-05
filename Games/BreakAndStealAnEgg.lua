@@ -2,6 +2,9 @@
 -- GameId: 10765288803
 -- PlaceId: 114326934417838
 -- Added: Auto Treadmill + alternating Farm/Treadmill timers
+-- Added: Titanic Egg event detection/prioritization via Workspace attributes
+-- Pipeline: unlimited pending hatch queue (A -> B -> C -> D ... without waiting)
+-- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
 
 return function(Context)
     local Window = Context.Window
@@ -95,12 +98,23 @@ return function(Context)
     local treadmillSessionCFrame = nil
     local lastTreadmillSession = 0
 
+    -- Titanic is allowed to temporarily override the normal Farm/Treadmill
+    -- schedule. We preserve the previous activity + remaining timer so it can
+    -- resume after the Titanic target is gone.
+    local titanicOverrideActive = false
+    local titanicOverrideRequested = false
+    local titanicResumeActivity = nil
+    local titanicResumeRemaining = nil
+    local titanicOverrideSpawnId = nil
+
     local debugEnabled = false
 
     local selectedZones = {}
     local selectedEggs = {}
     local selectedPets = {}
     local minimumPetWeight = 0
+
+    local prioritizeTitanicEgg = true
 
     local movementMode = "Walk"
 
@@ -1252,6 +1266,235 @@ return function(Context)
 
     local MASTER_EGGS = buildEggList()
 
+    -- Titanic event state is replicated directly on Workspace.
+    local function normalizeEggKey(value)
+        return tostring(value or "")
+            :gsub("^%d+:%s*", "")
+            :lower()
+            :gsub("[^%w]", "")
+    end
+
+    local function getTitanicState()
+        local nextAt =
+            tonumber(
+                Workspace:GetAttribute(
+                    "TitanicNextAt"
+                )
+            )
+
+        local eggName =
+            Workspace:GetAttribute(
+                "TitanicEggName"
+            )
+
+        local zoneIndex =
+            tonumber(
+                Workspace:GetAttribute(
+                    "TitanicZoneIndex"
+                )
+            )
+
+        local endsAt =
+            tonumber(
+                Workspace:GetAttribute(
+                    "TitanicEndsAt"
+                )
+            )
+
+        local spawnId =
+            Workspace:GetAttribute(
+                "TitanicSpawnId"
+            )
+
+        local spawnByAdmin =
+            Workspace:GetAttribute(
+                "TitanicSpawnByAdmin"
+            ) == true
+
+        local now =
+            Workspace:GetServerTimeNow()
+
+        local active =
+            type(eggName) == "string"
+            and eggName ~= ""
+            and zoneIndex ~= nil
+            and endsAt ~= nil
+            and endsAt > now
+
+        return {
+            Active = active,
+            NextAt = nextAt,
+            EggName = eggName,
+            ZoneIndex = zoneIndex,
+            EndsAt = endsAt,
+            SpawnId = spawnId,
+            SpawnByAdmin = spawnByAdmin,
+            Now = now
+        }
+    end
+
+    local function isTitanicPriorityActive()
+        if not prioritizeTitanicEgg then
+            return false
+        end
+
+        local state =
+            getTitanicState()
+
+        return state.Active == true
+    end
+
+    local function pendingIsFromTitanic(
+        pending,
+        state
+    )
+        if not pending
+            or not state
+            or not state.EggName
+        then
+            return false
+        end
+
+        return
+            normalizeEggKey(
+                pending.EggName
+            )
+            == normalizeEggKey(
+                state.EggName
+            )
+    end
+
+    local function isTitanicEggObject(
+        egg,
+        state
+    )
+        if not egg
+            or not state
+            or not state.EggName
+        then
+            return false
+        end
+
+        return
+            normalizeEggKey(
+                getEggName(egg)
+            )
+            == normalizeEggKey(
+                state.EggName
+            )
+    end
+
+    local function findTitanicEgg(
+        excludedEgg
+    )
+        if not prioritizeTitanicEgg then
+            return nil
+        end
+
+        local state =
+            getTitanicState()
+
+        if not state.Active then
+            return nil
+        end
+
+        local zoneName =
+            "Zone"
+            .. tostring(
+                state.ZoneIndex
+            )
+
+        local _, _, hrp =
+            getCharacter()
+
+        local best
+        local bestDistance =
+            math.huge
+
+        local function consider(egg)
+            if not egg
+                or egg == excludedEgg
+                or not validEgg(egg)
+                or not isTitanicEggObject(
+                    egg,
+                    state
+                )
+            then
+                return
+            end
+
+            local distance =
+                (
+                    hrp.Position
+                    - egg.Position
+                ).Magnitude
+
+            if distance < bestDistance then
+                best = egg
+                bestDistance =
+                    distance
+            end
+        end
+
+        -- Primary path: the zone supplied by the replicated Titanic state.
+        local zone =
+            ZoneBuilds:
+            FindFirstChild(
+                zoneName
+            )
+
+        local eggs =
+            zone
+            and zone:
+            FindFirstChild("Eggs")
+
+        if eggs then
+            for _, container
+                in ipairs(
+                    eggs:GetChildren()
+                )
+            do
+                consider(
+                    resolveEgg(
+                        container
+                    )
+                )
+            end
+        end
+
+        -- Fallback for event-only placement outside normal ZoneBuilds.
+        if not best then
+            for _, object
+                in ipairs(
+                    Workspace:
+                    GetDescendants()
+                )
+            do
+                if object:IsA(
+                        "BasePart"
+                    )
+                    and typeof(
+                        object:GetAttribute(
+                            "Health"
+                        )
+                    ) == "number"
+                then
+                    consider(object)
+                end
+            end
+        end
+
+        if best then
+            return
+                best,
+                zoneName,
+                bestDistance,
+                state
+        end
+
+        return nil
+    end
+
     local function getEggPriority(egg, zoneName)
         local eggName = getEggName(egg)
         local zoneInfo = ZonesConfig.Get(zoneName)
@@ -1266,6 +1509,32 @@ return function(Context)
     end
 
     local function findBestEgg(excludedEgg)
+        local titanicEgg,
+            titanicZone,
+            titanicDistance =
+            findTitanicEgg(
+                excludedEgg
+            )
+
+        if titanicEgg then
+            log(
+                "Titanic priority target:",
+                getEggName(titanicEgg),
+                "| Zone:",
+                titanicZone,
+                "| Distance:",
+                string.format(
+                    "%.2f",
+                    titanicDistance
+                )
+            )
+
+            return
+                titanicEgg,
+                titanicZone,
+                titanicDistance
+        end
+
         local _, _, hrp = getCharacter()
 
         local bestEgg
@@ -1336,7 +1605,9 @@ return function(Context)
     --
     -- Keep a small persistent pending queue so an Egg B that also breaks is not
     -- forgotten while Egg A is being collected/banked.
-    local MAX_PENDING_HATCHES = 2
+    -- No artificial pending limit:
+    -- Egg A can hatch while B, C, D, ... keep getting broken.
+    -- Every broken egg is tracked until its hatch result resolves or times out.
     local pendingHatches = {}
 
     local function makePendingHatch(
@@ -1360,6 +1631,13 @@ return function(Context)
 
     local function scanPendingHatches()
         local index = 1
+
+        local titanicState =
+            getTitanicState()
+
+        local suppressNormalAccepted =
+            prioritizeTitanicEgg
+            and titanicState.Active == true
 
         while index <= #pendingHatches do
             local pending =
@@ -1456,25 +1734,47 @@ return function(Context)
                     )
 
                     if petMatchesFilter(best) then
+                        if suppressNormalAccepted
+                            and not pendingIsFromTitanic(
+                                pending,
+                                titanicState
+                            )
+                        then
+                            -- Titanic has absolute priority. Keep this accepted
+                            -- normal hatch queued; it may be collected after the
+                            -- Titanic target is finished.
+                            table.insert(
+                                pendingHatches,
+                                pending
+                            )
+
+                            log(
+                                "Pending hatch deferred for Titanic:",
+                                rawName,
+                                "| From:",
+                                pending.EggName
+                            )
+                        else
+                            log(
+                                "Pending hatch accepted:",
+                                rawName,
+                                "| From:",
+                                pending.EggName,
+                                "| Remaining pending:",
+                                #pendingHatches
+                            )
+
+                            return best
+                        end
+                    else
                         log(
-                            "Pending hatch accepted:",
+                            "Pending hatch rejected:",
                             rawName,
                             "| From:",
                             pending.EggName,
-                            "| Remaining pending:",
-                            #pendingHatches
+                            "| Continue breaking eggs"
                         )
-
-                        return best
                     end
-
-                    log(
-                        "Pending hatch rejected:",
-                        rawName,
-                        "| From:",
-                        pending.EggName,
-                        "| Continue breaking eggs"
-                    )
                 end
 
             elseif os.clock()
@@ -1545,12 +1845,34 @@ return function(Context)
             getEggName(egg)
 
         local acceptedDuringMove
+        local titanicSwitchRequested = false
+
+        local function checkTitanicSwitch()
+            if not prioritizeTitanicEgg then
+                return false
+            end
+
+            local titanic =
+                findTitanicEgg(
+                    egg
+                )
+
+            if titanic then
+                titanicSwitchRequested =
+                    true
+
+                return true
+            end
+
+            return false
+        end
 
         local function interruptForPending()
             acceptedDuringMove =
                 scanPendingHatches()
 
             return acceptedDuringMove ~= nil
+                or checkTitanicSwitch()
                 or isCarrying()
                 or isBeingChased()
                 or not autoFarmActive
@@ -1600,6 +1922,14 @@ return function(Context)
                     false
             end
 
+            if titanicSwitchRequested then
+                log(
+                    "Titanic spawned while travelling; switching target."
+                )
+
+                return nil, false
+            end
+
             if not autoFarmActive
                 or currentActivity
                     ~= "Farm"
@@ -1629,6 +1959,21 @@ return function(Context)
             and currentActivity == "Farm"
             and validEgg(egg)
         do
+            local titanicNow =
+                findTitanicEgg(
+                    egg
+                )
+
+            if titanicNow then
+                log(
+                    "Titanic spawned; interrupting normal egg:",
+                    eggName
+                )
+
+                stopMoving()
+                return nil, false
+            end
+
             local accepted =
                 scanPendingHatches()
 
@@ -1668,6 +2013,14 @@ return function(Context)
                     return
                         acceptedDuringMove,
                         false
+                end
+
+                if titanicSwitchRequested then
+                    log(
+                        "Titanic spawned during re-approach; switching target."
+                    )
+
+                    return nil, false
                 end
 
                 if not validEgg(egg) then
@@ -1727,8 +2080,31 @@ return function(Context)
         log(
             "Egg done:",
             eggName,
-            "| Queue hatch result"
+            "| Queue hatch result",
+            "| Pending:",
+            #pendingHatches + 1
         )
+
+        local titanicStateAtBreak =
+            getTitanicState()
+
+        if titanicStateAtBreak.Active
+            and titanicStateAtBreak.EggName
+            and normalizeEggKey(eggName)
+                == normalizeEggKey(
+                    titanicStateAtBreak.EggName
+                )
+        then
+            titanicOverrideSpawnId =
+                titanicStateAtBreak.SpawnId
+
+            log(
+                "Titanic egg broken:",
+                eggName,
+                "| SpawnId:",
+                titanicOverrideSpawnId
+            )
+        end
 
         table.insert(
             pendingHatches,
@@ -1761,23 +2137,40 @@ return function(Context)
         while autoFarmActive
             and currentActivity == "Farm"
         do
-            -- First priority is always an already-hatched accepted pet.
-            local accepted =
-                scanPendingHatches()
+            -- ABSOLUTE PRIORITY:
+            -- if a Titanic egg exists, it wins before pending normal pets,
+            -- normal egg filters, normal rarity priority, and timers.
+            local titanicEgg,
+                titanicZone =
+                findTitanicEgg()
 
-            if accepted then
-                stopMoving()
-                return accepted
-            end
+            if titanicEgg then
+                if targetEgg ~= titanicEgg then
+                    stopMoving()
 
-            -- Two outstanding eggs is enough to pipeline:
-            -- A can be hatching while B is already being broken.
-            -- Avoid producing an unbounded pile of uncollected hatch results.
-            if #pendingHatches
-                >= MAX_PENDING_HATCHES
-            then
-                task.wait(0.03)
-                continue
+                    targetEgg =
+                        titanicEgg
+
+                    targetZone =
+                        titanicZone
+
+                    log(
+                        "ABSOLUTE TITANIC PRIORITY ->",
+                        getEggName(
+                            titanicEgg
+                        ),
+                        "| Zone:",
+                        titanicZone
+                    )
+                end
+            else
+                local accepted =
+                    scanPendingHatches()
+
+                if accepted then
+                    stopMoving()
+                    return accepted
+                end
             end
 
             if not targetEgg
@@ -2553,7 +2946,12 @@ return function(Context)
                 "Activity -> Auto Farm Egg"
             )
 
-            refreshActivityDeadline()
+            if titanicOverrideActive then
+                activityDeadline = nil
+            else
+                refreshActivityDeadline()
+            end
+
             startAutoFarm()
 
         elseif activity == "Treadmill" then
@@ -2572,12 +2970,200 @@ return function(Context)
         end
     end
 
-    -- Timer coordinator:
-    -- both ON  -> alternate by each timer
-    -- only one -> that activity continues without forced switching
+    local function beginTitanicOverride()
+        if titanicOverrideActive then
+            return
+        end
+
+        -- Do not throw away a pet already in our hands.
+        -- Finish banking/recovery first, then Titanic takes over.
+        if isCarrying()
+            or isBeingChased()
+        then
+            titanicOverrideRequested =
+                true
+
+            return
+        end
+
+        titanicOverrideRequested =
+            false
+
+        titanicResumeActivity =
+            currentActivity
+
+        if activityDeadline then
+            titanicResumeRemaining =
+                math.max(
+                    0,
+                    activityDeadline
+                        - os.clock()
+                )
+        else
+            titanicResumeRemaining =
+                nil
+        end
+
+        titanicOverrideActive =
+            true
+
+        local state =
+            getTitanicState()
+
+        titanicOverrideSpawnId =
+            state.SpawnId
+
+        log(
+            "TITANIC OVERRIDE START",
+            "| Previous:",
+            titanicResumeActivity,
+            "| SpawnId:",
+            titanicOverrideSpawnId
+        )
+
+        -- Titanic can pull us off the treadmill even if Auto Farm itself
+        -- is not enabled. This temporary Farm activity exists only to
+        -- attack the Titanic event egg.
+        if currentActivity ~= "Farm" then
+            setActivity("Farm")
+        else
+            autoFarmActive = true
+            activityDeadline = nil
+            startAutoFarm()
+        end
+
+        activityDeadline = nil
+    end
+
+    local function restoreAfterTitanic()
+        if not titanicOverrideActive then
+            titanicOverrideRequested =
+                false
+
+            return
+        end
+
+        titanicOverrideActive =
+            false
+
+        local resumeActivity =
+            titanicResumeActivity
+
+        local resumeRemaining =
+            titanicResumeRemaining
+
+        titanicResumeActivity = nil
+        titanicResumeRemaining = nil
+        titanicOverrideRequested = false
+
+        local desired
+
+        if resumeActivity == "Treadmill"
+            and autoTreadmillEnabled
+        then
+            desired = "Treadmill"
+
+        elseif resumeActivity == "Farm"
+            and autoFarmEnabled
+        then
+            desired = "Farm"
+
+        elseif autoFarmEnabled then
+            desired = "Farm"
+
+        elseif autoTreadmillEnabled then
+            desired = "Treadmill"
+
+        else
+            desired = nil
+        end
+
+        log(
+            "TITANIC OVERRIDE END",
+            "| Resume:",
+            desired
+        )
+
+        setActivity(desired)
+
+        if desired
+            and resumeActivity == desired
+            and resumeRemaining
+            and resumeRemaining > 0
+            and otherActivityEnabled(
+                desired
+            )
+        then
+            activityDeadline =
+                os.clock()
+                + resumeRemaining
+        end
+    end
+
+    -- Priority coordinator.
+    --
+    -- Priority order:
+    -- 1. Already-carried pet recovery/banking (safety)
+    -- 2. Titanic Egg
+    -- 3. Active Farm/Treadmill timer
+    -- 4. Normal egg pipeline / pending normal pets
     task.spawn(function()
         while not Window.Destroyed do
-            if currentActivity
+            local state =
+                getTitanicState()
+
+            local automationEnabled =
+                autoFarmEnabled
+                or autoTreadmillEnabled
+                or currentActivity ~= nil
+
+            local titanicTargetExists =
+                false
+
+            if prioritizeTitanicEgg
+                and state.Active
+                and automationEnabled
+            then
+                local target =
+                    findTitanicEgg()
+
+                titanicTargetExists =
+                    target ~= nil
+            end
+
+            if titanicTargetExists then
+                if not titanicOverrideActive then
+                    beginTitanicOverride()
+                end
+
+            elseif titanicOverrideActive then
+                -- The Titanic egg is gone/broken. Return to the exact activity
+                -- that was interrupted and restore its remaining timer.
+                restoreAfterTitanic()
+
+            elseif titanicOverrideRequested
+                and not isCarrying()
+                and not isBeingChased()
+            then
+                -- We were waiting for a carried pet to finish banking.
+                local target =
+                    prioritizeTitanicEgg
+                    and state.Active
+                    and findTitanicEgg()
+                    or nil
+
+                if target then
+                    beginTitanicOverride()
+                else
+                    titanicOverrideRequested =
+                        false
+                end
+            end
+
+            -- Normal alternating timers are suspended during Titanic override.
+            if not titanicOverrideActive
+                and not titanicOverrideRequested
+                and currentActivity
                 and activityDeadline
                 and os.clock()
                     >= activityDeadline
@@ -2588,8 +3174,6 @@ return function(Context)
                     if autoFarmEnabled then
                         setActivity("Farm")
                     else
-                        -- No farm to switch to:
-                        -- stay on treadmill.
                         activityDeadline = nil
                     end
 
@@ -2597,8 +3181,6 @@ return function(Context)
                     == "Farm"
                 then
                     if autoTreadmillEnabled then
-                        -- If we are carrying a pet / still chased,
-                        -- finish that recovery first before leaving.
                         if not isCarrying()
                             and not isBeingChased()
                         then
@@ -2607,8 +3189,6 @@ return function(Context)
                             )
                         end
                     else
-                        -- No treadmill to switch to:
-                        -- continue farming.
                         activityDeadline = nil
                     end
                 end
@@ -2617,6 +3197,54 @@ return function(Context)
             task.wait(0.1)
         end
     end)
+
+    local function logTitanicEventState()
+        local state =
+            getTitanicState()
+
+        if state.Active then
+            log(
+                "Titanic ACTIVE",
+                "| Egg:",
+                state.EggName,
+                "| Zone:",
+                state.ZoneIndex,
+                "| EndsAt:",
+                state.EndsAt,
+                "| SpawnId:",
+                state.SpawnId,
+                "| Admin:",
+                state.SpawnByAdmin
+            )
+        else
+            log(
+                "Titanic waiting",
+                "| NextAt:",
+                state.NextAt,
+                "| SpawnId:",
+                state.SpawnId
+            )
+        end
+    end
+
+    for _, attributeName
+        in ipairs({
+            "TitanicNextAt",
+            "TitanicEggName",
+            "TitanicZoneIndex",
+            "TitanicEndsAt",
+            "TitanicSpawnId",
+            "TitanicSpawnByAdmin"
+        })
+    do
+        Workspace:
+        GetAttributeChangedSignal(
+            attributeName
+        ):
+        Connect(function()
+            logTitanicEventState()
+        end)
+    end
 
     -- UI - uses the same template/API as Ride A Pet.
     local FarmTab =
@@ -2664,6 +3292,35 @@ return function(Context)
 
         function(value)
             selectedEggs = decodeSelection(value, eggLabels)
+        end
+    )
+
+    FarmSection:AddToggle(
+        "BSAEPrioritizeTitanic",
+        "Prioritize Titanic Egg",
+        true,
+
+        function(state)
+            prioritizeTitanicEgg =
+                state == true
+
+            if not prioritizeTitanicEgg
+                and titanicOverrideActive
+            then
+                restoreAfterTitanic()
+            end
+
+            local titanicState =
+                getTitanicState()
+
+            log(
+                "Prioritize Titanic:",
+                prioritizeTitanicEgg,
+                "| Active:",
+                titanicState.Active,
+                "| NextAt:",
+                titanicState.NextAt
+            )
         end
     )
 
