@@ -2370,11 +2370,14 @@ return function(Context)
         "10",
 
         function(value)
-            local parsed =
-                tonumber(
+            local normalized =
+                (
                     tostring(value or ""):
                     gsub(",", ".")
                 )
+
+            local parsed =
+                tonumber(normalized)
 
             if parsed and parsed > 0 then
                 farmTimerValue =
@@ -2482,11 +2485,14 @@ return function(Context)
         "10",
 
         function(value)
-            local parsed =
-                tonumber(
+            local normalized =
+                (
                     tostring(value or ""):
                     gsub(",", ".")
                 )
+
+            local parsed =
+                tonumber(normalized)
 
             if parsed and parsed > 0 then
                 treadmillTimerValue =
