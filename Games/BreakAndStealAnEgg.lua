@@ -49,11 +49,17 @@ return function(Context)
     local CARRY_TIMEOUT = 3
     local BANK_TIMEOUT = 8
 
-    local MOVE_REFRESH = 0.15
+    local MOVE_REFRESH = 0.08
+    local MOVE_COMMAND_REFRESH = 0.75
     local MOVE_STUCK_SECONDS = 2
     local MOVE_STUCK_STUDS = 0.75
 
     local TWEEN_SPEED = 80
+
+    -- Saat pulang, jangan berhenti tepat saat baru masuk safe zone.
+    -- Target dibuat lebih dalam ke plot supaya guard tidak sempat hit dari pinggir.
+    local HOME_DEEP_DISTANCE = 10
+    local HOME_EDGE_MARGIN = 3
 
     -- State
     local autoFarmActive = false
@@ -181,6 +187,16 @@ return function(Context)
 
         local lastProgressPosition = hrp.Position
         local lastProgressTime = os.clock()
+        local lastMoveCommand = 0
+
+        -- Important: jangan spam Humanoid:MoveTo terus-menerus.
+        -- Saat membawa pet, spam MoveTo + physics carry/guard bisa bikin stutter.
+        local function issueMove()
+            humanoid:MoveTo(targetPosition)
+            lastMoveCommand = os.clock()
+        end
+
+        issueMove()
 
         while autoFarmActive
             and hrp.Parent
@@ -199,13 +215,20 @@ return function(Context)
                 return true
             end
 
-            humanoid:MoveTo(targetPosition)
+            -- Refresh MoveTo hanya sesekali, bukan tiap loop.
+            if os.clock() - lastMoveCommand >= MOVE_COMMAND_REFRESH then
+                issueMove()
+            end
 
-            if (hrp.Position - lastProgressPosition).Magnitude >= MOVE_STUCK_STUDS then
+            local moved = (hrp.Position - lastProgressPosition).Magnitude
+
+            if moved >= MOVE_STUCK_STUDS then
                 lastProgressPosition = hrp.Position
                 lastProgressTime = os.clock()
             elseif os.clock() - lastProgressTime >= MOVE_STUCK_SECONDS then
                 humanoid.Jump = true
+                issueMove()
+
                 lastProgressPosition = hrp.Position
                 lastProgressTime = os.clock()
             end
@@ -387,6 +410,104 @@ return function(Context)
         return moveTo(approachPosition, 2, timeout)
     end
 
+    local function getDeepHomePosition(hitbox, fromPosition)
+        -- Cari arah dari posisi kita menuju pusat plot dalam local-space hitbox.
+        -- Lalu teruskan sedikit melewati pusat agar masuk lebih dalam,
+        -- bukan berhenti di garis safe zone.
+        local flatFrom =
+            Vector3.new(
+                fromPosition.X,
+                hitbox.Position.Y,
+                fromPosition.Z
+            )
+
+        local localFrom =
+            hitbox.CFrame:
+            PointToObjectSpace(
+                flatFrom
+            )
+
+        local inward =
+            Vector3.new(
+                -localFrom.X,
+                0,
+                -localFrom.Z
+            )
+
+        if inward.Magnitude < 0.05 then
+            inward =
+                Vector3.new(
+                    0,
+                    0,
+                    -1
+                )
+        else
+            inward =
+                inward.Unit
+        end
+
+        local half =
+            hitbox.Size * 0.5
+
+        local maxX =
+            math.max(
+                half.X - HOME_EDGE_MARGIN,
+                0
+            )
+
+        local maxZ =
+            math.max(
+                half.Z - HOME_EDGE_MARGIN,
+                0
+            )
+
+        local maxDistance =
+            HOME_DEEP_DISTANCE
+
+        if math.abs(inward.X) > 0.001 then
+            maxDistance =
+                math.min(
+                    maxDistance,
+                    maxX / math.abs(inward.X)
+                )
+        end
+
+        if math.abs(inward.Z) > 0.001 then
+            maxDistance =
+                math.min(
+                    maxDistance,
+                    maxZ / math.abs(inward.Z)
+                )
+        end
+
+        maxDistance =
+            math.max(
+                maxDistance,
+                0
+            )
+
+        local localTarget =
+            inward * maxDistance
+
+        local worldTarget =
+            hitbox.CFrame:
+            PointToWorldSpace(
+                Vector3.new(
+                    localTarget.X,
+                    0,
+                    localTarget.Z
+                )
+            )
+
+        -- Y HARUS tetap sama seperti posisi player saat mulai pulang.
+        -- Ini mencegah karakter melihat/bergerak ke atas.
+        return Vector3.new(
+            worldTarget.X,
+            fromPosition.Y,
+            worldTarget.Z
+        )
+    end
+
     local function walkHome()
         local hitbox = getOwnedPlotHitbox()
 
@@ -397,28 +518,71 @@ return function(Context)
 
         local _, _, hrp = getCharacter()
 
-        local targetPosition = Vector3.new(
-            hitbox.Position.X,
-            hitbox.Position.Y + (hitbox.Size.Y * 0.5) + 1.5,
-            hitbox.Position.Z
+        local startPosition =
+            hrp.Position
+
+        local targetPosition =
+            getDeepHomePosition(
+                hitbox,
+                startPosition
+            )
+
+        log(
+            "Returning home:",
+            hitbox:GetFullName(),
+            "| Mode:",
+            movementMode,
+            "| DeepTarget:",
+            targetPosition
         )
 
-        log("Returning home:", hitbox:GetFullName())
+        -- Jangan gunakan IsBankable sebagai early-stop di sini.
+        -- Dulu movement berhenti saat baru menyentuh batas safe zone,
+        -- sehingga guard masih bisa memukul dari luar.
+        local reached =
+            moveTo(
+                targetPosition,
+                2.5,
+                60
+            )
 
-        moveTo(
-            targetPosition,
-            2.5,
-            60,
-            function()
-                local _, _, currentHRP = getCharacter()
-                return isBankablePosition(currentHRP.Position)
-            end
+        local _, _, currentHRP =
+            getCharacter()
+
+        local bankable =
+            isBankablePosition(
+                currentHRP.Position
+            )
+
+        -- Kalau movement berhenti sedikit terlalu awal, dorong lagi ke titik
+        -- yang sama (terutama Walk mode) tanpa mengubah tinggi Y.
+        if reached
+            and not bankable
+        then
+            moveTo(
+                targetPosition,
+                1.5,
+                8
+            )
+
+            _, _, currentHRP =
+                getCharacter()
+
+            bankable =
+                isBankablePosition(
+                    currentHRP.Position
+                )
+        end
+
+        log(
+            "Home arrival",
+            "| Reached:",
+            reached,
+            "| Bankable:",
+            bankable,
+            "| Position:",
+            currentHRP.Position
         )
-
-        local _, _, currentHRP = getCharacter()
-        local bankable = isBankablePosition(currentHRP.Position)
-
-        log("Home bankable:", bankable)
 
         return bankable
     end
