@@ -8,7 +8,7 @@
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
--- Return home: fixed safe-zone coordinate; uses current WalkSpeed with no return-speed cap
+-- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
     local Window = Context.Window
@@ -76,11 +76,6 @@ return function(Context)
 
     -- Movement speed is synced 1:1 to the Humanoid's current WalkSpeed.
     -- The script never overwrites WalkSpeed.
-    local HOME_TARGET_POSITION = Vector3.new(
-        -905.5198364257812,
-        -54.10763931274414,
-        0
-    )
     local HOME_CONFIRM_TIMEOUT = 8
     local BANK_GRACE_SECONDS = 1.5
     local HOME_RETRY_WAIT = 0.12
@@ -1466,11 +1461,61 @@ return function(Context)
         return moveTo(approachPosition, 2, timeout)
     end
 
-    local function getHomeTargetPosition()
-        -- Fixed safe-zone target supplied from the live map.
-        -- Using one fixed point prevents the return path from turning toward
-        -- the plot edge/model when carrying a pet.
-        return HOME_TARGET_POSITION
+    local function getMapSafeZonePart()
+        local build =
+            Workspace:
+            FindFirstChild(
+                "Build"
+            )
+
+        if not build then
+            return nil
+        end
+
+        local zoneHitboxes =
+            build:
+            FindFirstChild(
+                "ZoneHitboxes"
+            )
+
+        if not zoneHitboxes then
+            return nil
+        end
+
+        local safeZone =
+            zoneHitboxes:
+            FindFirstChild(
+                "SafeZone"
+            )
+
+        if safeZone
+            and safeZone:IsA(
+                "BasePart"
+            )
+        then
+            return safeZone
+        end
+
+        return nil
+    end
+
+    local function getHomeTargetPosition(
+        fromPosition
+    )
+        local safeZone =
+            getMapSafeZonePart()
+
+        if not safeZone then
+            return nil
+        end
+
+        -- Preserve current Y so movement stays horizontal and does not try to
+        -- walk toward the SafeZone part's vertical center (107.5).
+        return Vector3.new(
+            safeZone.Position.X,
+            fromPosition.Y,
+            safeZone.Position.Z
+        )
     end
 
     local function walkHome(isBanked)
@@ -1512,7 +1557,17 @@ return function(Context)
             getCharacter()
 
         local centerPosition =
-            getHomeTargetPosition()
+            getHomeTargetPosition(
+                hrp.Position
+            )
+
+        if not centerPosition then
+            warn(
+                "[CHLISE HUB] Workspace.Build.ZoneHitboxes.SafeZone not found."
+            )
+
+            return "failed"
+        end
 
         -- If already inside the safe zone, stop immediately and let
         -- the normal bank event finish. Do not walk deeper into the plot.
@@ -1605,8 +1660,17 @@ return function(Context)
                 else
                     -- If knocked back out, simply head straight to the
                     -- safe-zone center again.
+                    local _, _, currentHRP =
+                        getCharacter()
+
                     local retryCenter =
-                        getHomeTargetPosition()
+                        getHomeTargetPosition(
+                            currentHRP.Position
+                        )
+
+                    if not retryCenter then
+                        return "failed"
+                    end
 
                     walkTo(
                         retryCenter,
