@@ -5,7 +5,7 @@
 -- Added: Titanic Egg event detection/prioritization via Workspace attributes
 -- Pipeline: unlimited pending hatch queue (A -> B -> C -> D ... without waiting)
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
--- Titanic detection: physical spawned egg fallback works even when Workspace event attributes are stale/missing
+-- Titanic detection: optimized known-zone scan only; no full Workspace descendant scan
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
@@ -142,7 +142,7 @@ return function(Context)
     local selectedZones = {}
     local selectedEggs = {}
     local selectedPets = {}
-    local minimumPetWeight = 0
+    local minimumPetIncome = 0
 
     local prioritizeTitanicEgg = true
 
@@ -2496,10 +2496,11 @@ return function(Context)
         local nowClock =
             os.clock()
 
-        -- Avoid doing a Workspace:GetDescendants() scan every frame.
+        -- Titanic scan is intentionally throttled. We only inspect known
+        -- egg containers, never the entire Workspace.
         if nowClock
                 - lastTitanicScanAt
-            < 0.25
+            < 0.5
             and cachedTitanicEgg
             and cachedTitanicEgg.Parent
             and cachedTitanicEgg
@@ -2663,48 +2664,11 @@ return function(Context)
             end
         end
 
-        -- 3) Event-only fallback outside ZoneBuilds. Do not require state.Active:
-        -- the physical Titanic egg itself is enough proof that the event exists.
-        if not best then
-            for _, object
-                in ipairs(
-                    Workspace:
-                    GetDescendants()
-                )
-            do
-                if object:IsA(
-                        "BasePart"
-                    )
-                    and (
-                        typeof(
-                            object:
-                            GetAttribute(
-                                "Health"
-                            )
-                        ) == "number"
-                        or objectLooksTitanic(
-                            object
-                        )
-                    )
-                then
-                    consider(
-                        object
-                    )
-                end
-            end
-        end
-
-        cachedTitanicEgg =
-            best
-
-        cachedTitanicZone =
-            bestZone
-
-        cachedTitanicDistance =
-            bestDistance
-
-        cachedTitanicState =
-            state
+        -- No Workspace:GetDescendants() fallback here.
+        -- The previous full-world scan every fraction of a second was the main
+        -- source of Titanic-event lag. The physical Titanic egg is expected in
+        -- the known zone egg containers; Workspace event attributes still tell
+        -- us which zone/name to prioritize.
 
         if best then
             return
@@ -2810,11 +2774,322 @@ return function(Context)
         return snapshot
     end
 
-    local function petMatchesFilter(animal)
-        local rawName = animal:GetAttribute("AnimalName") or animal.Name
-        local weight = tonumber(animal:GetAttribute("WeightKg"))
-        if not isSelected(selectedPets, rawName) then return false end
-        return minimumPetWeight <= 0 or (weight ~= nil and weight >= minimumPetWeight)
+    local PET_INCOME_ATTRIBUTE_KEYS = {
+        "IncomePerSecond",
+        "CashPerSecond",
+        "Income",
+        "CashPerSec",
+        "CPS",
+        "EarningsPerSecond",
+        "MoneyPerSecond"
+    }
+
+    local function parseCompactNumber(value)
+        local raw =
+            tostring(value or "")
+            :lower()
+            :gsub("%s+", "")
+            :gsub(",", ".")
+
+        if raw == "" then
+            return nil
+        end
+
+        local numberPart,
+            suffix =
+            raw:match(
+                "^([%+%-]?[%d%.]+)([%a]*)$"
+            )
+
+        local number =
+            tonumber(
+                numberPart
+                or raw
+            )
+
+        if not number then
+            return nil
+        end
+
+        local multipliers = {
+            k = 1e3,
+            m = 1e6,
+            b = 1e9,
+            t = 1e12,
+            qa = 1e15,
+            qi = 1e18,
+            sx = 1e21,
+            sp = 1e24,
+            oc = 1e27,
+            no = 1e30,
+            dc = 1e33
+        }
+
+        if suffix
+            and suffix ~= ""
+        then
+            local multiplier =
+                multipliers[
+                    suffix
+                ]
+
+            if not multiplier then
+                return nil
+            end
+
+            number *= multiplier
+        end
+
+        return number
+    end
+
+    local function readIncomeFromTable(
+        value
+    )
+        if type(value)
+            ~= "table"
+        then
+            return nil
+        end
+
+        for _, key
+            in ipairs(
+                PET_INCOME_ATTRIBUTE_KEYS
+            )
+        do
+            local parsed =
+                tonumber(
+                    value[key]
+                )
+
+            if parsed then
+                return parsed
+            end
+        end
+
+        return nil
+    end
+
+    local function getPetIncomePerSecond(
+        animal
+    )
+        if not animal then
+            return nil
+        end
+
+        -- First prefer a replicated value on the actual hatch result.
+        for _, key
+            in ipairs(
+                PET_INCOME_ATTRIBUTE_KEYS
+            )
+        do
+            local value =
+                tonumber(
+                    animal:GetAttribute(
+                        key
+                    )
+                )
+
+            if value then
+                return value
+            end
+        end
+
+        -- Be tolerant to minor attribute naming changes.
+        for key, value
+            in pairs(
+                animal:GetAttributes()
+            )
+        do
+            if type(value)
+                    == "number"
+                and (
+                    tostring(key):
+                        lower():
+                        find(
+                            "income",
+                            1,
+                            true
+                        )
+                    or tostring(key):
+                        lower():
+                        find(
+                            "cashper",
+                            1,
+                            true
+                        )
+                    or tostring(key):
+                        lower()
+                        == "cps"
+                )
+            then
+                return value
+            end
+        end
+
+        -- Fallback to EggRewards metadata/functions if this game version stores
+        -- income there instead of on the pickup instance.
+        local rawName =
+            animal:GetAttribute(
+                "AnimalName"
+            )
+            or animal.Name
+
+        local function callRewardFunction(
+            functionName
+        )
+            local fn =
+                EggRewards[
+                    functionName
+                ]
+
+            if type(fn)
+                ~= "function"
+            then
+                return nil
+            end
+
+            local ok, result =
+                pcall(
+                    fn,
+                    rawName
+                )
+
+            if ok then
+                return
+                    tonumber(result)
+                    or readIncomeFromTable(
+                        result
+                    )
+            end
+
+            return nil
+        end
+
+        for _, functionName
+            in ipairs({
+                "IncomeOf",
+                "IncomePerSecondOf",
+                "CashPerSecondOf",
+                "GetIncome",
+                "GetIncomePerSecond",
+                "GetCashPerSecond"
+            })
+        do
+            local result =
+                callRewardFunction(
+                    functionName
+                )
+
+            if result then
+                return result
+            end
+        end
+
+        for _, tableName
+            in ipairs({
+                "Income",
+                "Incomes",
+                "IncomePerSecond",
+                "CashPerSecond",
+                "PetStats",
+                "Animals"
+            })
+        do
+            local source =
+                EggRewards[
+                    tableName
+                ]
+
+            if type(source)
+                == "table"
+            then
+                local entry =
+                    source[
+                        rawName
+                    ]
+
+                local result =
+                    tonumber(entry)
+                    or readIncomeFromTable(
+                        entry
+                    )
+
+                if result then
+                    return result
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local function waitForPetIncome(
+        animal,
+        timeout
+    )
+        local deadline =
+            os.clock()
+            + (
+                tonumber(timeout)
+                or 1.5
+            )
+
+        repeat
+            local income =
+                getPetIncomePerSecond(
+                    animal
+                )
+
+            if income ~= nil then
+                return income
+            end
+
+            task.wait(0.05)
+        until not animal
+            or not animal.Parent
+            or os.clock()
+                >= deadline
+
+        return nil
+    end
+
+    local function petMatchesFilter(
+        animal,
+        resolvedIncome
+    )
+        local rawName =
+            animal:GetAttribute(
+                "AnimalName"
+            )
+            or animal.Name
+
+        if not isSelected(
+            selectedPets,
+            rawName
+        )
+        then
+            return false
+        end
+
+        if minimumPetIncome <= 0 then
+            return true
+        end
+
+        local income =
+            resolvedIncome
+
+        if income == nil then
+            income =
+                getPetIncomePerSecond(
+                    animal
+                )
+        end
+
+        return
+            income ~= nil
+            and income
+                >= minimumPetIncome
     end
 
     -- Hatch pipeline
@@ -2935,27 +3210,39 @@ return function(Context)
                     )
                     or best.Name
 
-                -- Give replicated weight metadata a moment to arrive when
-                -- the user has an active minimum-weight filter.
-                if minimumPetWeight > 0
+                local resolvedIncome
+
+                -- Give replicated income metadata a brief moment to arrive
+                -- only when the user actually enabled the minimum-income filter.
+                if minimumPetIncome > 0
                     and isSelected(
                         selectedPets,
                         rawName
                     )
-                    and tonumber(
-                        best:GetAttribute(
-                            "WeightKg"
-                        )
-                    ) == nil
                 then
-                    index += 1
-                else
-                    table.remove(
-                        pendingHatches,
-                        index
-                    )
+                    resolvedIncome =
+                        getPetIncomePerSecond(
+                            best
+                        )
 
-                    if petMatchesFilter(best) then
+                    if resolvedIncome == nil
+                        and os.clock()
+                            < pending.Deadline
+                    then
+                        index += 1
+                        continue
+                    end
+                end
+
+                table.remove(
+                    pendingHatches,
+                    index
+                )
+
+                if petMatchesFilter(
+                    best,
+                    resolvedIncome
+                ) then
                         if suppressNormalAccepted
                             and not pendingIsFromTitanic(
                                 pending,
@@ -3934,20 +4221,40 @@ return function(Context)
         local animalName =
             signature.AnimalName
 
-        local weight =
-            signature.WeightKg
-            or 0
+        local income
 
-        if not petMatchesFilter(animal) then
-            log("Discard hatch result:", animalName, "| Filter mismatch")
+        if minimumPetIncome > 0 then
+            income =
+                waitForPetIncome(
+                    animal,
+                    1.5
+                )
+        else
+            income =
+                getPetIncomePerSecond(
+                    animal
+                )
+        end
+
+        if not petMatchesFilter(
+            animal,
+            income
+        ) then
+            log(
+                "Discard hatch result:",
+                animalName,
+                "| Filter mismatch",
+                "| Income/s:",
+                income
+            )
             return false
         end
 
         log(
             "Pet accepted:",
             animalName,
-            "| Weight:",
-            weight,
+            "| Income/s:",
+            income or "N/A",
             "| HatchId:",
             signature.HatchId
         )
@@ -4761,23 +5068,32 @@ return function(Context)
     )
 
     FarmSection:AddTextbox(
-        "BSAEMinimumPetWeight",
-        "Minimum Pet Weight",
-        "0 = Off",
+        "BSAEMinimumPetIncome",
+        "Minimum Pet Income/s",
+        "Empty / 0 = Off",
 
         function(value)
-            local normalized =
-                tostring(value or ""):
-                gsub(",", ".")
-
             local parsed =
-                tonumber(normalized)
+                parseCompactNumber(
+                    value
+                )
 
-            if parsed and parsed > 0 then
-                minimumPetWeight = parsed
+            if parsed
+                and parsed > 0
+            then
+                minimumPetIncome =
+                    parsed
             else
-                minimumPetWeight = 0
+                minimumPetIncome =
+                    0
             end
+
+            log(
+                "Minimum Pet Income/s:",
+                minimumPetIncome > 0
+                    and minimumPetIncome
+                    or "OFF"
+            )
         end
     )
 
