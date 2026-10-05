@@ -5,4 +5,5 @@
 
 return {
     [10035204815] = "Games/RideAPet.lua",
+    [10765288803] = "Games/BreakAndStealAnEgg.lua",
 }
