@@ -6,6 +6,8 @@
 -- Pipeline: unlimited pending hatch queue (A -> B -> C -> D ... without waiting)
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
+-- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
+-- Return home: always targets owned safe-zone center instead of nearest plot edge
 
 return function(Context)
     local Window = Context.Window
@@ -74,12 +76,12 @@ return function(Context)
     -- Movement speed is synced 1:1 to the Humanoid's current WalkSpeed.
     -- The script never overwrites WalkSpeed.
     local HOME_STAGING_DISTANCE = 12
-    local HOME_INSIDE_DISTANCE = 4
     local HOME_ENTRY_SPEED = 24
     local HOME_CONFIRM_TIMEOUT = 8
     local BANK_GRACE_SECONDS = 1.5
     local HOME_RETRY_WAIT = 0.12
     local DROPPED_PET_TIMEOUT = 12
+    local DROPPED_PET_SEARCH_RADIUS = 60
 
     -- State
     local autoFarmActive = false
@@ -1460,147 +1462,223 @@ return function(Context)
         return moveTo(approachPosition, 2, timeout)
     end
 
-    local function getHomeEntryPoints(hitbox, fromPosition)
-        local flatFrom =
-            Vector3.new(
-                fromPosition.X,
-                hitbox.Position.Y,
-                fromPosition.Z
-            )
-
-        local localFrom =
-            hitbox.CFrame:
-            PointToObjectSpace(flatFrom)
-
-        local direction =
-            Vector3.new(
-                localFrom.X,
-                0,
-                localFrom.Z
-            )
-
-        if direction.Magnitude < 0.05 then
-            direction = Vector3.new(0, 0, 1)
-        else
-            direction = direction.Unit
-        end
-
-        local half = hitbox.Size * 0.5
-        local tx = math.huge
-        local tz = math.huge
-
-        if math.abs(direction.X) > 0.001 then
-            tx = half.X / math.abs(direction.X)
-        end
-
-        if math.abs(direction.Z) > 0.001 then
-            tz = half.Z / math.abs(direction.Z)
-        end
-
-        local edgeDistance =
-            math.min(tx, tz)
-
-        local stagingLocal =
-            direction
-            * (
-                edgeDistance
-                + HOME_STAGING_DISTANCE
-            )
-
-        -- Only a little bit inside the safe zone.
-        local insideLocal =
-            direction
-            * math.max(
-                edgeDistance
-                    - HOME_INSIDE_DISTANCE,
-                0
-            )
-
-        local stagingWorld =
-            hitbox.CFrame:
-            PointToWorldSpace(stagingLocal)
-
-        local insideWorld =
-            hitbox.CFrame:
-            PointToWorldSpace(insideLocal)
-
-        return
-            Vector3.new(
-                stagingWorld.X,
-                fromPosition.Y,
-                stagingWorld.Z
-            ),
-            Vector3.new(
-                insideWorld.X,
-                fromPosition.Y,
-                insideWorld.Z
-            )
+    local function getSafeZoneCenterPosition(
+        hitbox,
+        fromPosition
+    )
+        return Vector3.new(
+            hitbox.Position.X,
+            fromPosition.Y,
+            hitbox.Position.Z
+        )
     end
 
     local function walkHome(isBanked)
-        local hitbox = getOwnedPlotHitbox()
+        local hitbox =
+            getOwnedPlotHitbox()
+
         if not hitbox then
-            warn("[CHLISE HUB] Owned plot hitbox not found.")
+            warn(
+                "[CHLISE HUB] Owned plot hitbox not found."
+            )
+
             return "failed"
         end
 
         local function bankedNow()
-            return type(isBanked) == "function" and isBanked() == true
-        end
-        local function inOwnedPlot()
-            local _, _, hrp = getCharacter()
-            return SafeZoneQuery.IsPositionInOwnedPlot(LocalPlayer.UserId, hrp.Position)
-        end
-        local function interrupted()
-            return bankedNow() or not isCarrying()
-        end
-        local _, _, hrp = getCharacter()
-        local stagingPosition, insidePosition = getHomeEntryPoints(hitbox, hrp.Position)
-        if not inOwnedPlot() then
-            -- End CFrame travel outside the plot, then cross using normal physics.
-            local reached
-            if movementMode == "Tween" then
-                reached = tweenTo(stagingPosition, 1, 60, interrupted)
-            elseif movementMode == "Teleport" then
-                reached = teleportTo(stagingPosition, 1, interrupted, 60)
-            else
-                reached = walkTo(stagingPosition, 1, 60, interrupted)
-            end
-            if not reached and isCarrying() and not bankedNow() then return "failed" end
+            return
+                type(isBanked) == "function"
+                and isBanked() == true
         end
 
-        local deadline = os.clock() + HOME_CONFIRM_TIMEOUT
+        local function inOwnedPlot()
+            local _, _, hrp =
+                getCharacter()
+
+            return
+                SafeZoneQuery.
+                IsPositionInOwnedPlot(
+                    LocalPlayer.UserId,
+                    hrp.Position
+                )
+        end
+
+        local function interrupted()
+            return
+                bankedNow()
+                or not isCarrying()
+        end
+
+        local _, _, hrp =
+            getCharacter()
+
+        -- Always aim for the CENTER of our safe zone.
+        -- The old logic aimed at the closest plot edge, which could choose
+        -- the outside/map-wall side when the owned plot was near the map edge.
+        local centerPosition =
+            getSafeZoneCenterPosition(
+                hitbox,
+                hrp.Position
+            )
+
+        if not inOwnedPlot() then
+            local reached = false
+
+            if movementMode == "Tween" then
+                reached =
+                    tweenTo(
+                        centerPosition,
+                        2,
+                        60,
+                        interrupted
+                    )
+
+            elseif movementMode == "Teleport" then
+                reached =
+                    teleportTo(
+                        centerPosition,
+                        2,
+                        interrupted,
+                        60
+                    )
+
+            else
+                -- Walk toward the safe-zone center at normal speed first.
+                -- Once close to the plot, cap only the final approach so a very
+                -- high WalkSpeed cannot skip across the whole safe zone.
+                local flatDelta =
+                    centerPosition
+                    - hrp.Position
+
+                local flatDistance =
+                    Vector3.new(
+                        flatDelta.X,
+                        0,
+                        flatDelta.Z
+                    ).Magnitude
+
+                local approachDistance =
+                    math.max(
+                        hitbox.Size.X,
+                        hitbox.Size.Z
+                    ) * 0.5
+                    + HOME_STAGING_DISTANCE
+
+                if flatDistance
+                    > approachDistance
+                then
+                    walkTo(
+                        centerPosition,
+                        approachDistance,
+                        60,
+                        interrupted
+                    )
+                end
+
+                if isCarrying()
+                    and not bankedNow()
+                then
+                    reached =
+                        walkTo(
+                            centerPosition,
+                            2,
+                            12,
+                            interrupted,
+                            HOME_ENTRY_SPEED
+                        )
+                else
+                    reached = true
+                end
+            end
+
+            if not reached
+                and isCarrying()
+                and not bankedNow()
+            then
+                return "failed"
+            end
+        end
+
+        local deadline =
+            os.clock()
+            + HOME_CONFIRM_TIMEOUT
+
         local carryMissingSince
-        while autoFarmActive and os.clock() < deadline do
+
+        while autoFarmActive
+            and os.clock() < deadline
+        do
             if bankedNow() then
                 stopMoving()
                 return "banked"
             end
-            local owned = inOwnedPlot()
+
+            local owned =
+                inOwnedPlot()
+
             if not isCarrying() then
                 stopMoving()
-                if not owned then return "dropped" end
-                carryMissingSince = carryMissingSince or os.clock()
-                if os.clock() - carryMissingSince >= BANK_GRACE_SECONDS then
+
+                if not owned then
                     return "dropped"
                 end
+
+                carryMissingSince =
+                    carryMissingSince
+                    or os.clock()
+
+                if os.clock()
+                    - carryMissingSince
+                    >= BANK_GRACE_SECONDS
+                then
+                    return "dropped"
+                end
+
             else
                 carryMissingSince = nil
+
                 if not owned then
-                    -- Fast WalkSpeed can skip a whole plot in one frame.
-                    -- Cap just this crossing and restore the latest game speed.
-                    walkTo(insidePosition, 0.75, math.min(3, deadline - os.clock()),
-                        function() return interrupted() or inOwnedPlot() end,
-                        HOME_ENTRY_SPEED)
+                    -- If something displaced us before the bank registered,
+                    -- head back to the SAFE-ZONE CENTER again, not a plot edge.
+                    local _, _, currentHRP =
+                        getCharacter()
+
+                    local retryCenter =
+                        getSafeZoneCenterPosition(
+                            hitbox,
+                            currentHRP.Position
+                        )
+
+                    walkTo(
+                        retryCenter,
+                        2,
+                        math.min(
+                            4,
+                            math.max(
+                                0.1,
+                                deadline
+                                    - os.clock()
+                            )
+                        ),
+                        interrupted,
+                        HOME_ENTRY_SPEED
+                    )
                 else
                     stopMoving()
                 end
             end
-            task.wait(HOME_RETRY_WAIT)
+
+            task.wait(
+                HOME_RETRY_WAIT
+            )
         end
+
         stopMoving()
-        -- Arrival alone is not evidence that the server banked the pet.
-        return bankedNow() and "banked" or "failed"
+
+        return
+            bankedNow()
+            and "banked"
+            or "failed"
     end
 
     -- Pickaxe
@@ -2894,7 +2972,11 @@ return function(Context)
         }
     end
 
-    local function matchesAnimalSignature(animal, signature)
+    local function matchesAnimalSignature(
+        animal,
+        signature,
+        allowMissingHatchId
+    )
         if not animal
             or not animal.Parent
             or not animal:IsA("Model")
@@ -2903,16 +2985,33 @@ return function(Context)
         end
 
         local hatchId =
-            animal:GetAttribute("HatchId")
+            animal:GetAttribute(
+                "HatchId"
+            )
 
-        if signature.HatchId ~= nil then
-            return
-                tostring(hatchId)
-                == tostring(signature.HatchId)
+        -- If both sides have HatchId, it is the strongest identity check.
+        -- A dropped/recreated pickup can briefly have no HatchId, so recovery
+        -- is allowed to fall back to the other replicated metadata.
+        if signature.HatchId ~= nil
+            and hatchId ~= nil
+        then
+            if tostring(hatchId)
+                ~= tostring(
+                    signature.HatchId
+                )
+            then
+                return false
+            end
+        elseif signature.HatchId ~= nil
+            and not allowMissingHatchId
+        then
+            return false
         end
 
         local name =
-            animal:GetAttribute("AnimalName")
+            animal:GetAttribute(
+                "AnimalName"
+            )
             or animal.Name
 
         if name ~= signature.AnimalName then
@@ -2921,7 +3020,9 @@ return function(Context)
 
         local zone =
             normalizeZone(
-                animal:GetAttribute("ZoneId")
+                animal:GetAttribute(
+                    "ZoneId"
+                )
             )
 
         if signature.ZoneId
@@ -2933,13 +3034,16 @@ return function(Context)
 
         local weight =
             tonumber(
-                animal:GetAttribute("WeightKg")
+                animal:GetAttribute(
+                    "WeightKg"
+                )
             )
 
         if signature.WeightKg
             and weight
             and math.abs(
-                weight - signature.WeightKg
+                weight
+                - signature.WeightKg
             ) > 1.1
         then
             return false
@@ -2948,10 +3052,19 @@ return function(Context)
         return true
     end
 
-    local function waitForDroppedAnimal(signature)
+    local function waitForDroppedAnimal(
+        signature,
+        expectedPosition
+    )
         local deadline =
             os.clock()
             + DROPPED_PET_TIMEOUT
+
+        expectedPosition =
+            typeof(expectedPosition)
+                == "Vector3"
+            and expectedPosition
+            or nil
 
         while autoFarmActive
             and os.clock() < deadline
@@ -2959,29 +3072,72 @@ return function(Context)
             local _, _, hrp =
                 getCharacter()
 
+            local origin =
+                expectedPosition
+                or hrp.Position
+
             local best
-            local bestDistance =
+            local bestScore =
                 math.huge
 
             for _, candidate
-                in ipairs(Pickups:GetChildren())
+                in ipairs(
+                    Pickups:GetChildren()
+                )
             do
                 if matchesAnimalSignature(
                     candidate,
-                    signature
+                    signature,
+                    true
                 ) then
                     local position =
                         candidate:GetPivot().Position
 
-                    local distance =
+                    local distanceToDrop =
+                        (
+                            position
+                            - origin
+                        ).Magnitude
+
+                    local distanceToPlayer =
                         (
                             position
                             - hrp.Position
                         ).Magnitude
 
-                    if distance < bestDistance then
-                        best = candidate
-                        bestDistance = distance
+                    if distanceToDrop
+                        <= DROPPED_PET_SEARCH_RADIUS
+                    then
+                        local candidateId =
+                            candidate:GetAttribute(
+                                "HatchId"
+                            )
+
+                        local exactId =
+                            signature.HatchId ~= nil
+                            and candidateId ~= nil
+                            and tostring(candidateId)
+                                == tostring(
+                                    signature.HatchId
+                                )
+
+                        -- Exact HatchId always wins. When the recreated pickup
+                        -- temporarily has no HatchId, choose the closest matching
+                        -- name/zone/weight around the place where it was dropped.
+                        local score =
+                            distanceToDrop
+                            + distanceToPlayer
+                                * 0.15
+
+                        if exactId then
+                            score =
+                                score - 100000
+                        end
+
+                        if score < bestScore then
+                            best = candidate
+                            bestScore = score
+                        end
                     end
                 end
             end
@@ -2990,11 +3146,12 @@ return function(Context)
                 log(
                     "Dropped pet found:",
                     signature.AnimalName,
-                    "| Distance:",
-                    string.format(
-                        "%.2f",
-                        bestDistance
-                    )
+                    "| HatchId:",
+                    best:GetAttribute(
+                        "HatchId"
+                    ),
+                    "| Position:",
+                    best:GetPivot().Position
                 )
 
                 return best
@@ -3014,13 +3171,54 @@ return function(Context)
             if isCarrying() then return true end
             if not animal:IsDescendantOf(Pickups) then
                 local replacement
-                for _, candidate in ipairs(Pickups:GetChildren()) do
-                    if matchesAnimalSignature(candidate, signature) then
-                        replacement = candidate
-                        break
+                local replacementDistance =
+                    math.huge
+
+                local _, _, replacementHRP =
+                    getCharacter()
+
+                for _, candidate
+                    in ipairs(
+                        Pickups:GetChildren()
+                    )
+                do
+                    if matchesAnimalSignature(
+                        candidate,
+                        signature,
+                        true
+                    ) then
+                        local distance =
+                            (
+                                candidate:GetPivot().Position
+                                - replacementHRP.Position
+                            ).Magnitude
+
+                        if distance
+                            < replacementDistance
+                        then
+                            replacement =
+                                candidate
+
+                            replacementDistance =
+                                distance
+                        end
                     end
                 end
-                if not replacement then return false end
+
+                if not replacement then
+                    return false
+                end
+
+                log(
+                    "Pickup instance replaced:",
+                    animalName,
+                    "| Distance:",
+                    string.format(
+                        "%.2f",
+                        replacementDistance
+                    )
+                )
+
                 animal = replacement
             end
             local targetPosition = animal:GetPivot().Position
@@ -3131,9 +3329,13 @@ return function(Context)
                     end
                     if banked then break end
                 end
+                local dropPosition =
+                    currentHRP.Position
+
                 local dropped =
                     waitForDroppedAnimal(
-                        signature
+                        signature,
+                        dropPosition
                     )
 
                 if not dropped then
@@ -3155,9 +3357,19 @@ return function(Context)
                     dropped,
                     animalName
                 ) then
+                    log(
+                        "Dropped pet pickup failed, retrying:",
+                        animalName
+                    )
+
                     task.wait(0.15)
                     continue
                 end
+
+                log(
+                    "Dropped pet recovered, returning home:",
+                    animalName
+                )
             end
 
             local homeState =
