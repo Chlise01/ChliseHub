@@ -8,7 +8,7 @@
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
--- Return home: enters safe zone from map-interior side to avoid outer walls
+-- Return home: walks straight to owned safe-zone center; no plot-edge/interior detour
 
 return function(Context)
     local Window = Context.Window
@@ -76,8 +76,6 @@ return function(Context)
 
     -- Movement speed is synced 1:1 to the Humanoid's current WalkSpeed.
     -- The script never overwrites WalkSpeed.
-    local HOME_STAGING_DISTANCE = 12
-    local HOME_INSIDE_DISTANCE = 4
     local HOME_ENTRY_SPEED = 24
     local HOME_CONFIRM_TIMEOUT = 8
     local BANK_GRACE_SECONDS = 1.5
@@ -1464,274 +1462,193 @@ return function(Context)
         return moveTo(approachPosition, 2, timeout)
     end
 
-    local function getMapInteriorPosition()
-        local plots =
-            Workspace:
-            FindFirstChild(
-                ZonesConfig.PlotsFolderName
-                or "Plots"
-            )
-
-        if not plots then
-            return Vector3.zero
-        end
-
-        local total =
-            Vector3.zero
-
-        local count = 0
-
-        for _, plot
-            in ipairs(
-                plots:GetChildren()
-            )
-        do
-            local ok, position =
-                pcall(function()
-                    if plot:IsA("Model") then
-                        return plot:GetPivot().Position
-                    end
-
-                    if plot:IsA("BasePart") then
-                        return plot.Position
-                    end
-
-                    local part =
-                        plot:
-                        FindFirstChildWhichIsA(
-                            "BasePart",
-                            true
-                        )
-
-                    return
-                        part
-                        and part.Position
-                        or nil
-                end)
-
-            if ok
-                and typeof(position)
-                    == "Vector3"
-            then
-                total += position
-                count += 1
-            end
-        end
-
-        if count > 0 then
-            return total / count
-        end
-
-        return Vector3.zero
-    end
-
-    local function getHomeEntryPoints(
+    local function getSafeZoneCenterPosition(
         hitbox,
         fromPosition
     )
-        -- IMPORTANT:
-        -- Do not choose the nearest plot edge from the player's position.
-        -- A plot on the outside edge of the map could make that route point
-        -- directly into the map wall.
-        --
-        -- Instead, choose the safe-zone side that faces the interior of the map.
-        local interiorWorld =
-            getMapInteriorPosition()
-
-        local localInterior =
-            hitbox.CFrame:
-            PointToObjectSpace(
-                Vector3.new(
-                    interiorWorld.X,
-                    hitbox.Position.Y,
-                    interiorWorld.Z
-                )
-            )
-
-        local direction =
-            Vector3.new(
-                localInterior.X,
-                0,
-                localInterior.Z
-            )
-
-        if direction.Magnitude < 0.05 then
-            -- Fallback toward the actual player only if map-center data
-            -- cannot give a useful direction.
-            local flatFrom =
-                Vector3.new(
-                    fromPosition.X,
-                    hitbox.Position.Y,
-                    fromPosition.Z
-                )
-
-            local localFrom =
-                hitbox.CFrame:
-                PointToObjectSpace(
-                    flatFrom
-                )
-
-            direction =
-                Vector3.new(
-                    localFrom.X,
-                    0,
-                    localFrom.Z
-                )
-        end
-
-        if direction.Magnitude < 0.05 then
-            direction =
-                Vector3.new(
-                    0,
-                    0,
-                    1
-                )
-        else
-            direction =
-                direction.Unit
-        end
-
-        local half =
-            hitbox.Size * 0.5
-
-        local tx =
-            math.huge
-
-        local tz =
-            math.huge
-
-        if math.abs(direction.X)
-            > 0.001
-        then
-            tx =
-                half.X
-                / math.abs(
-                    direction.X
-                )
-        end
-
-        if math.abs(direction.Z)
-            > 0.001
-        then
-            tz =
-                half.Z
-                / math.abs(
-                    direction.Z
-                )
-        end
-
-        local edgeDistance =
-            math.min(
-                tx,
-                tz
-            )
-
-        -- Stage outside on the INNER/MAP side of the safe zone.
-        local stagingLocal =
-            direction
-            * (
-                edgeDistance
-                + HOME_STAGING_DISTANCE
-            )
-
-        -- Then cross a little inside the safe zone.
-        local insideLocal =
-            direction
-            * math.max(
-                edgeDistance
-                    - HOME_INSIDE_DISTANCE,
-                0
-            )
-
-        local stagingWorld =
-            hitbox.CFrame:
-            PointToWorldSpace(
-                stagingLocal
-            )
-
-        local insideWorld =
-            hitbox.CFrame:
-            PointToWorldSpace(
-                insideLocal
-            )
-
-        return
-            Vector3.new(
-                stagingWorld.X,
-                fromPosition.Y,
-                stagingWorld.Z
-            ),
-            Vector3.new(
-                insideWorld.X,
-                fromPosition.Y,
-                insideWorld.Z
-            )
+        -- Go straight to the CENTER of the owned safe-zone hitbox.
+        -- No staging point, no plot-edge calculation, no map-interior detour.
+        return Vector3.new(
+            hitbox.Position.X,
+            fromPosition.Y,
+            hitbox.Position.Z
+        )
     end
 
     local function walkHome(isBanked)
-        local hitbox = getOwnedPlotHitbox()
+        local hitbox =
+            getOwnedPlotHitbox()
+
         if not hitbox then
-            warn("[CHLISE HUB] Owned plot hitbox not found.")
+            warn(
+                "[CHLISE HUB] Owned safe-zone hitbox not found."
+            )
             return "failed"
         end
 
         local function bankedNow()
-            return type(isBanked) == "function" and isBanked() == true
-        end
-        local function inOwnedPlot()
-            local _, _, hrp = getCharacter()
-            return SafeZoneQuery.IsPositionInOwnedPlot(LocalPlayer.UserId, hrp.Position)
-        end
-        local function interrupted()
-            return bankedNow() or not isCarrying()
-        end
-        local _, _, hrp = getCharacter()
-        local stagingPosition, insidePosition = getHomeEntryPoints(hitbox, hrp.Position)
-        if not inOwnedPlot() then
-            -- End CFrame travel outside the plot, then cross using normal physics.
-            local reached
-            if movementMode == "Tween" then
-                reached = tweenTo(stagingPosition, 1, 60, interrupted)
-            elseif movementMode == "Teleport" then
-                reached = teleportTo(stagingPosition, 1, interrupted, 60)
-            else
-                reached = walkTo(stagingPosition, 1, 60, interrupted)
-            end
-            if not reached and isCarrying() and not bankedNow() then return "failed" end
+            return
+                type(isBanked) == "function"
+                and isBanked() == true
         end
 
-        local deadline = os.clock() + HOME_CONFIRM_TIMEOUT
+        local function inOwnedPlot()
+            local _, _, hrp =
+                getCharacter()
+
+            return
+                SafeZoneQuery.
+                IsPositionInOwnedPlot(
+                    LocalPlayer.UserId,
+                    hrp.Position
+                )
+        end
+
+        local function interrupted()
+            return
+                bankedNow()
+                or not isCarrying()
+        end
+
+        local _, _, hrp =
+            getCharacter()
+
+        local centerPosition =
+            getSafeZoneCenterPosition(
+                hitbox,
+                hrp.Position
+            )
+
+        -- If already inside the safe zone, stop immediately and let
+        -- the normal bank event finish. Do not walk deeper into the plot.
+        if inOwnedPlot() then
+            stopMoving()
+        else
+            local reached = false
+
+            if movementMode == "Tween" then
+                reached =
+                    tweenTo(
+                        centerPosition,
+                        2,
+                        60,
+                        interrupted
+                    )
+
+            elseif movementMode == "Teleport" then
+                reached =
+                    teleportTo(
+                        centerPosition,
+                        2,
+                        interrupted,
+                        60
+                    )
+
+            else
+                -- Walk in one straight direction toward the safe-zone center.
+                -- We keep the final speed cap only to prevent very high speed
+                -- from skipping through the whole safe zone in one frame.
+                reached =
+                    walkTo(
+                        centerPosition,
+                        2,
+                        60,
+                        interrupted,
+                        HOME_ENTRY_SPEED
+                    )
+            end
+
+            if not reached
+                and isCarrying()
+                and not bankedNow()
+                and not inOwnedPlot()
+            then
+                return "failed"
+            end
+        end
+
+        local deadline =
+            os.clock()
+            + HOME_CONFIRM_TIMEOUT
+
         local carryMissingSince
-        while autoFarmActive and os.clock() < deadline do
+
+        while autoFarmActive
+            and os.clock() < deadline
+        do
             if bankedNow() then
                 stopMoving()
                 return "banked"
             end
-            local owned = inOwnedPlot()
+
+            local owned =
+                inOwnedPlot()
+
             if not isCarrying() then
                 stopMoving()
-                if not owned then return "dropped" end
-                carryMissingSince = carryMissingSince or os.clock()
-                if os.clock() - carryMissingSince >= BANK_GRACE_SECONDS then
+
+                if not owned then
                     return "dropped"
                 end
+
+                carryMissingSince =
+                    carryMissingSince
+                    or os.clock()
+
+                if os.clock()
+                    - carryMissingSince
+                    >= BANK_GRACE_SECONDS
+                then
+                    return "dropped"
+                end
+
             else
                 carryMissingSince = nil
-                if not owned then
-                    -- Fast WalkSpeed can skip a whole plot in one frame.
-                    -- Cap just this crossing and restore the latest game speed.
-                    walkTo(insidePosition, 0.75, math.min(3, deadline - os.clock()),
-                        function() return interrupted() or inOwnedPlot() end,
-                        HOME_ENTRY_SPEED)
-                else
+
+                if owned then
+                    -- Already in the safe zone. Do not keep steering toward
+                    -- the plot/center; stand still and wait for bank.
                     stopMoving()
+                else
+                    -- If knocked back out, simply head straight to the
+                    -- safe-zone center again.
+                    local _, _, currentHRP =
+                        getCharacter()
+
+                    local retryCenter =
+                        getSafeZoneCenterPosition(
+                            hitbox,
+                            currentHRP.Position
+                        )
+
+                    walkTo(
+                        retryCenter,
+                        2,
+                        math.min(
+                            4,
+                            math.max(
+                                0.1,
+                                deadline
+                                    - os.clock()
+                            )
+                        ),
+                        interrupted,
+                        HOME_ENTRY_SPEED
+                    )
                 end
             end
-            task.wait(HOME_RETRY_WAIT)
+
+            task.wait(
+                HOME_RETRY_WAIT
+            )
         end
+
         stopMoving()
-        -- Arrival alone is not evidence that the server banked the pet.
-        return bankedNow() and "banked" or "failed"
+
+        return
+            bankedNow()
+            and "banked"
+            or "failed"
     end
 
     -- Pickaxe
