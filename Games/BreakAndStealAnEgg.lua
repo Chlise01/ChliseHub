@@ -1,2466 +1,1005 @@
--- ============================================================
--- CHLISE HUB
--- Games/BreakAndStealAnEgg.lua
---
--- GameId  : 10765288803
--- PlaceId : 114326934417838
--- ============================================================
+-- Chlise Hub - Games/BreakAndStealAnEgg.lua
+-- GameId: 10765288803
+-- PlaceId: 114326934417838
 
 return function(Context)
-
-    -- ========================================================
-    -- CORE
-    -- ========================================================
-
-    local Window =
-        Context.Window
-
-    local Runtime =
-        Context.Runtime
+    local Window = Context.Window
+    local Runtime = Context.Runtime
 
     if not Window then
         warn("[CHLISE HUB] Window not initialized.")
         return
     end
 
+    -- Services
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local Workspace = game:GetService("Workspace")
+    local ProximityPromptService = game:GetService("ProximityPromptService")
 
-    -- ========================================================
-    -- SERVICES
-    -- ========================================================
+    local LocalPlayer = Players.LocalPlayer
 
-    local Players =
-        game:GetService("Players")
+    -- Shared modules
+    local Shared = ReplicatedStorage:WaitForChild("Shared")
+    local SafeZoneQuery = require(Shared:WaitForChild("SafeZoneQuery"))
+    local ZonesConfig = require(Shared:WaitForChild("ZonesConfig"))
+    local ChaseState = require(Shared:WaitForChild("ChaseState"))
 
-    local ReplicatedStorage =
-        game:GetService("ReplicatedStorage")
+    -- Game objects
+    local EggHitRequest = ReplicatedStorage:WaitForChild("EggHitRequest")
+    local AnimalBankedRemote = ReplicatedStorage:WaitForChild("AnimalBankedRemote")
 
-    local Workspace =
-        game:GetService("Workspace")
+    local Build = Workspace:WaitForChild(ZonesConfig.BuildFolderName or "Build")
+    local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
+    local Pickups = Workspace:WaitForChild("AnimalPickups")
+    local PromptAnchor = Workspace:WaitForChild("PromptAnchor")
+    local GlobalPrompt = PromptAnchor:WaitForChild("StealPrompt")
 
-    local ProximityPromptService =
-        game:GetService("ProximityPromptService")
+    -- Tunables
+    local HIT_DISTANCE = 7
+    local EGG_APPROACH_DISTANCE = 4
+    local HIT_DELAY = 0.52
 
+    local PICKUP_SPAWN_TIMEOUT = 8
+    local MAX_PICKUP_SPAWN_DISTANCE = 15
 
-    local LocalPlayer =
-        Players.LocalPlayer
+    local PET_APPROACH_DISTANCE = 3
+    local PROMPT_TIMEOUT = 7
+    local CARRY_TIMEOUT = 3
+    local BANK_TIMEOUT = 8
 
+    local MOVE_REFRESH = 0.15
+    local MOVE_STUCK_SECONDS = 2
+    local MOVE_STUCK_STUDS = 0.75
 
-    -- ========================================================
-    -- GAME OBJECTS
-    -- ========================================================
+    -- State
+    local autoFarmActive = false
+    local farmLoopRunning = false
+    local debugEnabled = false
 
-    local EggHitRequest =
-        ReplicatedStorage:
-        WaitForChild("EggHitRequest")
+    local selectedZones = {}
+    local selectedEggs = {}
+    local minimumPetWeight = 0
 
-
-    local AnimalBankedRemote =
-        ReplicatedStorage:
-        WaitForChild("AnimalBankedRemote")
-
-
-    local Build =
-        Workspace:
-        WaitForChild("Build")
-
-
-    local ZoneBuilds =
-        Build:
-        WaitForChild("ZoneBuilds")
-
-
-    local Pickups =
-        Workspace:
-        WaitForChild("AnimalPickups")
-
-
-    local CarriedAnimals =
-        Workspace:
-        WaitForChild("CarriedAnimals")
-
-
-    local PromptAnchor =
-        Workspace:
-        WaitForChild("PromptAnchor")
-
-
-    local GlobalPrompt =
-        PromptAnchor:
-        WaitForChild("StealPrompt")
-
-
-    -- ========================================================
-    -- SETTINGS
-    -- ========================================================
-
-    local HIT_DISTANCE =
-        7
-
-    local EGG_TP_DISTANCE =
-        4
-
-    local HIT_DELAY =
-        0.52
-
-
-    local PICKUP_SPAWN_TIMEOUT =
-        8
-
-    local MAX_PICKUP_SPAWN_DISTANCE =
-        15
-
-
-    local PICKUP_TP_DISTANCE =
-        3
-
-    local PROMPT_TIMEOUT =
-        7
-
-
-    local CARRY_TIMEOUT =
-        2.5
-
-    local BANK_TIMEOUT =
-        5
-
-
-    -- ========================================================
-    -- STATE
-    -- ========================================================
-
-    local autoFarmActive =
-        false
-
-    local farmLoopRunning =
-        false
-
-    local debugEnabled =
-        false
-
-
-    local selectedZones =
-        {}
-
-    local selectedEggs =
-        {}
-
-    local minimumPetWeight =
-        0
-
-
-    -- ========================================================
-    -- RUNTIME STATE
-    -- ========================================================
-
-    local RuntimeState =
-        Runtime
-        and Runtime:GetState()
-        or {}
-
-
-    RuntimeState.BreakAndSteal =
-        type(
-            RuntimeState.BreakAndSteal
-        ) == "table"
-        and RuntimeState.BreakAndSteal
-        or {}
-
-
-    local FarmState =
-        RuntimeState.BreakAndSteal
-
-
-    -- Fallback yang sebelumnya sudah terbukti work.
-    -- Bisa diganti via tombol "Set Home Position".
-    local homeCFrame =
-        FarmState.HomeCFrame
-        or CFrame.new(
-            -74.349571,
-            3.498024,
-            -3.833112
-        )
-
-
-    -- ========================================================
-    -- LOG
-    -- ========================================================
-
-    local function Log(...)
-
+    local function log(...)
         if debugEnabled then
-
-            print(
-                "[CHLISE HUB][BREAK & STEAL]",
-                ...
-            )
-
+            print("[CHLISE HUB][BREAK & STEAL]", ...)
         end
-
     end
 
-
-    -- ========================================================
-    -- CHARACTER
-    -- ========================================================
-
-    local function GetCharacter()
-
-        local character =
-            LocalPlayer.Character
-            or LocalPlayer.CharacterAdded:Wait()
-
-
-        local hrp =
-            character:
-            WaitForChild(
-                "HumanoidRootPart"
-            )
-
-
-        return
-            character,
-            hrp
-
+    local function getCharacter()
+        local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        local humanoid = character:WaitForChild("Humanoid")
+        local hrp = character:WaitForChild("HumanoidRootPart")
+        return character, humanoid, hrp
     end
 
-
-    -- ========================================================
-    -- SELECTION HELPERS
-    -- ========================================================
-
-    local function SelectionEmpty(
-        selection
-    )
-
-        if type(selection)
-            ~= "table"
-        then
+    -- Selection helpers
+    local function selectionEmpty(selection)
+        if type(selection) ~= "table" then
             return true
         end
 
-
-        for key,
-            value
-            in pairs(selection)
-        do
-
+        for key, value in pairs(selection) do
             if value == true then
                 return false
             end
 
-
-            if type(key)
-                    == "number"
-                and type(value)
-                    == "string"
-            then
-
+            if type(key) == "number" and type(value) == "string" then
                 return false
-
             end
-
         end
-
 
         return true
-
     end
 
-
-    local function IsSelected(
-        selection,
-        wanted
-    )
-
-        if SelectionEmpty(
-            selection
-        ) then
+    local function isSelected(selection, wanted)
+        if selectionEmpty(selection) then
             return true
         end
 
-
-        if selection[wanted]
-            == true
-        then
+        if selection[wanted] == true then
             return true
         end
 
-
-        for key,
-            value
-            in pairs(selection)
-        do
-
-            if value == wanted then
+        for key, value in pairs(selection) do
+            if value == wanted or (key == wanted and value == true) then
                 return true
             end
-
-
-            if key == wanted
-                and value == true
-            then
-                return true
-            end
-
         end
-
 
         return false
-
     end
 
-
-    -- ========================================================
-    -- ZONE
-    -- ========================================================
-
-    local function NormalizeZone(
-        value
-    )
-
-        if typeof(value)
-            == "number"
-        then
-
-            return
-                "Zone"
-                .. tostring(value)
-
+    local function normalizeZone(value)
+        if typeof(value) == "number" then
+            return "Zone" .. tostring(value)
         end
 
-
-        if typeof(value)
-            == "string"
-        then
-
-            local number =
-                value:
-                match("%d+")
-
-
+        if typeof(value) == "string" then
+            local number = value:match("%d+")
             if number then
-
-                return
-                    "Zone"
-                    .. number
-
+                return "Zone" .. number
             end
-
         end
-
 
         return nil
-
     end
 
+    -- Zones are taken directly from the game's config.
+    local MASTER_ZONES = {}
 
-    local MASTER_ZONES = {
-        "Zone1",
-        "Zone2",
-        "Zone3",
-        "Zone4",
-        "Zone5",
-        "Zone6",
-        "Zone7",
-        "Zone8",
-        "Zone9"
-    }
+    for _, info in ipairs(ZonesConfig.Zones or {}) do
+        if type(info) == "table" and type(info.Id) == "string" then
+            table.insert(MASTER_ZONES, info.Id)
+        end
+    end
 
+    if #MASTER_ZONES == 0 then
+        for i = 1, 9 do
+            table.insert(MASTER_ZONES, "Zone" .. tostring(i))
+        end
+    end
 
-    -- ========================================================
-    -- EGG HELPERS
-    -- ========================================================
+    -- Owned plot / home
+    local function getOwnedPlotHitbox()
+        local hitbox = SafeZoneQuery.GetOwnedPlotHitbox(LocalPlayer.UserId)
 
-    local function ResolveEgg(
-        container
-    )
-
-        if container:IsA(
-                "BasePart"
-            )
-            and typeof(
-                container:
-                GetAttribute(
-                    "Health"
-                )
-            ) == "number"
-        then
-
-            return container
-
+        if hitbox and hitbox.Parent and hitbox:IsA("BasePart") then
+            return hitbox
         end
 
+        return nil
+    end
 
-        local direct =
-            container:
-            FindFirstChild(
-                "Egg"
-            )
+    local function isBankablePosition(position)
+        local ok, result = pcall(function()
+            return SafeZoneQuery.IsBankable(LocalPlayer.UserId, position)
+        end)
 
+        return ok and result == true
+    end
 
-        if direct
-            and direct:IsA(
-                "BasePart"
-            )
-            and typeof(
-                direct:
-                GetAttribute(
-                    "Health"
-                )
-            ) == "number"
-        then
+    -- Normal character movement.
+    -- This intentionally does NOT raw-CFrame teleport long distances.
+    local function stopMoving()
+        local _, humanoid, hrp = getCharacter()
+        humanoid:MoveTo(hrp.Position)
+    end
 
-            return direct
+    local function walkTo(targetPosition, stopDistance, timeout, extraCheck)
+        stopDistance = tonumber(stopDistance) or 3
+        timeout = tonumber(timeout) or 30
 
-        end
+        local _, humanoid, hrp = getCharacter()
+        local deadline = os.clock() + timeout
 
+        local lastProgressPosition = hrp.Position
+        local lastProgressTime = os.clock()
 
-        for _,
-            object
-            in ipairs(
-                container:
-                GetDescendants()
-            )
+        while autoFarmActive
+            and hrp.Parent
+            and humanoid.Health > 0
+            and os.clock() < deadline
         do
-
-            if object:IsA(
-                    "BasePart"
-                )
-                and object.Name
-                    == "Egg"
-                and typeof(
-                    object:
-                    GetAttribute(
-                        "Health"
-                    )
-                ) == "number"
-            then
-
-                return object
-
+            if type(extraCheck) == "function" and extraCheck() then
+                stopMoving()
+                return true
             end
 
+            local distance = (hrp.Position - targetPosition).Magnitude
+
+            if distance <= stopDistance then
+                stopMoving()
+                return true
+            end
+
+            humanoid:MoveTo(targetPosition)
+
+            if (hrp.Position - lastProgressPosition).Magnitude >= MOVE_STUCK_STUDS then
+                lastProgressPosition = hrp.Position
+                lastProgressTime = os.clock()
+            elseif os.clock() - lastProgressTime >= MOVE_STUCK_SECONDS then
+                humanoid.Jump = true
+                lastProgressPosition = hrp.Position
+                lastProgressTime = os.clock()
+            end
+
+            task.wait(MOVE_REFRESH)
         end
 
+        stopMoving()
 
-        return nil
+        if type(extraCheck) == "function" and extraCheck() then
+            return true
+        end
 
+        return (hrp.Position - targetPosition).Magnitude <= stopDistance
     end
 
+    local function getApproachPosition(targetPosition, desiredDistance)
+        local _, _, hrp = getCharacter()
 
-    local function GetEggName(
-        egg
-    )
+        local direction = hrp.Position - targetPosition
+        direction = Vector3.new(direction.X, 0, direction.Z)
 
-        local eggType =
-            egg:
-            GetAttribute(
-                "EggType"
-            )
-
-
-        if typeof(eggType)
-                == "string"
-            and eggType
-                ~= ""
-        then
-
-            return eggType
-
+        if direction.Magnitude < 0.1 then
+            direction = Vector3.new(0, 0, 1)
+        else
+            direction = direction.Unit
         end
 
+        local result = targetPosition + direction * desiredDistance
 
-        local parent =
-            egg.Parent
-
-
-        if parent then
-
-            return parent.Name:
-                gsub(
-                    "^%d+:%s*",
-                    ""
-                )
-
-        end
-
-
-        return egg.Name
-
+        return Vector3.new(
+            result.X,
+            hrp.Position.Y,
+            result.Z
+        )
     end
 
+    local function walkNear(targetPosition, desiredDistance, timeout)
+        local approachPosition = getApproachPosition(targetPosition, desiredDistance)
+        return walkTo(approachPosition, 2, timeout)
+    end
 
-    local function ValidEgg(
-        egg
-    )
+    local function walkHome()
+        local hitbox = getOwnedPlotHitbox()
 
-        if not egg
-            or not egg.Parent
-        then
+        if not hitbox then
+            warn("[CHLISE HUB] Owned plot hitbox not found.")
             return false
         end
 
+        local _, _, hrp = getCharacter()
 
-        local health =
-            egg:
-            GetAttribute(
-                "Health"
-            )
+        local targetPosition = Vector3.new(
+            hitbox.Position.X,
+            hrp.Position.Y,
+            hitbox.Position.Z
+        )
 
+        log("Returning home:", hitbox:GetFullName())
 
-        return
-            typeof(health)
-                == "number"
-            and health > 0
-            and egg:
-                GetAttribute(
-                    "Hatching"
-                ) ~= true
-            and egg:
-                GetAttribute(
-                    "Broken"
-                ) ~= true
-
-    end
-
-
-    -- ========================================================
-    -- MASTER EGG LIST
-    -- ========================================================
-
-    local function BuildEggList()
-
-        local found = {}
-        local result = {}
-
-
-        for _,
-            zoneName
-            in ipairs(
-                MASTER_ZONES
-            )
-        do
-
-            local zone =
-                ZoneBuilds:
-                FindFirstChild(
-                    zoneName
-                )
-
-
-            local eggs =
-                zone
-                and zone:
-                    FindFirstChild(
-                        "Eggs"
-                    )
-
-
-            if eggs then
-
-                for _,
-                    container
-                    in ipairs(
-                        eggs:
-                        GetChildren()
-                    )
-                do
-
-                    local egg =
-                        ResolveEgg(
-                            container
-                        )
-
-
-                    if egg then
-
-                        local name =
-                            GetEggName(
-                                egg
-                            )
-
-
-                        if not found[name] then
-
-                            found[name] =
-                                true
-
-
-                            table.insert(
-                                result,
-                                name
-                            )
-
-                        end
-
-                    end
-
-                end
-
+        walkTo(
+            targetPosition,
+            2.5,
+            60,
+            function()
+                local _, _, currentHRP = getCharacter()
+                return isBankablePosition(currentHRP.Position)
             end
-
-        end
-
-
-        table.sort(
-            result
         )
 
+        local _, _, currentHRP = getCharacter()
+        local bankable = isBankablePosition(currentHRP.Position)
 
-        return result
+        log("Home bankable:", bankable)
 
+        return bankable
     end
 
+    -- Pickaxe
+    local function ensurePickaxe()
+        local character, humanoid = getCharacter()
 
-    local MASTER_EGGS =
-        BuildEggList()
+        local equipped = character:FindFirstChild("Pickaxe")
 
-
-    -- ========================================================
-    -- TELEPORT
-    -- ========================================================
-
-    local function TeleportNear(
-        position,
-        distance
-    )
-
-        local _,
-            hrp =
-            GetCharacter()
-
-
-        local direction =
-            hrp.Position
-            - position
-
-
-        direction =
-            Vector3.new(
-                direction.X,
-                0,
-                direction.Z
-            )
-
-
-        if direction.Magnitude
-            < 0.1
-        then
-
-            direction =
-                Vector3.new(
-                    0,
-                    0,
-                    1
-                )
-
-        else
-
-            direction =
-                direction.Unit
-
-        end
-
-
-        local targetPosition =
-            position
-            + direction
-                * distance
-            + Vector3.new(
-                0,
-                2,
-                0
-            )
-
-
-        hrp.AssemblyLinearVelocity =
-            Vector3.zero
-
-
-        hrp.AssemblyAngularVelocity =
-            Vector3.zero
-
-
-        hrp.CFrame =
-            CFrame.lookAt(
-                targetPosition,
-
-                Vector3.new(
-                    position.X,
-                    targetPosition.Y,
-                    position.Z
-                )
-            )
-
-
-        return hrp
-
-    end
-
-
-    local function TeleportHome()
-
-        local _,
-            hrp =
-            GetCharacter()
-
-
-        hrp.AssemblyLinearVelocity =
-            Vector3.zero
-
-
-        hrp.AssemblyAngularVelocity =
-            Vector3.zero
-
-
-        hrp.CFrame =
-            homeCFrame
-
-    end
-
-
-    -- ========================================================
-    -- PICKAXE
-    -- ========================================================
-
-    local function EnsurePickaxe()
-
-        local character =
-            LocalPlayer.Character
-            or LocalPlayer.CharacterAdded:Wait()
-
-
-        local humanoid =
-            character:
-            FindFirstChildOfClass(
-                "Humanoid"
-            )
-
-
-        if not humanoid then
-            return nil
-        end
-
-
-        local equipped =
-            character:
-            FindFirstChild(
-                "Pickaxe"
-            )
-
-
-        if equipped
-            and equipped:IsA(
-                "Tool"
-            )
-        then
-
+        if equipped and equipped:IsA("Tool") then
             return equipped
-
         end
 
+        local backpack = LocalPlayer:WaitForChild("Backpack")
+        local pickaxe = backpack:FindFirstChild("Pickaxe")
 
-        local backpack =
-            LocalPlayer:
-            WaitForChild(
-                "Backpack"
-            )
-
-
-        local pickaxe =
-            backpack:
-            FindFirstChild(
-                "Pickaxe"
-            )
-
-
-        if not pickaxe
-            or not pickaxe:IsA(
-                "Tool"
-            )
-        then
-
-            warn(
-                "[CHLISE HUB] Pickaxe not found."
-            )
-
+        if not pickaxe or not pickaxe:IsA("Tool") then
+            warn("[CHLISE HUB] Pickaxe not found.")
             return nil
-
         end
 
+        humanoid:EquipTool(pickaxe)
 
-        humanoid:
-        EquipTool(
-            pickaxe
-        )
+        local deadline = os.clock() + 2
 
-
-        local deadline =
-            os.clock()
-            + 2
-
-
-        while autoFarmActive
-            and os.clock()
-                < deadline
-        do
-
-            if pickaxe.Parent
-                == character
-            then
-
-                Log(
+        while autoFarmActive and os.clock() < deadline do
+            if pickaxe.Parent == character then
+                log(
                     "Pickaxe equipped",
                     "| Tier:",
-                    LocalPlayer:
-                    GetAttribute(
-                        "PickaxeTier"
-                    )
-                    or 1
+                    LocalPlayer:GetAttribute("PickaxeTier") or 1
                 )
-
-
                 return pickaxe
-
             end
 
-
-            task.wait(
-                0.02
-            )
-
+            task.wait(0.02)
         end
 
-
         return nil
-
     end
 
-
-    local function UsePickaxe()
-
-        local pickaxe =
-            EnsurePickaxe()
-
+    local function usePickaxe()
+        local pickaxe = ensurePickaxe()
 
         if not pickaxe then
             return false
         end
 
-
         pcall(function()
-
-            pickaxe:
-            Activate()
-
+            pickaxe:Activate()
         end)
 
-
-        task.wait(
-            0.08
-        )
-
+        task.wait(0.08)
 
         return true
-
     end
 
+    -- Egg helpers
+    local function resolveEgg(container)
+        if container:IsA("BasePart")
+            and typeof(container:GetAttribute("Health")) == "number"
+        then
+            return container
+        end
 
-    -- ========================================================
-    -- FIND EGG
-    -- ========================================================
+        local direct = container:FindFirstChild(ZonesConfig.EggName or "Egg")
 
-    local function FindBestEgg()
+        if direct
+            and direct:IsA("BasePart")
+            and typeof(direct:GetAttribute("Health")) == "number"
+        then
+            return direct
+        end
 
-        local _,
-            hrp =
-            GetCharacter()
-
-
-        local bestEgg =
-            nil
-
-        local bestZone =
-            nil
-
-        local bestDistance =
-            math.huge
-
-
-        for _,
-            zoneName
-            in ipairs(
-                MASTER_ZONES
-            )
-        do
-
-            if IsSelected(
-                selectedZones,
-                zoneName
-            )
+        for _, object in ipairs(container:GetDescendants()) do
+            if object:IsA("BasePart")
+                and object.Name == (ZonesConfig.EggName or "Egg")
+                and typeof(object:GetAttribute("Health")) == "number"
             then
-
-                local zone =
-                    ZoneBuilds:
-                    FindFirstChild(
-                        zoneName
-                    )
-
-
-                local eggs =
-                    zone
-                    and zone:
-                        FindFirstChild(
-                            "Eggs"
-                        )
-
-
-                if eggs then
-
-                    for _,
-                        container
-                        in ipairs(
-                            eggs:
-                            GetChildren()
-                        )
-                    do
-
-                        local egg =
-                            ResolveEgg(
-                                container
-                            )
-
-
-                        if ValidEgg(
-                            egg
-                        )
-                        then
-
-                            local eggName =
-                                GetEggName(
-                                    egg
-                                )
-
-
-                            if IsSelected(
-                                selectedEggs,
-                                eggName
-                            )
-                            then
-
-                                local distance =
-                                    (
-                                        hrp.Position
-                                        - egg.Position
-                                    ).Magnitude
-
-
-                                if distance
-                                    < bestDistance
-                                then
-
-                                    bestEgg =
-                                        egg
-
-                                    bestZone =
-                                        zoneName
-
-                                    bestDistance =
-                                        distance
-
-                                end
-
-                            end
-
-                        end
-
-                    end
-
-                end
-
+                return object
             end
-
         end
-
-
-        return
-            bestEgg,
-            bestZone,
-            bestDistance
-
-    end
-
-
-    -- ========================================================
-    -- PICKUP SNAPSHOT
-    -- ========================================================
-
-    local function SnapshotPickups()
-
-        local snapshot = {}
-
-
-        for _,
-            animal
-            in ipairs(
-                Pickups:
-                GetChildren()
-            )
-        do
-
-            snapshot[animal] =
-                true
-
-        end
-
-
-        return snapshot
-
-    end
-
-
-    -- ========================================================
-    -- WAIT RESULT PET
-    -- ========================================================
-
-    local function WaitResultPet(
-        before,
-        zoneName,
-        eggPosition
-    )
-
-        local deadline =
-            os.clock()
-            + PICKUP_SPAWN_TIMEOUT
-
-
-        while autoFarmActive
-            and os.clock()
-                < deadline
-        do
-
-            local best =
-                nil
-
-            local bestDistance =
-                math.huge
-
-
-            for _,
-                animal
-                in ipairs(
-                    Pickups:
-                    GetChildren()
-                )
-            do
-
-                if not before[animal]
-                    and animal:IsA(
-                        "Model"
-                    )
-                then
-
-                    local hatched =
-                        animal:
-                        GetAttribute(
-                            "Hatched"
-                        )
-
-
-                    local animalZone =
-                        NormalizeZone(
-                            animal:
-                            GetAttribute(
-                                "ZoneId"
-                            )
-                        )
-
-
-                    if hatched == true
-                        and (
-                            not animalZone
-                            or animalZone
-                                == zoneName
-                        )
-                    then
-
-                        local position =
-                            animal:
-                            GetPivot().
-                            Position
-
-
-                        local distance =
-                            (
-                                position
-                                - eggPosition
-                            ).Magnitude
-
-
-                        if distance
-                                <= MAX_PICKUP_SPAWN_DISTANCE
-                            and distance
-                                < bestDistance
-                        then
-
-                            best =
-                                animal
-
-                            bestDistance =
-                                distance
-
-                        end
-
-                    end
-
-                end
-
-            end
-
-
-            if best then
-
-                Log(
-                    "Result pet:",
-                    best:
-                    GetAttribute(
-                        "AnimalName"
-                    )
-                    or best.Name,
-
-                    "| Distance:",
-                    string.format(
-                        "%.2f",
-                        bestDistance
-                    )
-                )
-
-
-                task.wait(
-                    0.15
-                )
-
-
-                return best
-
-            end
-
-
-            task.wait(
-                0.04
-            )
-
-        end
-
 
         return nil
-
     end
 
+    local function getEggName(egg)
+        local eggType = egg:GetAttribute("EggType")
 
-    -- ========================================================
-    -- BREAK EGG
-    -- ========================================================
+        if typeof(eggType) == "string" and eggType ~= "" then
+            return eggType
+        end
 
-    local function BreakEgg(
-        egg,
-        zoneName
-    )
+        if egg.Parent then
+            return egg.Parent.Name:gsub("^%d+:%s*", "")
+        end
 
-        if not ValidEgg(
-            egg
-        )
-        then
+        return egg.Name
+    end
+
+    local function validEgg(egg)
+        if not egg or not egg.Parent then
+            return false
+        end
+
+        local health = egg:GetAttribute("Health")
+
+        return typeof(health) == "number"
+            and health > 0
+            and egg:GetAttribute("Hatching") ~= true
+            and egg:GetAttribute("Broken") ~= true
+    end
+
+    local function buildEggList()
+        local found = {}
+        local result = {}
+
+        for _, zoneName in ipairs(MASTER_ZONES) do
+            local zone = ZoneBuilds:FindFirstChild(zoneName)
+            local eggs = zone and zone:FindFirstChild("Eggs")
+
+            if eggs then
+                for _, container in ipairs(eggs:GetChildren()) do
+                    local egg = resolveEgg(container)
+
+                    if egg then
+                        local name = getEggName(egg)
+
+                        if not found[name] then
+                            found[name] = true
+                            table.insert(result, name)
+                        end
+                    end
+                end
+            end
+        end
+
+        table.sort(result)
+
+        return result
+    end
+
+    local MASTER_EGGS = buildEggList()
+
+    local function findBestEgg()
+        local _, _, hrp = getCharacter()
+
+        local bestEgg
+        local bestZone
+        local bestDistance = math.huge
+
+        for _, zoneName in ipairs(MASTER_ZONES) do
+            if isSelected(selectedZones, zoneName) then
+                local zone = ZoneBuilds:FindFirstChild(zoneName)
+                local eggs = zone and zone:FindFirstChild("Eggs")
+
+                if eggs then
+                    for _, container in ipairs(eggs:GetChildren()) do
+                        local egg = resolveEgg(container)
+
+                        if validEgg(egg) then
+                            local eggName = getEggName(egg)
+
+                            if isSelected(selectedEggs, eggName) then
+                                local distance = (hrp.Position - egg.Position).Magnitude
+
+                                if distance < bestDistance then
+                                    bestEgg = egg
+                                    bestZone = zoneName
+                                    bestDistance = distance
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        return bestEgg, bestZone, bestDistance
+    end
+
+    -- Result pet
+    local function snapshotPickups()
+        local snapshot = {}
+
+        for _, animal in ipairs(Pickups:GetChildren()) do
+            snapshot[animal] = true
+        end
+
+        return snapshot
+    end
+
+    local function waitResultPet(before, zoneName, eggPosition)
+        local deadline = os.clock() + PICKUP_SPAWN_TIMEOUT
+
+        while autoFarmActive and os.clock() < deadline do
+            local best
+            local bestDistance = math.huge
+
+            for _, animal in ipairs(Pickups:GetChildren()) do
+                if not before[animal] and animal:IsA("Model") then
+                    local hatched = animal:GetAttribute("Hatched")
+                    local animalZone = normalizeZone(animal:GetAttribute("ZoneId"))
+
+                    if hatched == true
+                        and (not animalZone or animalZone == zoneName)
+                    then
+                        local position = animal:GetPivot().Position
+                        local distance = (position - eggPosition).Magnitude
+
+                        if distance <= MAX_PICKUP_SPAWN_DISTANCE
+                            and distance < bestDistance
+                        then
+                            best = animal
+                            bestDistance = distance
+                        end
+                    end
+                end
+            end
+
+            if best then
+                log(
+                    "Result pet:",
+                    best:GetAttribute("AnimalName") or best.Name,
+                    "| SpawnDist:",
+                    string.format("%.2f", bestDistance)
+                )
+
+                task.wait(0.15)
+
+                return best
+            end
+
+            task.wait(0.04)
+        end
+
+        return nil
+    end
+
+    local function breakEgg(egg, zoneName)
+        if not validEgg(egg) then
             return nil
         end
 
-
-        if not EnsurePickaxe() then
+        if not ensurePickaxe() then
             return nil
         end
 
+        local before = snapshotPickups()
+        local eggPosition = egg.Position
 
-        local before =
-            SnapshotPickups()
+        local _, _, hrp = getCharacter()
+        local distance = (hrp.Position - eggPosition).Magnitude
 
-
-        local eggPosition =
-            egg.Position
-
-
-        local _,
-            hrp =
-            GetCharacter()
-
-
-        local distance =
-            (
-                hrp.Position
-                - eggPosition
-            ).Magnitude
-
-
-        Log(
+        log(
             "Target:",
-            GetEggName(egg),
-
+            getEggName(egg),
             "| HP:",
-            egg:
-            GetAttribute(
-                "Health"
-            ),
-
+            egg:GetAttribute("Health"),
             "| Zone:",
             zoneName,
-
             "| Distance:",
-            string.format(
-                "%.2f",
-                distance
-            )
+            string.format("%.2f", distance)
         )
 
-
-        if distance
-            > HIT_DISTANCE
-        then
-
-            TeleportNear(
-                eggPosition,
-                EGG_TP_DISTANCE
-            )
-
-
-            task.wait(
-                0.08
-            )
-
+        if distance > HIT_DISTANCE then
+            if not walkNear(eggPosition, EGG_APPROACH_DISTANCE, 45) then
+                log("Failed to reach egg.")
+                return nil
+            end
         end
 
-
-        if not UsePickaxe() then
+        if not usePickaxe() then
             return nil
         end
 
+        while autoFarmActive and validEgg(egg) do
+            local _, _, currentHRP = getCharacter()
+            local currentDistance = (currentHRP.Position - egg.Position).Magnitude
 
-        while autoFarmActive
-            and ValidEgg(
-                egg
-            )
-        do
-
-            if not EnsurePickaxe() then
-                return nil
+            if currentDistance > HIT_DISTANCE then
+                if not walkNear(egg.Position, EGG_APPROACH_DISTANCE, 20) then
+                    return nil
+                end
             end
 
+            local tier = LocalPlayer:GetAttribute("PickaxeTier") or 1
 
-            local _,
-                currentHRP =
-                GetCharacter()
-
-
-            local currentDistance =
-                (
-                    currentHRP.Position
-                    - egg.Position
-                ).Magnitude
-
-
-            if currentDistance
-                > HIT_DISTANCE
-            then
-
-                TeleportNear(
-                    egg.Position,
-                    EGG_TP_DISTANCE
-                )
-
-
-                task.wait(
-                    0.05
-                )
-
-            end
-
-
-            local tier =
-                LocalPlayer:
-                GetAttribute(
-                    "PickaxeTier"
-                )
-                or 1
-
-
-            EggHitRequest:
-            FireServer(
+            EggHitRequest:FireServer(
                 egg,
                 tier
             )
 
-
-            Log(
+            log(
                 "Hit",
                 "| Tier:",
                 tier,
-
                 "| HP:",
-                egg:
-                GetAttribute(
-                    "Health"
-                )
+                egg:GetAttribute("Health")
             )
 
-
-            task.wait(
-                HIT_DELAY
-            )
-
+            task.wait(HIT_DELAY)
         end
-
 
         if not autoFarmActive then
             return nil
         end
 
+        log("Egg done:", getEggName(egg))
 
-        Log(
-            "Egg done:",
-            GetEggName(
-                egg
-            )
+        return waitResultPet(
+            before,
+            zoneName,
+            eggPosition
         )
-
-
-        return
-            WaitResultPet(
-                before,
-                zoneName,
-                eggPosition
-            )
-
     end
 
-
-    -- ========================================================
-    -- PROMPT POSITION
-    -- ========================================================
-
-    local function GetPromptPosition(
-        prompt
-    )
-
-        if not prompt
-            or not prompt.Parent
-        then
+    -- Prompt helpers
+    local function getPromptPosition(prompt)
+        if not prompt or not prompt.Parent then
             return nil
         end
 
+        local parent = prompt.Parent
 
-        local parent =
-            prompt.Parent
-
-
-        if parent:IsA(
-            "Attachment"
-        )
-        then
-
+        if parent:IsA("Attachment") then
             return parent.WorldPosition
-
         end
 
-
-        if parent:IsA(
-            "BasePart"
-        )
-        then
-
+        if parent:IsA("BasePart") then
             return parent.Position
-
         end
 
-
-        local part =
-            prompt:
-            FindFirstAncestorWhichIsA(
-                "BasePart"
-            )
-
-
-        return
-            part
-            and part.Position
-            or nil
-
+        local part = prompt:FindFirstAncestorWhichIsA("BasePart")
+        return part and part.Position or nil
     end
 
-
-    -- ========================================================
-    -- MODEL DISTANCE
-    -- ========================================================
-
-    local function ModelDistanceToPoint(
-        model,
-        point
-    )
-
-        local ok,
-            cf,
-            size =
-            pcall(function()
-
-                return
-                    model:
-                    GetBoundingBox()
-
-            end)
-
+    local function modelDistanceToPoint(model, point)
+        local ok, cf, size = pcall(function()
+            return model:GetBoundingBox()
+        end)
 
         if not ok then
             return math.huge
         end
 
+        local localPoint = cf:PointToObjectSpace(point)
+        local half = size * 0.5
 
-        local localPoint =
-            cf:
-            PointToObjectSpace(
-                point
-            )
+        local dx = math.max(math.abs(localPoint.X) - half.X, 0)
+        local dy = math.max(math.abs(localPoint.Y) - half.Y, 0)
+        local dz = math.max(math.abs(localPoint.Z) - half.Z, 0)
 
-
-        local half =
-            size
-            * 0.5
-
-
-        local dx =
-            math.max(
-                math.abs(
-                    localPoint.X
-                ) - half.X,
-                0
-            )
-
-
-        local dy =
-            math.max(
-                math.abs(
-                    localPoint.Y
-                ) - half.Y,
-                0
-            )
-
-
-        local dz =
-            math.max(
-                math.abs(
-                    localPoint.Z
-                ) - half.Z,
-                0
-            )
-
-
-        return
-            Vector3.new(
-                dx,
-                dy,
-                dz
-            ).Magnitude
-
+        return Vector3.new(dx, dy, dz).Magnitude
     end
 
-
-    -- ========================================================
-    -- PROMPT TEXT
-    -- ========================================================
-
-    local function NormalizeText(
-        text
-    )
-
-        return tostring(
-            text
-            or ""
-        ):
-        gsub(
-            "<.->",
-            ""
-        ):
-        lower():
-        gsub(
-            "[^%w]",
-            ""
-        )
-
+    local function normalizeText(text)
+        return tostring(text or "")
+            :gsub("<.->", "")
+            :lower()
+            :gsub("[^%w]", "")
     end
 
-
-    local function PromptKg(
-        prompt
-    )
-
-        local text =
-            tostring(
-                prompt.ObjectText
-                or ""
-            ):
-            gsub(
-                "<.->",
-                ""
-            )
-
-
-        return tonumber(
-            text:
-            match(
-                "%[([%d%.]+)%s*[Kk][Gg]%]"
-            )
-        )
-
+    local function promptKg(prompt)
+        local text = tostring(prompt.ObjectText or ""):gsub("<.->", "")
+        return tonumber(text:match("%[([%d%.]+)%s*[Kk][Gg]%]"))
     end
 
-
-    -- ========================================================
-    -- PROMPT MATCHING
-    -- ========================================================
-
-    local function PromptMatchesAnimal(
-        prompt,
-        animal
-    )
-
+    local function promptMatchesAnimal(prompt, animal)
         if not prompt
             or not prompt.Parent
             or not animal
             or not animal.Parent
         then
-
             return false
-
         end
 
-
-        if prompt.Name
-                ~= "StealPrompt"
-            and prompt.ActionText
-                ~= "Steal"
+        if prompt.Name ~= "StealPrompt"
+            and prompt.ActionText ~= "Steal"
         then
-
             return false
-
         end
 
-
-        if prompt:
-            IsDescendantOf(
-                animal
-            )
-        then
-
+        if prompt:IsDescendantOf(animal) then
             return true
-
         end
 
-
-        local position =
-            GetPromptPosition(
-                prompt
-            )
-
+        local position = getPromptPosition(prompt)
 
         if not position then
             return false
         end
 
-
-        local distance =
-            ModelDistanceToPoint(
-                animal,
-                position
-            )
-
+        local distance = modelDistanceToPoint(animal, position)
 
         if distance <= 1.5 then
             return true
         end
 
-
         if distance <= 6 then
+            local weight = animal:GetAttribute("WeightKg")
+            local shownWeight = promptKg(prompt)
 
-            local weight =
-                animal:
-                GetAttribute(
-                    "WeightKg"
-                )
-
-
-            local promptWeight =
-                PromptKg(
-                    prompt
-                )
-
-
-            if typeof(weight)
-                    == "number"
-                and typeof(promptWeight)
-                    == "number"
-                and math.abs(
-                    weight
-                    - promptWeight
-                ) <= 1.1
+            if typeof(weight) == "number"
+                and typeof(shownWeight) == "number"
+                and math.abs(weight - shownWeight) <= 1.1
             then
-
                 return true
-
             end
 
-
-            local animalName =
-                animal:
-                GetAttribute(
-                    "AnimalName"
-                )
-                or animal.Name
-
-
-            local objectText =
-                NormalizeText(
-                    prompt.ObjectText
-                )
-
-
-            local targetText =
-                NormalizeText(
-                    animalName
-                )
-
+            local animalName = animal:GetAttribute("AnimalName") or animal.Name
+            local objectText = normalizeText(prompt.ObjectText)
+            local targetText = normalizeText(animalName)
 
             if targetText ~= ""
-                and objectText:
-                    find(
-                        targetText,
-                        1,
-                        true
-                    )
+                and objectText:find(targetText, 1, true)
             then
-
                 return true
-
             end
-
         end
-
 
         return false
-
     end
 
-
-    -- ========================================================
-    -- FIND PROMPT
-    -- ========================================================
-
-    local function FindCurrentPrompt(
-        animal
-    )
-
-        for _,
-            object
-            in ipairs(
-                animal:
-                GetDescendants()
-            )
-        do
-
-            if object:IsA(
-                    "ProximityPrompt"
-                )
+    local function findCurrentPrompt(animal)
+        for _, object in ipairs(animal:GetDescendants()) do
+            if object:IsA("ProximityPrompt")
                 and object.Enabled
-                and PromptMatchesAnimal(
-                    object,
-                    animal
-                )
+                and promptMatchesAnimal(object, animal)
             then
-
                 return object
-
             end
-
         end
-
 
         if GlobalPrompt.Enabled
-            and PromptMatchesAnimal(
-                GlobalPrompt,
-                animal
-            )
+            and promptMatchesAnimal(GlobalPrompt, animal)
         then
-
             return GlobalPrompt
-
         end
 
-
         return nil
-
     end
 
-
-    -- ========================================================
-    -- WAIT STEAL PROMPT
-    -- ========================================================
-
-    local function WaitStealPrompt(
-        animal
-    )
-
-        local foundPrompt =
-            nil
-
+    local function waitStealPrompt(animal)
+        local foundPrompt
 
         local shownConnection =
-            ProximityPromptService.
-            PromptShown:
-            Connect(function(
-                prompt
-            )
-
+            ProximityPromptService.PromptShown:
+            Connect(function(prompt)
                 if not foundPrompt
-                    and PromptMatchesAnimal(
-                        prompt,
-                        animal
-                    )
+                    and promptMatchesAnimal(prompt, animal)
                 then
-
-                    foundPrompt =
-                        prompt
-
-
-                    Log(
-                        "Prompt shown:",
-                        prompt:
-                        GetFullName()
-                    )
-
+                    foundPrompt = prompt
+                    log("Prompt shown:", prompt:GetFullName())
                 end
-
             end)
 
-
-        local deadline =
-            os.clock()
-            + PROMPT_TIMEOUT
-
-
-        local _,
-            hrp =
-            GetCharacter()
-
-
-        local basePosition =
-            hrp.Position
-
-
-        local toggle =
-            false
-
+        local deadline = os.clock() + PROMPT_TIMEOUT
 
         while autoFarmActive
             and animal.Parent
-            and os.clock()
-                < deadline
+            and os.clock() < deadline
             and not foundPrompt
         do
-
-            foundPrompt =
-                FindCurrentPrompt(
-                    animal
-                )
-
+            foundPrompt = findCurrentPrompt(animal)
 
             if foundPrompt then
                 break
             end
 
-
-            local animalPosition =
-                animal:
-                GetPivot().
-                Position
-
-
-            local _,
-                currentHRP =
-                GetCharacter()
-
-
-            toggle =
-                not toggle
-
-
-            local side =
-                toggle
-                and 0.15
-                or -0.15
-
-
-            local refreshPosition =
-                basePosition
-                + currentHRP.CFrame.
-                    RightVector
-                    * side
-
-
-            currentHRP.CFrame =
-                CFrame.lookAt(
-                    refreshPosition,
-
-                    Vector3.new(
-                        animalPosition.X,
-                        refreshPosition.Y,
-                        animalPosition.Z
-                    )
-                )
-
-
-            currentHRP.AssemblyLinearVelocity =
-                Vector3.zero
-
-
-            task.wait(
-                0.08
-            )
-
+            task.wait(0.08)
         end
 
-
-        shownConnection:
-        Disconnect()
-
+        shownConnection:Disconnect()
 
         return foundPrompt
-
     end
 
+    -- Carry state from the game's own ChaseState module.
+    local function isCarrying()
+        local ok, carrying = pcall(function()
+            return ChaseState.IsCarrying(LocalPlayer)
+        end)
 
-    -- ========================================================
-    -- CARRY SNAPSHOT
-    -- ========================================================
-
-    local function SnapshotCarry()
-
-        local result = {}
-
-
-        for _,
-            carried
-            in ipairs(
-                CarriedAnimals:
-                GetChildren()
-            )
-        do
-
-            result[carried] =
-                true
-
-        end
-
-
-        return result
-
+        return ok and carrying == true
     end
 
+    local function isBeingChased()
+        local ok, active = pcall(function()
+            return ChaseState.IsActive(LocalPlayer)
+        end)
 
-    -- ========================================================
-    -- WAIT OWN CARRY
-    -- ========================================================
-
-    local function WaitOwnCarry(
-        before,
-        animalName
-    )
-
-        local found =
-            nil
-
-
-        local function Check(
-            model
-        )
-
-            if found
-                or not model
-                or not model.Parent
-                or not model:IsA(
-                    "Model"
-                )
-                or before[model]
-            then
-
-                return
-
-            end
-
-
-            local name =
-                model:
-                GetAttribute(
-                    "AnimalName"
-                )
-
-
-            if name
-                ~= animalName
-            then
-                return
-            end
-
-
-            local _,
-                hrp =
-                GetCharacter()
-
-
-            local distance =
-                (
-                    model:
-                    GetPivot().
-                    Position
-                    - hrp.Position
-                ).Magnitude
-
-
-            if distance <= 20 then
-
-                found =
-                    model
-
-            end
-
-        end
-
-
-        local connection =
-            CarriedAnimals.
-            ChildAdded:
-            Connect(function(
-                model
-            )
-
-                task.defer(
-                    Check,
-                    model
-                )
-
-            end)
-
-
-        local deadline =
-            os.clock()
-            + CARRY_TIMEOUT
-
-
-        while autoFarmActive
-            and not found
-            and os.clock()
-                < deadline
-        do
-
-            for _,
-                model
-                in ipairs(
-                    CarriedAnimals:
-                    GetChildren()
-                )
-            do
-
-                Check(
-                    model
-                )
-
-
-                if found then
-                    break
-                end
-
-            end
-
-
-            task.wait(
-                0.01
-            )
-
-        end
-
-
-        connection:
-        Disconnect()
-
-
-        return found
-
+        return ok and active == true
     end
 
+    local function waitUntilCarrying(timeout)
+        local deadline = os.clock() + (timeout or CARRY_TIMEOUT)
 
-    -- ========================================================
-    -- STEAL + BANK
-    -- ========================================================
+        while autoFarmActive and os.clock() < deadline do
+            if isCarrying() then
+                return true
+            end
 
-    local function StealAndBank(
-        animal
-    )
+            task.wait(0.01)
+        end
 
-        if not animal
-            or not animal.Parent
-        then
+        return false
+    end
 
+    local function stealAndBank(animal)
+        if not animal or not animal.Parent then
             return false
-
         end
 
-
-        local animalName =
-            animal:
-            GetAttribute(
-                "AnimalName"
-            )
-            or animal.Name
-
-
-        local weight =
-            tonumber(
-                animal:
-                GetAttribute(
-                    "WeightKg"
-                )
-            )
-            or 0
-
+        local animalName = animal:GetAttribute("AnimalName") or animal.Name
+        local weight = tonumber(animal:GetAttribute("WeightKg")) or 0
 
         if minimumPetWeight > 0
-            and weight
-                < minimumPetWeight
+            and weight < minimumPetWeight
         then
-
-            Log(
+            log(
                 "Skip pet:",
                 animalName,
-
                 "| Weight:",
                 weight,
-
                 "| Minimum:",
                 minimumPetWeight
             )
 
-
             return false
-
         end
 
-
-        Log(
+        log(
             "Pet target:",
             animalName,
-
             "| Weight:",
             weight
         )
 
+        local petPosition = animal:GetPivot().Position
 
-        TeleportNear(
-            animal:
-            GetPivot().
-            Position,
-
-            PICKUP_TP_DISTANCE
-        )
-
-
-        task.wait(
-            0.12
-        )
-
-
-        local _,
-            hrp =
-            GetCharacter()
-
-
-        local animalPosition =
-            animal:
-            GetPivot().
-            Position
-
-
-        hrp.CFrame =
-            CFrame.lookAt(
-                hrp.Position,
-
-                Vector3.new(
-                    animalPosition.X,
-                    hrp.Position.Y,
-                    animalPosition.Z
-                )
-            )
-
-
-        local prompt =
-            WaitStealPrompt(
-                animal
-            )
-
-
-        if not prompt then
-
-            warn(
-                "[CHLISE HUB] StealPrompt not found:",
-                animalName
-            )
-
-
+        if not walkNear(petPosition, PET_APPROACH_DISTANCE, 35) then
+            log("Failed to reach pet:", animalName)
             return false
-
         end
 
+        local prompt = waitStealPrompt(animal)
 
-        Log(
+        if not prompt then
+            warn("[CHLISE HUB] StealPrompt not found:", animalName)
+            return false
+        end
+
+        log(
             "Prompt ready:",
-            prompt:
-            GetFullName(),
-
-            "|",
+            prompt:GetFullName(),
+            "| Object:",
             prompt.ObjectText
         )
 
-
-        local promptPosition =
-            GetPromptPosition(
-                prompt
-            )
-
+        local promptPosition = getPromptPosition(prompt)
 
         if promptPosition then
+            local _, _, hrp = getCharacter()
+            local promptDistance = (hrp.Position - promptPosition).Magnitude
 
-            local _,
-                currentHRP =
-                GetCharacter()
-
-
-            local distance =
-                (
-                    currentHRP.Position
-                    - promptPosition
-                ).Magnitude
-
-
-            if distance > 7 then
-
-                TeleportNear(
-                    promptPosition,
-                    2.5
-                )
-
-
-                task.wait(
-                    0.05
-                )
-
+            if promptDistance > 7 then
+                if not walkNear(promptPosition, 2.5, 15) then
+                    return false
+                end
             end
-
         end
 
+        log("Fire steal:", animalName)
 
-        local carryBefore =
-            SnapshotCarry()
+        fireproximityprompt(prompt)
 
-
-        Log(
-            "Fire steal:",
-            animalName
-        )
-
-
-        fireproximityprompt(
-            prompt
-        )
-
-
-        local carried =
-            WaitOwnCarry(
-                carryBefore,
-                animalName
-            )
-
-
-        if not carried then
-
-            warn(
-                "[CHLISE HUB] Carry not detected:",
-                animalName
-            )
-
-
+        if not waitUntilCarrying(CARRY_TIMEOUT) then
+            warn("[CHLISE HUB] Carry state not detected:", animalName)
             return false
-
         end
 
-
-        Log(
-            "Own carry:",
-            animalName
+        log(
+            "Carry detected:",
+            animalName,
+            "| BeingChased:",
+            isBeingChased()
         )
 
-
-        -- ====================================================
-        -- BANK LISTENER BEFORE TELEPORT
-        -- ====================================================
-
-        local banked =
-            false
-
+        -- Start listening for bank confirmation before returning home.
+        local banked = false
 
         local bankConnection =
-            AnimalBankedRemote.
-            OnClientEvent:
-            Connect(function(
-                data
-            )
-
-                if type(data)
-                    ~= "table"
-                then
-
+            AnimalBankedRemote.OnClientEvent:
+            Connect(function(data)
+                if type(data) ~= "table" then
                     return
-
                 end
 
-
-                for _,
-                    info
-                    in ipairs(data)
-                do
-
-                    if type(info)
-                            == "table"
-                        and info.Name
-                            == animalName
+                for _, info in ipairs(data) do
+                    if type(info) == "table"
+                        and info.Name == animalName
                     then
+                        banked = true
 
-                        banked =
-                            true
-
-
-                        Log(
+                        log(
                             "Banked:",
                             info.Name,
-
                             "| Count:",
                             info.Count
                         )
 
-
                         break
-
                     end
-
                 end
-
             end)
 
+        local homeReached = walkHome()
 
-        Log(
-            "TP home:",
-            animalName
-        )
+        if not homeReached then
+            bankConnection:Disconnect()
+            warn("[CHLISE HUB] Failed to reach owned plot.")
+            return false
+        end
 
-
-        TeleportHome()
-
-
-        local deadline =
-            os.clock()
-            + BANK_TIMEOUT
-
+        local deadline = os.clock() + BANK_TIMEOUT
 
         while autoFarmActive
             and not banked
-            and os.clock()
-                < deadline
+            and os.clock() < deadline
         do
-
-            task.wait(
-                0.01
-            )
-
+            task.wait(0.02)
         end
 
-
-        bankConnection:
-        Disconnect()
-
+        bankConnection:Disconnect()
 
         if banked then
-
-            Log(
-                "Cycle complete:",
-                animalName
-            )
-
-
+            log("Cycle complete:", animalName)
             return true
-
         end
 
-
-        warn(
-            "[CHLISE HUB] Bank timeout:",
-            animalName
-        )
-
-
+        warn("[CHLISE HUB] Bank timeout:", animalName)
         return false
-
     end
 
-
-    -- ========================================================
-    -- FARM LOOP
-    -- ========================================================
-
-    local function StartAutoFarm()
-
+    -- Farm loop
+    local function startAutoFarm()
         if farmLoopRunning then
             return
         end
 
-
-        farmLoopRunning =
-            true
-
+        farmLoopRunning = true
 
         task.spawn(function()
-
             while autoFarmActive
                 and not Window.Destroyed
             do
+                local ok, err = pcall(function()
+                    local egg, zoneName, distance = findBestEgg()
 
-                local success,
-                    errorMessage =
-                    pcall(function()
+                    if not egg then
+                        task.wait(0.25)
+                        return
+                    end
 
-                        local egg,
-                            zoneName =
-                            FindBestEgg()
-
-
-                        if not egg then
-
-                            task.wait(
-                                0.25
-                            )
-
-
-                            return
-
-                        end
-
-
-                        local animal =
-                            BreakEgg(
-                                egg,
-                                zoneName
-                            )
-
-
-                        if not autoFarmActive then
-                            return
-                        end
-
-
-                        if animal
-                            and animal.Parent
-                        then
-
-                            StealAndBank(
-                                animal
-                            )
-
-                        end
-
-
-                        task.wait(
-                            0.15
-                        )
-
-                    end)
-
-
-                if not success then
-
-                    warn(
-                        "[CHLISE HUB] Break & Steal error:",
-                        errorMessage
+                    log(
+                        "Selected egg:",
+                        getEggName(egg),
+                        "| Zone:",
+                        zoneName,
+                        "| Distance:",
+                        string.format("%.2f", distance)
                     )
 
+                    local animal = breakEgg(egg, zoneName)
 
-                    task.wait(
-                        0.5
-                    )
+                    if not autoFarmActive then
+                        return
+                    end
 
+                    if animal and animal.Parent then
+                        stealAndBank(animal)
+                    else
+                        log("Result pet not found.")
+                    end
+
+                    task.wait(0.15)
+                end)
+
+                if not ok then
+                    warn("[CHLISE HUB] Break & Steal error:", err)
+                    task.wait(0.5)
                 end
-
             end
 
-
-            farmLoopRunning =
-                false
-
+            stopMoving()
+            farmLoopRunning = false
         end)
-
     end
 
-
-    -- ========================================================
-    -- UI TABS
-    -- Same template/API as Ride A Pet.
-    -- ========================================================
-
+    -- UI - uses the same template/API as Ride A Pet.
     local FarmTab =
         Window:AddTab(
             "FARM",
             "◆"
         )
 
-
     local SettingsTab =
         Window.Tabs
-        and Window.Tabs[
-            "SETTINGS"
-        ]
-
+        and Window.Tabs["SETTINGS"]
 
     if not SettingsTab then
-
         SettingsTab =
             Window:AddTab(
                 "SETTINGS",
                 "⚙"
             )
-
     end
-
-
-    -- ========================================================
-    -- AUTO FARM UI
-    -- ========================================================
 
     local FarmSection =
         Window:AddSection(
             FarmTab,
             "Break & Steal"
         )
-
 
     FarmSection:AddDropdown(
         "BSAEZones",
@@ -2470,13 +1009,9 @@ return function(Context)
         selectedZones,
 
         function(value)
-
-            selectedZones =
-                value
-
+            selectedZones = value
         end
     )
-
 
     FarmSection:AddDropdown(
         "BSAEEggs",
@@ -2486,13 +1021,9 @@ return function(Context)
         selectedEggs,
 
         function(value)
-
-            selectedEggs =
-                value
-
+            selectedEggs = value
         end
     )
-
 
     FarmSection:AddTextbox(
         "BSAEMinimumPetWeight",
@@ -2500,41 +1031,20 @@ return function(Context)
         "0 = Off",
 
         function(value)
-
             local normalized =
-                tostring(
-                    value
-                    or ""
-                ):
-                gsub(
-                    ",",
-                    "."
-                )
-
+                tostring(value or ""):
+                gsub(",", ".")
 
             local parsed =
-                tonumber(
-                    normalized
-                )
+                tonumber(normalized)
 
-
-            if parsed
-                and parsed > 0
-            then
-
-                minimumPetWeight =
-                    parsed
-
+            if parsed and parsed > 0 then
+                minimumPetWeight = parsed
             else
-
-                minimumPetWeight =
-                    0
-
+                minimumPetWeight = 0
             end
-
         end
     )
-
 
     FarmSection:AddToggle(
         "BSAEAutoFarm",
@@ -2542,64 +1052,23 @@ return function(Context)
         false,
 
         function(state)
-
-            autoFarmActive =
-                state
-
+            autoFarmActive = state
 
             if state then
+                local homeHitbox = getOwnedPlotHitbox()
 
-                StartAutoFarm()
+                if homeHitbox then
+                    log("Owned plot:", homeHitbox:GetFullName())
+                else
+                    warn("[CHLISE HUB] Owned plot was not detected yet.")
+                end
 
+                startAutoFarm()
+            else
+                stopMoving()
             end
-
         end
     )
-
-
-    -- ========================================================
-    -- HOME UI
-    -- ========================================================
-
-    local HomeSection =
-        Window:AddSection(
-            FarmTab,
-            "Home / Bank"
-        )
-
-
-    HomeSection:AddButton(
-        "Set Home Position",
-
-        function()
-
-            local _,
-                hrp =
-                GetCharacter()
-
-
-            homeCFrame =
-                hrp.CFrame
-
-
-            FarmState.HomeCFrame =
-                homeCFrame
-
-
-            Log(
-                "Home position saved:",
-                tostring(
-                    hrp.Position
-                )
-            )
-
-        end
-    )
-
-
-    -- ========================================================
-    -- SETTINGS UI
-    -- ========================================================
 
     local SettingsSection =
         Window:AddSection(
@@ -2607,27 +1076,21 @@ return function(Context)
             "Break & Steal"
         )
 
-
     SettingsSection:AddToggle(
         "BSAEDebug",
         "Debug",
         false,
 
         function(state)
-
-            debugEnabled =
-                state
-
+            debugEnabled = state
         end
     )
 
-
-    -- ========================================================
-    -- READY
-    -- ========================================================
-
+    print("[CHLISE HUB] Break and Steal an Egg loaded.")
     print(
-        "[CHLISE HUB] Break and Steal an Egg loaded."
+        "[CHLISE HUB] GameId:",
+        game.GameId,
+        "| PlaceId:",
+        game.PlaceId
     )
-
 end
