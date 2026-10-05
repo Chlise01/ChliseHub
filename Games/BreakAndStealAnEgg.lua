@@ -5,6 +5,7 @@
 -- Added: Titanic Egg event detection/prioritization via Workspace attributes
 -- Pipeline: unlimited pending hatch queue (A -> B -> C -> D ... without waiting)
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
+-- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 
 return function(Context)
     local Window = Context.Window
@@ -31,6 +32,8 @@ return function(Context)
     local ChaseState = require(Shared:WaitForChild("ChaseState"))
     local EggRewards = require(Shared:WaitForChild("EggRewards"))
     local EggRarity = require(Shared:WaitForChild("EggRarity"))
+    local PlotUpgradeConfig = require(Shared:WaitForChild("PlotUpgradeConfig"))
+    local TreadmillUpgradeConfig = require(Shared:WaitForChild("TreadmillUpgradeConfig"))
 
     local AnimalRenders
     pcall(function()
@@ -41,6 +44,8 @@ return function(Context)
     local EggHitRequest = ReplicatedStorage:WaitForChild("EggHitRequest")
     local AnimalBankedRemote = ReplicatedStorage:WaitForChild("AnimalBankedRemote")
     local TreadmillSessionRemote = ReplicatedStorage:FindFirstChild("TreadmillSessionRemote")
+    local UpgradePlotRequest = ReplicatedStorage:WaitForChild("UpgradePlotRequest")
+    local UpgradeTreadmillRequest = ReplicatedStorage:WaitForChild("UpgradeTreadmillRequest")
 
     local Build = Workspace:WaitForChild(ZonesConfig.BuildFolderName or "Build")
     local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
@@ -97,6 +102,15 @@ return function(Context)
     local treadmillSessionSpeed = nil
     local treadmillSessionCFrame = nil
     local lastTreadmillSession = 0
+
+    local autoUpgradePen = false
+    local autoUpgradeTreadmill = false
+
+    local penUpgradeWorkerRunning = false
+    local treadmillUpgradeWorkerRunning = false
+
+    local penUpgradeRetryAt = 0
+    local treadmillUpgradeRetryAt = 0
 
     -- Titanic is allowed to temporarily override the normal Farm/Treadmill
     -- schedule. We preserve the previous activity + remaining timer so it can
@@ -424,6 +438,466 @@ return function(Context)
 
         return hitbox.Parent
     end
+
+    -- Exact plot ownership for upgrade systems.
+    -- This does not depend on SafeZoneQuery/hitbox state.
+    local function getOwnedPlotExact()
+        local plots =
+            Workspace:
+            FindFirstChild(
+                ZonesConfig.PlotsFolderName
+                or "Plots"
+            )
+
+        if not plots then
+            return nil
+        end
+
+        for _, plot
+            in ipairs(
+                plots:GetChildren()
+            )
+        do
+            if tonumber(
+                plot:GetAttribute(
+                    "OwnerUserId"
+                )
+            ) == LocalPlayer.UserId
+            then
+                return plot
+            end
+        end
+
+        return nil
+    end
+
+    local function getCash()
+        return
+            tonumber(
+                LocalPlayer:GetAttribute(
+                    "Cash"
+                )
+            )
+            or 0
+    end
+
+    local function getNextPenUpgradeCost(
+        plot
+    )
+        if not plot then
+            return nil, nil
+        end
+
+        local level =
+            tonumber(
+                plot:GetAttribute(
+                    "PlotLevel"
+                )
+            )
+            or tonumber(
+                PlotUpgradeConfig.DefaultLevel
+            )
+            or 1
+
+        local maxLevel =
+            tonumber(
+                PlotUpgradeConfig.MaxLevel
+            )
+            or 9
+
+        if level >= maxLevel then
+            return nil, level
+        end
+
+        local cost
+
+        if type(
+            PlotUpgradeConfig.UpgradeCost
+        ) == "function"
+        then
+            local ok, value =
+                pcall(
+                    PlotUpgradeConfig.UpgradeCost,
+                    level
+                )
+
+            if ok then
+                cost =
+                    tonumber(value)
+            end
+        end
+
+        if not cost
+            and type(
+                PlotUpgradeConfig.Costs
+            ) == "table"
+        then
+            cost =
+                tonumber(
+                    PlotUpgradeConfig.Costs[
+                        level
+                    ]
+                )
+        end
+
+        return cost, level
+    end
+
+    local function getNextTreadmillUpgradeCost(
+        plot
+    )
+        if not plot then
+            return nil, nil
+        end
+
+        local level =
+            tonumber(
+                plot:GetAttribute(
+                    "TreadmillLevel"
+                )
+            )
+            or tonumber(
+                TreadmillUpgradeConfig.DefaultLevel
+            )
+            or 1
+
+        local maxLevel =
+            tonumber(
+                TreadmillUpgradeConfig.MaxLevel
+            )
+            or 9
+
+        if level >= maxLevel then
+            return nil, level
+        end
+
+        local cost
+
+        if type(
+            TreadmillUpgradeConfig.UpgradeCost
+        ) == "function"
+        then
+            local ok, value =
+                pcall(
+                    TreadmillUpgradeConfig.UpgradeCost,
+                    level
+                )
+
+            if ok then
+                cost =
+                    tonumber(value)
+            end
+        end
+
+        if not cost
+            and type(
+                TreadmillUpgradeConfig.Levels
+            ) == "table"
+        then
+            local info =
+                TreadmillUpgradeConfig.Levels[
+                    level
+                ]
+
+            cost =
+                info
+                and tonumber(
+                    info.UpgradeCost
+                )
+                or nil
+        end
+
+        return cost, level
+    end
+
+    local function waitForUpgradeLevel(
+        plot,
+        attributeName,
+        oldLevel,
+        timeout
+    )
+        local deadline =
+            os.clock()
+            + (
+                tonumber(timeout)
+                or 5
+            )
+
+        while plot
+            and plot.Parent
+            and os.clock() < deadline
+        do
+            local newLevel =
+                tonumber(
+                    plot:GetAttribute(
+                        attributeName
+                    )
+                )
+
+            if newLevel
+                and newLevel > oldLevel
+            then
+                return true, newLevel
+            end
+
+            task.wait(0.05)
+        end
+
+        return false, oldLevel
+    end
+
+    local function runAutoUpgradePen()
+        if penUpgradeWorkerRunning then
+            return
+        end
+
+        penUpgradeWorkerRunning = true
+
+        task.spawn(function()
+            while autoUpgradePen
+                and not Window.Destroyed
+            do
+                local plot =
+                    getOwnedPlotExact()
+
+                if not plot then
+                    break
+                end
+
+                local cost, level =
+                    getNextPenUpgradeCost(
+                        plot
+                    )
+
+                if not cost then
+                    log(
+                        "Auto Upgrade Pen:",
+                        "MAX LEVEL",
+                        "| Level:",
+                        level
+                    )
+
+                    break
+                end
+
+                local cash =
+                    getCash()
+
+                if cash < cost then
+                    log(
+                        "Auto Upgrade Pen waiting",
+                        "| Level:",
+                        level,
+                        "| Cash:",
+                        cash,
+                        "| Need:",
+                        cost
+                    )
+
+                    break
+                end
+
+                if os.clock()
+                    < penUpgradeRetryAt
+                then
+                    break
+                end
+
+                log(
+                    "Auto Upgrade Pen request",
+                    "| Level:",
+                    level,
+                    "->",
+                    level + 1,
+                    "| Cost:",
+                    cost,
+                    "| Cash:",
+                    cash
+                )
+
+                UpgradePlotRequest:
+                    FireServer()
+
+                local confirmed,
+                    newLevel =
+                    waitForUpgradeLevel(
+                        plot,
+                        "PlotLevel",
+                        level,
+                        5
+                    )
+
+                if not confirmed then
+                    -- Conservative retry protection:
+                    -- never hammer the same server request.
+                    penUpgradeRetryAt =
+                        os.clock() + 10
+
+                    log(
+                        "Auto Upgrade Pen:",
+                        "no level confirmation; cooldown 10s"
+                    )
+
+                    break
+                end
+
+                penUpgradeRetryAt = 0
+
+                log(
+                    "Auto Upgrade Pen confirmed",
+                    "| Level:",
+                    newLevel
+                )
+
+                -- If Cash is still enough for the next level,
+                -- continue one confirmed upgrade at a time.
+                task.wait(0.05)
+            end
+
+            penUpgradeWorkerRunning =
+                false
+        end)
+    end
+
+    local function runAutoUpgradeTreadmill()
+        if treadmillUpgradeWorkerRunning then
+            return
+        end
+
+        treadmillUpgradeWorkerRunning = true
+
+        task.spawn(function()
+            while autoUpgradeTreadmill
+                and not Window.Destroyed
+            do
+                local plot =
+                    getOwnedPlotExact()
+
+                if not plot then
+                    break
+                end
+
+                if plot:GetAttribute(
+                    "TreadmillUnlocked"
+                ) ~= true
+                then
+                    log(
+                        "Auto Upgrade Treadmill:",
+                        "treadmill is locked"
+                    )
+
+                    break
+                end
+
+                local cost, level =
+                    getNextTreadmillUpgradeCost(
+                        plot
+                    )
+
+                if not cost then
+                    log(
+                        "Auto Upgrade Treadmill:",
+                        "MAX LEVEL",
+                        "| Level:",
+                        level
+                    )
+
+                    break
+                end
+
+                local cash =
+                    getCash()
+
+                if cash < cost then
+                    log(
+                        "Auto Upgrade Treadmill waiting",
+                        "| Level:",
+                        level,
+                        "| Cash:",
+                        cash,
+                        "| Need:",
+                        cost
+                    )
+
+                    break
+                end
+
+                if os.clock()
+                    < treadmillUpgradeRetryAt
+                then
+                    break
+                end
+
+                log(
+                    "Auto Upgrade Treadmill request",
+                    "| Level:",
+                    level,
+                    "->",
+                    level + 1,
+                    "| Cost:",
+                    cost,
+                    "| Cash:",
+                    cash
+                )
+
+                UpgradeTreadmillRequest:
+                    FireServer()
+
+                local confirmed,
+                    newLevel =
+                    waitForUpgradeLevel(
+                        plot,
+                        "TreadmillLevel",
+                        level,
+                        5
+                    )
+
+                if not confirmed then
+                    treadmillUpgradeRetryAt =
+                        os.clock() + 10
+
+                    log(
+                        "Auto Upgrade Treadmill:",
+                        "no level confirmation; cooldown 10s"
+                    )
+
+                    break
+                end
+
+                treadmillUpgradeRetryAt = 0
+
+                log(
+                    "Auto Upgrade Treadmill confirmed",
+                    "| Level:",
+                    newLevel
+                )
+
+                task.wait(0.05)
+            end
+
+            treadmillUpgradeWorkerRunning =
+                false
+        end)
+    end
+
+    local function triggerAutoUpgrades()
+        if autoUpgradePen then
+            runAutoUpgradePen()
+        end
+
+        if autoUpgradeTreadmill then
+            runAutoUpgradeTreadmill()
+        end
+    end
+
+    -- Event-driven: no upgrade polling loop.
+    LocalPlayer:
+    GetAttributeChangedSignal(
+        "Cash"
+    ):
+    Connect(function()
+        triggerAutoUpgrades()
+    end)
 
     local function treadmillMultiplier(object)
         local current = object
@@ -3575,6 +4049,44 @@ return function(Context)
                 else
                     refreshActivityDeadline()
                 end
+            end
+        end
+    )
+
+    local UpgradeSection =
+        Window:AddSection(
+            FarmTab,
+            "Upgrades"
+        )
+
+    UpgradeSection:AddToggle(
+        "BSAEAutoUpgradePen",
+        "Auto Upgrade Pen",
+        false,
+
+        function(state)
+            autoUpgradePen =
+                state == true
+
+            if autoUpgradePen then
+                penUpgradeRetryAt = 0
+                runAutoUpgradePen()
+            end
+        end
+    )
+
+    UpgradeSection:AddToggle(
+        "BSAEAutoUpgradeTreadmill",
+        "Auto Upgrade Treadmill",
+        false,
+
+        function(state)
+            autoUpgradeTreadmill =
+                state == true
+
+            if autoUpgradeTreadmill then
+                treadmillUpgradeRetryAt = 0
+                runAutoUpgradeTreadmill()
             end
         end
     )
