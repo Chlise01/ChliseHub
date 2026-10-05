@@ -26,6 +26,7 @@ return function(Context)
     local ZonesConfig = require(Shared:WaitForChild("ZonesConfig"))
     local ChaseState = require(Shared:WaitForChild("ChaseState"))
     local EggRewards = require(Shared:WaitForChild("EggRewards"))
+    local EggRarity = require(Shared:WaitForChild("EggRarity"))
 
     local AnimalRenders
     pcall(function()
@@ -820,12 +821,26 @@ return function(Context)
 
     local MASTER_EGGS = buildEggList()
 
+    local function getEggPriority(egg, zoneName)
+        local eggName = getEggName(egg)
+        local zoneInfo = ZonesConfig.Get(zoneName)
+        local rarity = egg:GetAttribute("Rarity")
+        local rank = EggRarity.IndexOf(rarity)
+        if not rank then
+            rarity = EggRarity.Resolve(eggName, zoneInfo)
+            rank = EggRarity.IndexOf(rarity) or 0
+        end
+        local _, tier = EggRarity.LadderSpot(eggName)
+        return rank, tonumber(tier) or 0
+    end
+
     local function findBestEgg(excludedEgg)
         local _, _, hrp = getCharacter()
 
         local bestEgg
         local bestZone
         local bestDistance = math.huge
+        local bestRarity, bestTier = -1, -1
 
         for _, zoneName in ipairs(MASTER_ZONES) do
             if isSelected(selectedZones, zoneName) then
@@ -842,10 +857,15 @@ return function(Context)
                             if isSelected(selectedEggs, eggName) then
                                 local distance = (hrp.Position - egg.Position).Magnitude
 
-                                if distance < bestDistance then
+                                local rarity, tier = getEggPriority(egg, zoneName)
+                                if rarity > bestRarity
+                                    or (rarity == bestRarity and tier > bestTier)
+                                    or (rarity == bestRarity and tier == bestTier
+                                        and distance < bestDistance) then
                                     bestEgg = egg
                                     bestZone = zoneName
                                     bestDistance = distance
+                                    bestRarity, bestTier = rarity, tier
                                 end
                             end
                         end
