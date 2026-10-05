@@ -1,6 +1,7 @@
 -- Chlise Hub - Games/BreakAndStealAnEgg.lua
 -- GameId: 10765288803
 -- PlaceId: 114326934417838
+-- Added: Auto Treadmill + alternating Farm/Treadmill timers
 
 return function(Context)
     local Window = Context.Window
@@ -36,6 +37,7 @@ return function(Context)
     -- Game objects
     local EggHitRequest = ReplicatedStorage:WaitForChild("EggHitRequest")
     local AnimalBankedRemote = ReplicatedStorage:WaitForChild("AnimalBankedRemote")
+    local TreadmillSessionRemote = ReplicatedStorage:FindFirstChild("TreadmillSessionRemote")
 
     local Build = Workspace:WaitForChild(ZonesConfig.BuildFolderName or "Build")
     local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
@@ -73,7 +75,26 @@ return function(Context)
 
     -- State
     local autoFarmActive = false
+    local autoFarmEnabled = false
     local farmLoopRunning = false
+
+    local autoTreadmillActive = false
+    local autoTreadmillEnabled = false
+    local treadmillLoopRunning = false
+
+    local currentActivity = nil
+    local activityDeadline = nil
+
+    local farmTimerValue = 10
+    local farmTimerUnit = "Minutes"
+
+    local treadmillTimerValue = 10
+    local treadmillTimerUnit = "Minutes"
+
+    local treadmillSessionSpeed = nil
+    local treadmillSessionCFrame = nil
+    local lastTreadmillSession = 0
+
     local debugEnabled = false
 
     local selectedZones = {}
@@ -289,8 +310,418 @@ return function(Context)
         return ok and result == true
     end
 
+    local function durationToSeconds(value, unit)
+        local amount = tonumber(value)
+
+        if not amount or amount <= 0 then
+            return nil
+        end
+
+        if unit == "Hours" then
+            return amount * 3600
+        end
+
+        return amount * 60
+    end
+
+    local function getActivityDuration(activity)
+        if activity == "Farm" then
+            return durationToSeconds(
+                farmTimerValue,
+                farmTimerUnit
+            )
+        end
+
+        if activity == "Treadmill" then
+            return durationToSeconds(
+                treadmillTimerValue,
+                treadmillTimerUnit
+            )
+        end
+
+        return nil
+    end
+
+    local function otherActivityEnabled(activity)
+        if activity == "Farm" then
+            return autoTreadmillEnabled
+        end
+
+        if activity == "Treadmill" then
+            return autoFarmEnabled
+        end
+
+        return false
+    end
+
+    local function refreshActivityDeadline()
+        if not currentActivity
+            or not otherActivityEnabled(currentActivity)
+        then
+            activityDeadline = nil
+            return
+        end
+
+        local duration =
+            getActivityDuration(currentActivity)
+
+        if duration then
+            activityDeadline =
+                os.clock() + duration
+        else
+            activityDeadline = nil
+        end
+    end
+
+    local function getOwnedPlot()
+        local hitbox =
+            getOwnedPlotHitbox()
+
+        if not hitbox then
+            return nil
+        end
+
+        local plots =
+            Workspace:
+            FindFirstChild(
+                ZonesConfig.PlotsFolderName
+                or "Plots"
+            )
+
+        if not plots then
+            return hitbox.Parent
+        end
+
+        local current =
+            hitbox
+
+        while current
+            and current.Parent
+            and current.Parent ~= plots
+        do
+            current = current.Parent
+        end
+
+        if current
+            and current.Parent == plots
+        then
+            return current
+        end
+
+        return hitbox.Parent
+    end
+
+    local function treadmillMultiplier(object)
+        local current = object
+
+        while current do
+            local value =
+                tonumber(
+                    current:GetAttribute(
+                        "OwnMultiplier"
+                    )
+                )
+
+            if value then
+                return value
+            end
+
+            current = current.Parent
+        end
+
+        return 1
+    end
+
+    local function findTreadmillPart(container)
+        if not container then
+            return nil
+        end
+
+        local preferredNames = {
+            "Treadmill part",
+            "Treadmill Part",
+            "Hitbox"
+        }
+
+        for _, name
+            in ipairs(preferredNames)
+        do
+            local object =
+                container:
+                FindFirstChild(
+                    name,
+                    true
+                )
+
+            if object
+                and object:IsA("BasePart")
+            then
+                return object
+            end
+        end
+
+        if container:IsA("BasePart") then
+            return container
+        end
+
+        if container:IsA("Model")
+            and container.PrimaryPart
+        then
+            return container.PrimaryPart
+        end
+
+        for _, object
+            in ipairs(
+                container:GetDescendants()
+            )
+        do
+            if object:IsA("BasePart") then
+                return object
+            end
+        end
+
+        return nil
+    end
+
+    local function getPlotTreadmill()
+        local plot =
+            getOwnedPlot()
+
+        if not plot then
+            return nil, nil, nil, nil
+        end
+
+        local bestModel
+        local bestPart
+        local bestMultiplier =
+            -math.huge
+
+        -- Prefer direct plot children such as:
+        -- Wooden Treadmill / Volcanic Treadmill /
+        -- Speedy Treadmill / Diamond Treadmill.
+        for _, child
+            in ipairs(plot:GetChildren())
+        do
+            local lowerName =
+                child.Name:lower()
+
+            if lowerName:find(
+                    "treadmill",
+                    1,
+                    true
+                )
+                and lowerName
+                    ~= "treadmillboard"
+                and not lowerName:find(
+                    "spawnvfx",
+                    1,
+                    true
+                )
+            then
+                local part =
+                    findTreadmillPart(child)
+
+                if part then
+                    local multiplier =
+                        treadmillMultiplier(child)
+
+                    if multiplier
+                        > bestMultiplier
+                    then
+                        bestModel = child
+                        bestPart = part
+                        bestMultiplier =
+                            multiplier
+                    end
+                end
+            end
+        end
+
+        -- Fallback if the treadmill is nested.
+        if not bestPart then
+            for _, object
+                in ipairs(
+                    plot:GetDescendants()
+                )
+            do
+                local lowerName =
+                    object.Name:lower()
+
+                if lowerName:find(
+                        "treadmill",
+                        1,
+                        true
+                    )
+                    and lowerName
+                        ~= "treadmillboard"
+                    and not lowerName:find(
+                        "spawnvfx",
+                        1,
+                        true
+                    )
+                then
+                    local part =
+                        findTreadmillPart(object)
+
+                    if part then
+                        local multiplier =
+                            treadmillMultiplier(
+                                object
+                            )
+
+                        if multiplier
+                            > bestMultiplier
+                        then
+                            bestModel = object
+                            bestPart = part
+                            bestMultiplier =
+                                multiplier
+                        end
+                    end
+                end
+            end
+        end
+
+        return
+            plot,
+            bestModel,
+            bestPart,
+            bestMultiplier
+    end
+
+    local function getTreadmillStandCFrame(part)
+        local _, humanoid, hrp =
+            getCharacter()
+
+        local rootHalfHeight =
+            hrp.Size.Y * 0.5
+
+        local standHeight =
+            part.Size.Y * 0.5
+            + humanoid.HipHeight
+            + rootHalfHeight
+            + 0.15
+
+        return
+            part.CFrame
+            * CFrame.new(
+                0,
+                standHeight,
+                0
+            )
+    end
+
+    local function teleportToTreadmill()
+        local plot,
+            model,
+            part,
+            multiplier =
+            getPlotTreadmill()
+
+        if not plot then
+            warn(
+                "[CHLISE HUB] Owned plot not found for Auto Treadmill."
+            )
+
+            return false
+        end
+
+        if not part then
+            warn(
+                "[CHLISE HUB] Treadmill not found inside owned plot:",
+                plot:GetFullName()
+            )
+
+            return false
+        end
+
+        local _, humanoid, hrp =
+            getCharacter()
+
+        humanoid:Move(
+            Vector3.zero,
+            false
+        )
+
+        local standCF =
+            getTreadmillStandCFrame(
+                part
+            )
+
+        hrp.AssemblyLinearVelocity =
+            Vector3.zero
+
+        hrp.AssemblyAngularVelocity =
+            Vector3.zero
+
+        hrp.CFrame =
+            standCF
+
+        log(
+            "Auto Treadmill teleport",
+            "| Plot:",
+            plot.Name,
+            "| Treadmill:",
+            model and model.Name or part.Name,
+            "| Multiplier:",
+            multiplier,
+            "| Position:",
+            standCF.Position
+        )
+
+        return true
+    end
+
+    local function isOnTreadmill(part)
+        if not part
+            or not part.Parent
+        then
+            return false
+        end
+
+        local _, _, hrp =
+            getCharacter()
+
+        local localPosition =
+            part.CFrame:
+            PointToObjectSpace(
+                hrp.Position
+            )
+
+        local horizontalPadding =
+            2.5
+
+        local insideX =
+            math.abs(localPosition.X)
+            <= part.Size.X * 0.5
+                + horizontalPadding
+
+        local insideZ =
+            math.abs(localPosition.Z)
+            <= part.Size.Z * 0.5
+                + horizontalPadding
+
+        local verticalDistance =
+            math.abs(
+                localPosition.Y
+                - (
+                    part.Size.Y * 0.5
+                    + 3
+                )
+            )
+
+        return
+            insideX
+            and insideZ
+            and verticalDistance <= 8
+    end
+
     local isCarrying
     local isBeingChased
+
+    local startAutoFarm
+    local startAutoTreadmill
+    local setActivity
 
     -- Normal character movement.
     -- This intentionally does NOT raw-CFrame teleport long distances.
@@ -1580,8 +2011,38 @@ return function(Context)
         return false
     end
 
+    if TreadmillSessionRemote then
+        TreadmillSessionRemote.
+        OnClientEvent:
+        Connect(function(speed, sessionCF)
+            if typeof(speed) ~= "number"
+                or typeof(sessionCF)
+                    ~= "CFrame"
+            then
+                return
+            end
+
+            treadmillSessionSpeed =
+                speed
+
+            treadmillSessionCFrame =
+                sessionCF
+
+            lastTreadmillSession =
+                os.clock()
+
+            log(
+                "Treadmill session detected",
+                "| Speed:",
+                speed,
+                "| Position:",
+                sessionCF.Position
+            )
+        end)
+    end
+
     -- Farm loop
-    local function startAutoFarm()
+    startAutoFarm = function()
         if farmLoopRunning then
             return
         end
@@ -1590,6 +2051,7 @@ return function(Context)
 
         task.spawn(function()
             while autoFarmActive
+                and currentActivity == "Farm"
                 and not Window.Destroyed
             do
                 local ok, err = pcall(function()
@@ -1638,10 +2100,165 @@ return function(Context)
                 end
             end
 
-            stopMoving()
+            if currentActivity == "Farm"
+                or currentActivity == nil
+            then
+                stopMoving()
+            end
+
             farmLoopRunning = false
         end)
     end
+
+    startAutoTreadmill = function()
+        if treadmillLoopRunning then
+            return
+        end
+
+        treadmillLoopRunning = true
+
+        task.spawn(function()
+            while autoTreadmillActive
+                and currentActivity
+                    == "Treadmill"
+                and not Window.Destroyed
+            do
+                local ok, err =
+                    pcall(function()
+                        local _,
+                            _,
+                            part =
+                            getPlotTreadmill()
+
+                        if not part then
+                            teleportToTreadmill()
+                            task.wait(0.5)
+                            return
+                        end
+
+                        if not isOnTreadmill(
+                            part
+                        ) then
+                            teleportToTreadmill()
+                            task.wait(0.25)
+                            return
+                        end
+
+                        local _,
+                            humanoid =
+                            getCharacter()
+
+                        -- Treadmill itself handles the session.
+                        -- Do not force a running direction.
+                        humanoid:Move(
+                            Vector3.zero,
+                            false
+                        )
+                    end)
+
+                if not ok then
+                    warn(
+                        "[CHLISE HUB] Auto Treadmill error:",
+                        err
+                    )
+
+                    task.wait(0.5)
+                else
+                    task.wait(0.12)
+                end
+            end
+
+            treadmillLoopRunning =
+                false
+        end)
+    end
+
+    setActivity = function(activity)
+        if activity == currentActivity then
+            refreshActivityDeadline()
+            return
+        end
+
+        currentActivity =
+            activity
+
+        autoFarmActive =
+            activity == "Farm"
+
+        autoTreadmillActive =
+            activity == "Treadmill"
+
+        stopMoving()
+
+        if activity == "Farm" then
+            log(
+                "Activity -> Auto Farm Egg"
+            )
+
+            refreshActivityDeadline()
+            startAutoFarm()
+
+        elseif activity == "Treadmill" then
+            log(
+                "Activity -> Auto Treadmill"
+            )
+
+            refreshActivityDeadline()
+
+            teleportToTreadmill()
+            startAutoTreadmill()
+
+        else
+            activityDeadline = nil
+            log("Activity -> Idle")
+        end
+    end
+
+    -- Timer coordinator:
+    -- both ON  -> alternate by each timer
+    -- only one -> that activity continues without forced switching
+    task.spawn(function()
+        while not Window.Destroyed do
+            if currentActivity
+                and activityDeadline
+                and os.clock()
+                    >= activityDeadline
+            then
+                if currentActivity
+                    == "Treadmill"
+                then
+                    if autoFarmEnabled then
+                        setActivity("Farm")
+                    else
+                        -- No farm to switch to:
+                        -- stay on treadmill.
+                        activityDeadline = nil
+                    end
+
+                elseif currentActivity
+                    == "Farm"
+                then
+                    if autoTreadmillEnabled then
+                        -- If we are carrying a pet / still chased,
+                        -- finish that recovery first before leaving.
+                        if not isCarrying()
+                            and not isBeingChased()
+                        then
+                            setActivity(
+                                "Treadmill"
+                            )
+                        end
+                    else
+                        -- No treadmill to switch to:
+                        -- continue farming.
+                        activityDeadline = nil
+                    end
+                end
+            end
+
+            task.wait(0.1)
+        end
+    end)
 
     -- UI - uses the same template/API as Ride A Pet.
     local FarmTab =
@@ -1747,16 +2364,69 @@ return function(Context)
         end
     )
 
+    FarmSection:AddTextbox(
+        "BSAEFarmTimer",
+        "Auto Farm Timer",
+        "10",
+
+        function(value)
+            local parsed =
+                tonumber(
+                    tostring(value or ""):
+                    gsub(",", ".")
+                )
+
+            if parsed and parsed > 0 then
+                farmTimerValue =
+                    parsed
+
+                if currentActivity
+                    == "Farm"
+                then
+                    refreshActivityDeadline()
+                end
+            end
+        end
+    )
+
+    FarmSection:AddDropdown(
+        "BSAEFarmTimerUnit",
+        "Farm Timer Unit",
+        {
+            "Minutes",
+            "Hours"
+        },
+        false,
+        farmTimerUnit,
+
+        function(value)
+            if value == "Minutes"
+                or value == "Hours"
+            then
+                farmTimerUnit =
+                    value
+
+                if currentActivity
+                    == "Farm"
+                then
+                    refreshActivityDeadline()
+                end
+            end
+        end
+    )
+
     FarmSection:AddToggle(
         "BSAEAutoFarm",
         "Auto Break & Steal",
         false,
 
         function(state)
-            autoFarmActive = state
+            autoFarmEnabled =
+                state
 
             if state then
-                local homeHitbox = getOwnedPlotHitbox()
+                local homeHitbox =
+                    getOwnedPlotHitbox()
 
                 if homeHitbox then
                     log(
@@ -1768,12 +2438,122 @@ return function(Context)
                         #MASTER_PETS
                     )
                 else
-                    warn("[CHLISE HUB] Owned plot was not detected yet.")
+                    warn(
+                        "[CHLISE HUB] Owned plot was not detected yet."
+                    )
                 end
 
-                startAutoFarm()
+                if currentActivity == nil then
+                    setActivity("Farm")
+                elseif currentActivity
+                    == "Treadmill"
+                then
+                    -- Keep treadmill phase running.
+                    -- Farm starts when treadmill timer expires.
+                    refreshActivityDeadline()
+                else
+                    setActivity("Farm")
+                end
             else
-                stopMoving()
+                if currentActivity == "Farm" then
+                    if autoTreadmillEnabled then
+                        setActivity(
+                            "Treadmill"
+                        )
+                    else
+                        setActivity(nil)
+                    end
+                else
+                    refreshActivityDeadline()
+                end
+            end
+        end
+    )
+
+    local TreadmillSection =
+        Window:AddSection(
+            FarmTab,
+            "Treadmill"
+        )
+
+    TreadmillSection:AddTextbox(
+        "BSAETreadmillTimer",
+        "Auto Treadmill Timer",
+        "10",
+
+        function(value)
+            local parsed =
+                tonumber(
+                    tostring(value or ""):
+                    gsub(",", ".")
+                )
+
+            if parsed and parsed > 0 then
+                treadmillTimerValue =
+                    parsed
+
+                if currentActivity
+                    == "Treadmill"
+                then
+                    refreshActivityDeadline()
+                end
+            end
+        end
+    )
+
+    TreadmillSection:AddDropdown(
+        "BSAETreadmillTimerUnit",
+        "Treadmill Timer Unit",
+        {
+            "Minutes",
+            "Hours"
+        },
+        false,
+        treadmillTimerUnit,
+
+        function(value)
+            if value == "Minutes"
+                or value == "Hours"
+            then
+                treadmillTimerUnit =
+                    value
+
+                if currentActivity
+                    == "Treadmill"
+                then
+                    refreshActivityDeadline()
+                end
+            end
+        end
+    )
+
+    TreadmillSection:AddToggle(
+        "BSAEAutoTreadmill",
+        "Auto Treadmill",
+        false,
+
+        function(state)
+            autoTreadmillEnabled =
+                state
+
+            if state then
+                -- Auto Treadmill ON always enters
+                -- the treadmill immediately.
+                setActivity(
+                    "Treadmill"
+                )
+            else
+                if currentActivity
+                    == "Treadmill"
+                then
+                    if autoFarmEnabled then
+                        setActivity("Farm")
+                    else
+                        setActivity(nil)
+                    end
+                else
+                    refreshActivityDeadline()
+                end
             end
         end
     )
