@@ -45,6 +45,8 @@ return function(Context)
     local HIT_DISTANCE = 7
     local EGG_APPROACH_DISTANCE = 4
     local HIT_DELAY = 0.52
+    local TWEEN_SPEED_MULTIPLIER = 4
+    local TWEEN_MIN_SPEED = 200
 
     local PICKUP_SPAWN_TIMEOUT = 8
     local MAX_PICKUP_SPAWN_DISTANCE = 15
@@ -356,114 +358,23 @@ return function(Context)
 
     local function teleportTo(targetPosition, stopDistance, extraCheck, timeout)
         stopDistance = tonumber(stopDistance) or 3
-
+        if not autoFarmActive then return false end
         local _, humanoid, hrp = getCharacter()
+        if not hrp.Parent or humanoid.Health <= 0 then return false end
+        if type(extraCheck) == "function" and extraCheck() then return true end
 
         humanoid:Move(Vector3.zero, false)
-
-        local deadline = os.clock() + (tonumber(timeout) or 60)
-        local lastTime =
-            os.clock()
-
-        while autoFarmActive
-            and hrp.Parent
-            and humanoid.Health > 0
-            and os.clock() < deadline
-        do
-            if type(extraCheck) == "function"
-                and extraCheck()
-            then
-                return true
-            end
-
-            local delta =
-                targetPosition
-                - hrp.Position
-
-            local distance =
-                Vector3.new(delta.X, 0, delta.Z).Magnitude
-
-            if distance <= stopDistance then
-                hrp.AssemblyLinearVelocity = Vector3.zero
-                hrp.AssemblyAngularVelocity = Vector3.zero
-                return true
-            end
-
-            local now =
-                os.clock()
-
-            local dt =
-                math.clamp(
-                    now - lastTime,
-                    1 / 120,
-                    0.12
-                )
-
-            lastTime =
-                now
-
-            local allowedSpeed =
-                getCurrentMoveSpeed()
-
-            local stepDistance =
-                math.min(
-                    distance,
-                    allowedSpeed * dt
-                )
-
-            local nextPosition =
-                hrp.Position
-                + Vector3.new(delta.X, 0, delta.Z).Unit
-                    * stepDistance
-
-            local flatLook =
-                Vector3.new(
-                    delta.X,
-                    0,
-                    delta.Z
-                )
-
-            if flatLook.Magnitude < 0.01 then
-                flatLook =
-                    Vector3.new(
-                        hrp.CFrame.LookVector.X,
-                        0,
-                        hrp.CFrame.LookVector.Z
-                    )
-            end
-
-            if flatLook.Magnitude < 0.01 then
-                flatLook =
-                    Vector3.new(0, 0, -1)
-            else
-                flatLook =
-                    flatLook.Unit
-            end
-
-            -- Keep Y exactly on the travel line; do not pitch upward.
-            local finalPosition =
-                Vector3.new(
-                    nextPosition.X,
-                    hrp.Position.Y,
-                    nextPosition.Z
-                )
-
-            hrp.AssemblyLinearVelocity =
-                Vector3.zero
-
-            hrp.AssemblyAngularVelocity =
-                Vector3.zero
-
-            hrp.CFrame =
-                CFrame.lookAt(
-                    finalPosition,
-                    finalPosition + flatLook
-                )
-
-            task.wait()
+        local finalPosition = Vector3.new(targetPosition.X, hrp.Position.Y, targetPosition.Z)
+        local direction = finalPosition - hrp.Position
+        if direction.Magnitude > stopDistance then
+            local look = direction.Magnitude > 0.01 and direction.Unit
+                or Vector3.new(0, 0, -1)
+            -- Teleport is one position change, with no speed-based stepping.
+            hrp.CFrame = CFrame.lookAt(finalPosition, finalPosition + look)
         end
-
-        return false
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        return (hrp.Position - finalPosition).Magnitude <= stopDistance
     end
 
     local function tweenTo(targetPosition, stopDistance, timeout, extraCheck)
@@ -472,7 +383,7 @@ return function(Context)
 
         local _, humanoid, hrp = getCharacter()
 
-        humanoid:MoveTo(hrp.Position)
+        humanoid:Move(Vector3.zero, false)
 
         local distance = (hrp.Position - targetPosition).Magnitude
 
@@ -480,13 +391,16 @@ return function(Context)
             return true
         end
 
-        local syncedSpeed =
-            getCurrentMoveSpeed()
+        local syncedSpeed = getCurrentMoveSpeed()
+        local travelSpeed = math.max(
+            syncedSpeed * TWEEN_SPEED_MULTIPLIER,
+            TWEEN_MIN_SPEED
+        )
 
         local duration =
             math.max(
                 0.05,
-                distance / syncedSpeed
+                distance / travelSpeed
             )
 
         duration =
@@ -496,8 +410,9 @@ return function(Context)
             )
 
         log(
-            "Tween speed sync",
+            "Tween travel speed",
             "| WalkSpeed:", syncedSpeed,
+            "| TravelSpeed:", travelSpeed,
             "| Distance:", distance,
             "| Duration:", duration
         )
