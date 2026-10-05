@@ -410,102 +410,40 @@ return function(Context)
         return moveTo(approachPosition, 2, timeout)
     end
 
-    local function getDeepHomePosition(hitbox, fromPosition)
-        -- Cari arah dari posisi kita menuju pusat plot dalam local-space hitbox.
-        -- Lalu teruskan sedikit melewati pusat agar masuk lebih dalam,
-        -- bukan berhenti di garis safe zone.
-        local flatFrom =
-            Vector3.new(
-                fromPosition.X,
-                hitbox.Position.Y,
-                fromPosition.Z
-            )
+    local function getHomeEntryPoints(hitbox, fromPosition)
+        local flatFrom = Vector3.new(fromPosition.X, hitbox.Position.Y, fromPosition.Z)
+        local localFrom = hitbox.CFrame:PointToObjectSpace(flatFrom)
+        local direction = Vector3.new(localFrom.X, 0, localFrom.Z)
 
-        local localFrom =
-            hitbox.CFrame:
-            PointToObjectSpace(
-                flatFrom
-            )
-
-        local inward =
-            Vector3.new(
-                -localFrom.X,
-                0,
-                -localFrom.Z
-            )
-
-        if inward.Magnitude < 0.05 then
-            inward =
-                Vector3.new(
-                    0,
-                    0,
-                    -1
-                )
+        if direction.Magnitude < 0.05 then
+            direction = Vector3.new(0, 0, 1)
         else
-            inward =
-                inward.Unit
+            direction = direction.Unit
         end
 
-        local half =
-            hitbox.Size * 0.5
+        local half = hitbox.Size * 0.5
+        local tx = math.huge
+        local tz = math.huge
 
-        local maxX =
-            math.max(
-                half.X - HOME_EDGE_MARGIN,
-                0
-            )
-
-        local maxZ =
-            math.max(
-                half.Z - HOME_EDGE_MARGIN,
-                0
-            )
-
-        local maxDistance =
-            HOME_DEEP_DISTANCE
-
-        if math.abs(inward.X) > 0.001 then
-            maxDistance =
-                math.min(
-                    maxDistance,
-                    maxX / math.abs(inward.X)
-                )
+        if math.abs(direction.X) > 0.001 then
+            tx = half.X / math.abs(direction.X)
         end
 
-        if math.abs(inward.Z) > 0.001 then
-            maxDistance =
-                math.min(
-                    maxDistance,
-                    maxZ / math.abs(inward.Z)
-                )
+        if math.abs(direction.Z) > 0.001 then
+            tz = half.Z / math.abs(direction.Z)
         end
 
-        maxDistance =
-            math.max(
-                maxDistance,
-                0
-            )
+        local edgeDistance = math.min(tx, tz)
+        local stagingLocal = direction * (edgeDistance + 14)
+        local insideLocal = direction * math.max(edgeDistance - 7, 0)
 
-        local localTarget =
-            inward * maxDistance
+        local stagingWorld = hitbox.CFrame:PointToWorldSpace(stagingLocal)
+        local insideWorld = hitbox.CFrame:PointToWorldSpace(insideLocal)
 
-        local worldTarget =
-            hitbox.CFrame:
-            PointToWorldSpace(
-                Vector3.new(
-                    localTarget.X,
-                    0,
-                    localTarget.Z
-                )
-            )
-
-        -- Y HARUS tetap sama seperti posisi player saat mulai pulang.
-        -- Ini mencegah karakter melihat/bergerak ke atas.
-        return Vector3.new(
-            worldTarget.X,
-            fromPosition.Y,
-            worldTarget.Z
-        )
+        -- Keep current player height for the whole return path.
+        return
+            Vector3.new(stagingWorld.X, fromPosition.Y, stagingWorld.Z),
+            Vector3.new(insideWorld.X, fromPosition.Y, insideWorld.Z)
     end
 
     local function walkHome()
@@ -517,71 +455,54 @@ return function(Context)
         end
 
         local _, _, hrp = getCharacter()
-
-        local startPosition =
-            hrp.Position
-
-        local targetPosition =
-            getDeepHomePosition(
-                hitbox,
-                startPosition
-            )
+        local stagingPosition, insidePosition =
+            getHomeEntryPoints(hitbox, hrp.Position)
 
         log(
-            "Returning home:",
-            hitbox:GetFullName(),
-            "| Mode:",
-            movementMode,
-            "| DeepTarget:",
-            targetPosition
+            "Returning home",
+            "| Mode:", movementMode,
+            "| Staging:", stagingPosition,
+            "| Inside:", insidePosition
         )
 
-        -- Jangan gunakan IsBankable sebagai early-stop di sini.
-        -- Dulu movement berhenti saat baru menyentuh batas safe zone,
-        -- sehingga guard masih bisa memukul dari luar.
-        local reached =
-            moveTo(
-                targetPosition,
-                2.5,
-                60
-            )
-
-        local _, _, currentHRP =
-            getCharacter()
-
-        local bankable =
-            isBankablePosition(
-                currentHRP.Position
-            )
-
-        -- Kalau movement berhenti sedikit terlalu awal, dorong lagi ke titik
-        -- yang sama (terutama Walk mode) tanpa mengubah tinggi Y.
-        if reached
-            and not bankable
-        then
-            moveTo(
-                targetPosition,
-                1.5,
-                8
-            )
-
-            _, _, currentHRP =
-                getCharacter()
-
-            bankable =
-                isBankablePosition(
-                    currentHRP.Position
-                )
+        -- Tween/Teleport stop OUTSIDE the safe-zone boundary.
+        if movementMode == "Tween" then
+            if not tweenTo(stagingPosition, 2.5, 60) then
+                warn("[CHLISE HUB] Tween failed to reach home staging point.")
+                return false
+            end
+        elseif movementMode == "Teleport" then
+            if not teleportTo(stagingPosition, 3) then
+                warn("[CHLISE HUB] Teleport failed to reach home staging point.")
+                return false
+            end
         end
 
+        -- Safe-zone crossing is always normal Walk.
+        -- Walk mode simply walks here from its current position.
+        if not walkTo(insidePosition, 2.25, 30) then
+            warn("[CHLISE HUB] Failed to cross owned plot safe zone.")
+            return false
+        end
+
+        -- Give the server a moment to release the chase state.
+        local chaseDeadline = os.clock() + 3
+
+        while autoFarmActive
+            and os.clock() < chaseDeadline
+            and isBeingChased()
+        do
+            task.wait(0.05)
+        end
+
+        local _, _, currentHRP = getCharacter()
+        local bankable = isBankablePosition(currentHRP.Position)
+
         log(
-            "Home arrival",
-            "| Reached:",
-            reached,
-            "| Bankable:",
-            bankable,
-            "| Position:",
-            currentHRP.Position
+            "SAFE ZONE CROSSED",
+            "| Bankable:", bankable,
+            "| Chased:", isBeingChased(),
+            "| Position:", currentHRP.Position
         )
 
         return bankable
