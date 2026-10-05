@@ -5,6 +5,7 @@
 -- Added: Titanic Egg event detection/prioritization via Workspace attributes
 -- Pipeline: unlimited pending hatch queue (A -> B -> C -> D ... without waiting)
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
+-- Titanic detection: physical spawned egg fallback works even when Workspace event attributes are stale/missing
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
@@ -1936,25 +1937,89 @@ return function(Context)
             )
     end
 
+    local function objectLooksTitanic(
+        object
+    )
+        local current = object
+
+        for _ = 1, 5 do
+            if not current then
+                break
+            end
+
+            local normalized =
+                normalizeEggKey(
+                    current.Name
+                )
+
+            if normalized:
+                find(
+                    "titanic",
+                    1,
+                    true
+                )
+            then
+                return true
+            end
+
+            current =
+                current.Parent
+        end
+
+        return false
+    end
+
     local function isTitanicEggObject(
         egg,
         state
     )
-        if not egg
-            or not state
-            or not state.EggName
-        then
+        if not egg then
             return false
         end
 
-        return
+        -- Best signal: replicated event egg name.
+        if state
+            and type(state.EggName)
+                == "string"
+            and state.EggName ~= ""
+        then
+            if normalizeEggKey(
+                getEggName(egg)
+            ) == normalizeEggKey(
+                state.EggName
+            )
+            then
+                return true
+            end
+        end
+
+        -- Fallback for game updates where Titanic workspace attributes are
+        -- late/missing but the event egg is already physically spawned.
+        if objectLooksTitanic(
+            egg
+        ) then
+            return true
+        end
+
+        local eggName =
             normalizeEggKey(
                 getEggName(egg)
             )
-            == normalizeEggKey(
-                state.EggName
-            )
+
+        return
+            eggName:
+            find(
+                "titanic",
+                1,
+                true
+            ) ~= nil
     end
+
+    local lastTitanicScanAt = 0
+    local cachedTitanicEgg = nil
+    local cachedTitanicZone = nil
+    local cachedTitanicDistance = nil
+    local cachedTitanicState = nil
 
     local function findTitanicEgg(
         excludedEgg
@@ -1963,30 +2028,82 @@ return function(Context)
             return nil
         end
 
-        local state =
-            getTitanicState()
+        local nowClock =
+            os.clock()
 
-        if not state.Active then
-            return nil
+        -- Avoid doing a Workspace:GetDescendants() scan every frame.
+        if nowClock
+                - lastTitanicScanAt
+            < 0.25
+            and cachedTitanicEgg
+            and cachedTitanicEgg.Parent
+            and cachedTitanicEgg
+                ~= excludedEgg
+            and validEgg(
+                cachedTitanicEgg
+            )
+        then
+            return
+                cachedTitanicEgg,
+                cachedTitanicZone,
+                cachedTitanicDistance,
+                cachedTitanicState
         end
 
-        local zoneName =
-            "Zone"
-            .. tostring(
-                state.ZoneIndex
-            )
+        lastTitanicScanAt =
+            nowClock
+
+        local state =
+            getTitanicState()
 
         local _, _, hrp =
             getCharacter()
 
         local best
+        local bestZone
         local bestDistance =
             math.huge
 
-        local function consider(egg)
+        local function inferZoneName(
+            egg
+        )
+            local current =
+                egg
+
+            while current
+                and current ~= Workspace
+            do
+                if current.Name:
+                    match(
+                        "^Zone%d+$"
+                    )
+                then
+                    return current.Name
+                end
+
+                current =
+                    current.Parent
+            end
+
+            if state.ZoneIndex then
+                return
+                    "Zone"
+                    .. tostring(
+                        state.ZoneIndex
+                    )
+            end
+
+            return "TitanicEvent"
+        end
+
+        local function consider(
+            egg
+        )
             if not egg
                 or egg == excludedEgg
-                or not validEgg(egg)
+                or not validEgg(
+                    egg
+                )
                 or not isTitanicEggObject(
                     egg,
                     state
@@ -2001,40 +2118,88 @@ return function(Context)
                     - egg.Position
                 ).Magnitude
 
-            if distance < bestDistance then
+            if distance
+                < bestDistance
+            then
                 best = egg
                 bestDistance =
                     distance
+                bestZone =
+                    inferZoneName(
+                        egg
+                    )
             end
         end
 
-        -- Primary path: the zone supplied by the replicated Titanic state.
-        local zone =
-            ZoneBuilds:
-            FindFirstChild(
-                zoneName
-            )
+        -- 1) Fast path: use the zone supplied by Titanic state when available.
+        if state.ZoneIndex then
+            local zoneName =
+                "Zone"
+                .. tostring(
+                    state.ZoneIndex
+                )
 
-        local eggs =
-            zone
-            and zone:
-            FindFirstChild("Eggs")
+            local zone =
+                ZoneBuilds:
+                FindFirstChild(
+                    zoneName
+                )
 
-        if eggs then
-            for _, container
+            local eggs =
+                zone
+                and zone:
+                FindFirstChild(
+                    "Eggs"
+                )
+
+            if eggs then
+                for _, container
+                    in ipairs(
+                        eggs:GetChildren()
+                    )
+                do
+                    consider(
+                        resolveEgg(
+                            container
+                        )
+                    )
+                end
+            end
+        end
+
+        -- 2) Scan every normal egg container. This catches a Titanic egg even
+        -- when TitanicZoneIndex is stale or nil.
+        if not best then
+            for _, zone
                 in ipairs(
-                    eggs:GetChildren()
+                    ZoneBuilds:
+                    GetChildren()
                 )
             do
-                consider(
-                    resolveEgg(
-                        container
+                local eggs =
+                    zone:
+                    FindFirstChild(
+                        "Eggs"
                     )
-                )
+
+                if eggs then
+                    for _, container
+                        in ipairs(
+                            eggs:GetChildren()
+                        )
+                    do
+                        consider(
+                            resolveEgg(
+                                container
+                            )
+                        )
+                    end
+                end
             end
         end
 
-        -- Fallback for event-only placement outside normal ZoneBuilds.
+        -- 3) Event-only fallback outside ZoneBuilds. Do not require state.Active:
+        -- the physical Titanic egg itself is enough proof that the event exists.
         if not best then
             for _, object
                 in ipairs(
@@ -2045,21 +2210,41 @@ return function(Context)
                 if object:IsA(
                         "BasePart"
                     )
-                    and typeof(
-                        object:GetAttribute(
-                            "Health"
+                    and (
+                        typeof(
+                            object:
+                            GetAttribute(
+                                "Health"
+                            )
+                        ) == "number"
+                        or objectLooksTitanic(
+                            object
                         )
-                    ) == "number"
+                    )
                 then
-                    consider(object)
+                    consider(
+                        object
+                    )
                 end
             end
         end
 
+        cachedTitanicEgg =
+            best
+
+        cachedTitanicZone =
+            bestZone
+
+        cachedTitanicDistance =
+            bestDistance
+
+        cachedTitanicState =
+            state
+
         if best then
             return
                 best,
-                zoneName,
+                bestZone,
                 bestDistance,
                 state
         end
@@ -3845,7 +4030,6 @@ return function(Context)
                 false
 
             if prioritizeTitanicEgg
-                and state.Active
                 and automationEnabled
             then
                 local target =
@@ -3926,7 +4110,14 @@ return function(Context)
         local state =
             getTitanicState()
 
-        if state.Active then
+        local physicalTarget =
+            prioritizeTitanicEgg
+            and findTitanicEgg()
+            or nil
+
+        if state.Active
+            or physicalTarget
+        then
             log(
                 "Titanic ACTIVE",
                 "| Egg:",
