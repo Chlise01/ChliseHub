@@ -7,6 +7,7 @@
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
 -- Titanic detection: physical spawned egg fallback works even when Workspace event attributes are stale/missing
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
+-- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
@@ -38,6 +39,8 @@ return function(Context)
     local EggRarity = require(Shared:WaitForChild("EggRarity"))
     local PlotUpgradeConfig = require(Shared:WaitForChild("PlotUpgradeConfig"))
     local TreadmillUpgradeConfig = require(Shared:WaitForChild("TreadmillUpgradeConfig"))
+    local PickaxeConfig = require(Shared:WaitForChild("PickaxeConfig"))
+    local TrailsConfig = require(Shared:WaitForChild("TrailsConfig"))
 
     local AnimalRenders
     pcall(function()
@@ -50,6 +53,8 @@ return function(Context)
     local TreadmillSessionRemote = ReplicatedStorage:FindFirstChild("TreadmillSessionRemote")
     local UpgradePlotRequest = ReplicatedStorage:WaitForChild("UpgradePlotRequest")
     local UpgradeTreadmillRequest = ReplicatedStorage:WaitForChild("UpgradeTreadmillRequest")
+    local PickaxeShopRequest = ReplicatedStorage:WaitForChild("PickaxeShopRequest")
+    local TrailShopRequest = ReplicatedStorage:WaitForChild("TrailShopRequest")
 
     local Build = Workspace:WaitForChild(ZonesConfig.BuildFolderName or "Build")
     local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
@@ -113,6 +118,15 @@ return function(Context)
 
     local penUpgradeRetryAt = 0
     local treadmillUpgradeRetryAt = 0
+
+    local autoBuyPickaxe = false
+    local autoBuyTrail = false
+
+    local pickaxeBuyWorkerRunning = false
+    local trailBuyWorkerRunning = false
+
+    local pickaxeBuyRetryAt = 0
+    local trailBuyRetryAt = 0
 
     -- Titanic is allowed to temporarily override the normal Farm/Treadmill
     -- schedule. We preserve the previous activity + remaining timer so it can
@@ -882,6 +896,456 @@ return function(Context)
         end)
     end
 
+    local function parseOwnedTrails()
+        local owned = {}
+
+        local raw =
+            LocalPlayer:GetAttribute(
+                TrailsConfig.OwnedAttribute
+                or "OwnedTrails"
+            )
+
+        if type(raw) == "string" then
+            for token in raw:gmatch(
+                "[^,%s]+"
+            ) do
+                local id =
+                    tonumber(token)
+
+                if id then
+                    owned[
+                        math.floor(id)
+                    ] = true
+                end
+            end
+
+        elseif type(raw) == "number" then
+            owned[
+                math.floor(raw)
+            ] = true
+
+        elseif type(raw) == "table" then
+            for key, value
+                in pairs(raw)
+            do
+                local id =
+                    tonumber(key)
+                    or tonumber(value)
+
+                if id then
+                    owned[
+                        math.floor(id)
+                    ] = true
+                end
+            end
+        end
+
+        return owned
+    end
+
+    local function getNextPickaxePurchase()
+        local currentTier =
+            tonumber(
+                LocalPlayer:GetAttribute(
+                    "PickaxeTier"
+                )
+            )
+            or tonumber(
+                PickaxeConfig.DefaultTier
+            )
+            or 1
+
+        local tiers =
+            PickaxeConfig.Tiers
+            or {}
+
+        local nextTier =
+            currentTier + 1
+
+        local info =
+            tiers[
+                nextTier
+            ]
+
+        if not info then
+            return nil,
+                currentTier
+        end
+
+        return {
+            Tier = nextTier,
+            Info = info,
+            Price =
+                tonumber(
+                    info.Price
+                )
+                or 0
+        },
+        currentTier
+    end
+
+    local function getNextTrailPurchase()
+        local owned =
+            parseOwnedTrails()
+
+        local trails =
+            TrailsConfig.Trails
+            or {}
+
+        for _, info
+            in ipairs(trails)
+        do
+            local id =
+                tonumber(
+                    info.Id
+                )
+
+            if id
+                and not owned[id]
+            then
+                return {
+                    Id = id,
+                    Info = info,
+                    Price =
+                        tonumber(
+                            info.Price
+                        )
+                        or 0
+                }
+            end
+        end
+
+        return nil
+    end
+
+    local function waitForPickaxeTier(
+        oldTier,
+        timeout
+    )
+        local deadline =
+            os.clock()
+            + (
+                tonumber(timeout)
+                or 5
+            )
+
+        while os.clock()
+            < deadline
+        do
+            local tier =
+                tonumber(
+                    LocalPlayer:GetAttribute(
+                        "PickaxeTier"
+                    )
+                )
+                or 0
+
+            if tier > oldTier then
+                return true, tier
+            end
+
+            task.wait(0.05)
+        end
+
+        return false, oldTier
+    end
+
+    local function waitForTrailOwned(
+        trailId,
+        timeout
+    )
+        local deadline =
+            os.clock()
+            + (
+                tonumber(timeout)
+                or 5
+            )
+
+        while os.clock()
+            < deadline
+        do
+            local owned =
+                parseOwnedTrails()
+
+            if owned[
+                trailId
+            ] then
+                return true
+            end
+
+            task.wait(0.05)
+        end
+
+        return false
+    end
+
+    local function waitForTrailEquipped(
+        trailId,
+        timeout
+    )
+        local deadline =
+            os.clock()
+            + (
+                tonumber(timeout)
+                or 3
+            )
+
+        local attribute =
+            TrailsConfig.EquippedAttribute
+            or "EquippedTrail"
+
+        while os.clock()
+            < deadline
+        do
+            local equipped =
+                tonumber(
+                    LocalPlayer:GetAttribute(
+                        attribute
+                    )
+                )
+
+            if equipped
+                == trailId
+            then
+                return true
+            end
+
+            task.wait(0.05)
+        end
+
+        return false
+    end
+
+    local function runAutoBuyPickaxe()
+        if pickaxeBuyWorkerRunning then
+            return
+        end
+
+        pickaxeBuyWorkerRunning = true
+
+        task.spawn(function()
+            while autoBuyPickaxe
+                and not Window.Destroyed
+            do
+                local nextPurchase,
+                    currentTier =
+                    getNextPickaxePurchase()
+
+                if not nextPurchase then
+                    log(
+                        "Auto Buy Pickaxe:",
+                        "MAX TIER",
+                        "| Tier:",
+                        currentTier
+                    )
+
+                    break
+                end
+
+                local cash =
+                    getCash()
+
+                if cash
+                    < nextPurchase.Price
+                then
+                    log(
+                        "Auto Buy Pickaxe waiting",
+                        "| Current:",
+                        currentTier,
+                        "| Next:",
+                        nextPurchase.Tier,
+                        "| Cash:",
+                        cash,
+                        "| Need:",
+                        nextPurchase.Price
+                    )
+
+                    break
+                end
+
+                if os.clock()
+                    < pickaxeBuyRetryAt
+                then
+                    break
+                end
+
+                log(
+                    "Auto Buy Pickaxe request",
+                    "| Tier:",
+                    currentTier,
+                    "->",
+                    nextPurchase.Tier,
+                    "| Price:",
+                    nextPurchase.Price
+                )
+
+                -- Client shop callback format:
+                -- PickaxeShopRequest:FireServer("Buy", tier)
+                PickaxeShopRequest:
+                    FireServer(
+                        "Buy",
+                        nextPurchase.Tier
+                    )
+
+                local confirmed,
+                    newTier =
+                    waitForPickaxeTier(
+                        currentTier,
+                        5
+                    )
+
+                if not confirmed then
+                    pickaxeBuyRetryAt =
+                        os.clock() + 10
+
+                    log(
+                        "Auto Buy Pickaxe:",
+                        "no tier confirmation; cooldown 10s"
+                    )
+
+                    break
+                end
+
+                pickaxeBuyRetryAt = 0
+
+                log(
+                    "Auto Buy Pickaxe confirmed",
+                    "| Tier:",
+                    newTier
+                )
+
+                task.wait(0.05)
+            end
+
+            pickaxeBuyWorkerRunning =
+                false
+        end)
+    end
+
+    local function runAutoBuyTrail()
+        if trailBuyWorkerRunning then
+            return
+        end
+
+        trailBuyWorkerRunning = true
+
+        task.spawn(function()
+            while autoBuyTrail
+                and not Window.Destroyed
+            do
+                local nextPurchase =
+                    getNextTrailPurchase()
+
+                if not nextPurchase then
+                    log(
+                        "Auto Buy Trail:",
+                        "ALL OWNED"
+                    )
+
+                    break
+                end
+
+                local cash =
+                    getCash()
+
+                if cash
+                    < nextPurchase.Price
+                then
+                    log(
+                        "Auto Buy Trail waiting",
+                        "| Next ID:",
+                        nextPurchase.Id,
+                        "| Name:",
+                        nextPurchase.Info.Name,
+                        "| Cash:",
+                        cash,
+                        "| Need:",
+                        nextPurchase.Price
+                    )
+
+                    break
+                end
+
+                if os.clock()
+                    < trailBuyRetryAt
+                then
+                    break
+                end
+
+                log(
+                    "Auto Buy Trail request",
+                    "| ID:",
+                    nextPurchase.Id,
+                    "| Name:",
+                    nextPurchase.Info.Name,
+                    "| Price:",
+                    nextPurchase.Price
+                )
+
+                -- Client shop callback format:
+                -- TrailShopRequest:FireServer("Buy", trailId)
+                TrailShopRequest:
+                    FireServer(
+                        "Buy",
+                        nextPurchase.Id
+                    )
+
+                local confirmed =
+                    waitForTrailOwned(
+                        nextPurchase.Id,
+                        5
+                    )
+
+                if not confirmed then
+                    trailBuyRetryAt =
+                        os.clock() + 10
+
+                    log(
+                        "Auto Buy Trail:",
+                        "no ownership confirmation; cooldown 10s"
+                    )
+
+                    break
+                end
+
+                trailBuyRetryAt = 0
+
+                log(
+                    "Auto Buy Trail confirmed",
+                    "| ID:",
+                    nextPurchase.Id
+                )
+
+                -- Equip the newly bought/best trail after ownership is confirmed.
+                TrailShopRequest:
+                    FireServer(
+                        "Equip",
+                        nextPurchase.Id
+                    )
+
+                waitForTrailEquipped(
+                    nextPurchase.Id,
+                    3
+                )
+
+                task.wait(0.05)
+            end
+
+            trailBuyWorkerRunning =
+                false
+        end)
+    end
+
+    local function triggerAutoPurchases()
+        if autoBuyPickaxe then
+            runAutoBuyPickaxe()
+        end
+
+        if autoBuyTrail then
+            runAutoBuyTrail()
+        end
+    end
+
     local function triggerAutoUpgrades()
         if autoUpgradePen then
             runAutoUpgradePen()
@@ -899,6 +1363,7 @@ return function(Context)
     ):
     Connect(function()
         triggerAutoUpgrades()
+        triggerAutoPurchases()
     end)
 
     local function treadmillMultiplier(object)
@@ -4550,6 +5015,38 @@ return function(Context)
             if autoUpgradeTreadmill then
                 treadmillUpgradeRetryAt = 0
                 runAutoUpgradeTreadmill()
+            end
+        end
+    )
+
+    UpgradeSection:AddToggle(
+        "BSAEAutoBuyPickaxe",
+        "Auto Buy Pickaxe",
+        false,
+
+        function(state)
+            autoBuyPickaxe =
+                state == true
+
+            if autoBuyPickaxe then
+                pickaxeBuyRetryAt = 0
+                runAutoBuyPickaxe()
+            end
+        end
+    )
+
+    UpgradeSection:AddToggle(
+        "BSAEAutoBuyTrail",
+        "Auto Buy Trail",
+        false,
+
+        function(state)
+            autoBuyTrail =
+                state == true
+
+            if autoBuyTrail then
+                trailBuyRetryAt = 0
+                runAutoBuyTrail()
             end
         end
     )
