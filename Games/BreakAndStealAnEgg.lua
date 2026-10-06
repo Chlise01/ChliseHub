@@ -12,6 +12,7 @@
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
 -- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
 -- Sell: Auto Sell resolves BackpackSellController config from GC table/upvalues and uses ToolValue / PetIncomeSeconds
+-- Sell safety: GC candidate probing uses rawget to avoid proxy __index errors (GoodSignal/Connection tables)
 -- Progression: Auto Next Zone checks speed, 10s break test, waits for next PickaxeTier on fallback
 -- Priority: Titanic Egg > Farm Egg > Treadmill (strict, no timer preemption)
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
@@ -6391,18 +6392,46 @@ return function(Context)
     function Extra.isBackpackSellConfig(
         object
     )
+        if type(object) ~= "table" then
+            return false
+        end
+
+        -- getgc() also returns proxy/signal tables whose __index metamethod
+        -- can throw when reading an unknown key. Use rawget so probing a
+        -- candidate never triggers that metamethod.
+        local remoteName =
+            rawget(
+                object,
+                "RemoteName"
+            )
+
+        local animalToolTag =
+            rawget(
+                object,
+                "AnimalToolTag"
+            )
+
+        local toolValue =
+            rawget(
+                object,
+                "ToolValue"
+            )
+
+        local petValue =
+            rawget(
+                object,
+                "PetValue"
+            )
+
         return
-            type(object) == "table"
-            and object.RemoteName
+            remoteName
                 == "BackpackSellRemote"
-            and object.AnimalToolTag
+            and animalToolTag
                 == "AnimalTool"
-            and type(
-                object.ToolValue
-            ) == "function"
-            and type(
-                object.PetValue
-            ) == "function"
+            and type(toolValue)
+                == "function"
+            and type(petValue)
+                == "function"
     end
 
     function Extra.getBackpackSellConfig()
@@ -6446,7 +6475,10 @@ return function(Context)
                 Extra.log(
                     "Backpack sell config found (table)",
                     "| PetIncomeSeconds:",
-                    object.PetIncomeSeconds
+                    rawget(
+                        object,
+                        "PetIncomeSeconds"
+                    )
                 )
 
                 return object
@@ -6501,7 +6533,10 @@ return function(Context)
                             Extra.log(
                                 "Backpack sell config found (upvalue)",
                                 "| PetIncomeSeconds:",
-                                upvalue.PetIncomeSeconds
+                                rawget(
+                                    upvalue,
+                                    "PetIncomeSeconds"
+                                )
                             )
 
                             return upvalue
@@ -6535,10 +6570,16 @@ return function(Context)
             return nil
         end
 
+        local toolValue =
+            rawget(
+                config,
+                "ToolValue"
+            )
+
         local ok,
             result =
             pcall(
-                config.ToolValue,
+                toolValue,
                 tool
             )
 
@@ -6574,7 +6615,10 @@ return function(Context)
 
         local seconds =
             tonumber(
-                config.PetIncomeSeconds
+                rawget(
+                    config,
+                    "PetIncomeSeconds"
+                )
             )
             or 60
 
