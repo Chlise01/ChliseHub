@@ -15,6 +15,7 @@
 -- Recovery teleport: if the carried pet drops during chase/return, teleport directly to that exact pet before pickup
 -- Farm Teleport mode: teleport only when changing zones; move locally by walking inside the same zone
 -- Auto Sell V4: uses EggRewards.PlacedCashPerSecond(AnimalName, WeightKg, SizeMult) for exact pet income before selling
+-- World pet pickup: scans every hatched AnimalPickup already in the world and evaluates exact income with PlacedCashPerSecond
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
@@ -34,7 +35,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: FINAL_AUTOSTEAL_AUTOSELL_PCS")
+    print("[CHLISE HUB] BreakAndSteal module build: INCOME_UI_AUTOSELL_V5")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -293,6 +294,7 @@ return function(Context)
         lastAutoSellAt = 0,
         backpackSellConfig = nil,
         autoSellConfigWarned = false,
+        autoSellRequestToken = nil,
 
         titanicCandidates = {},
         titanicDirty = true,
@@ -4591,6 +4593,311 @@ return function(Context)
         return number
     end
 
+    function Extra.formatCompactNumber(
+        value
+    )
+        local number =
+            tonumber(value)
+            or 0
+
+        if number == 0 then
+            return "0"
+        end
+
+        local absolute =
+            math.abs(number)
+
+        local suffixes = {
+            {1e33, "Dc"},
+            {1e30, "No"},
+            {1e27, "Oc"},
+            {1e24, "Sp"},
+            {1e21, "Sx"},
+            {1e18, "Qi"},
+            {1e15, "Qa"},
+            {1e12, "T"},
+            {1e9, "B"},
+            {1e6, "M"},
+            {1e3, "K"}
+        }
+
+        for _, entry
+            in ipairs(
+                suffixes
+            )
+        do
+            local divisor =
+                entry[1]
+
+            if absolute >= divisor then
+                local scaled =
+                    number / divisor
+
+                local decimals
+
+                if math.abs(scaled)
+                    >= 100
+                then
+                    decimals = 0
+                elseif math.abs(scaled)
+                    >= 10
+                then
+                    decimals = 1
+                else
+                    decimals = 2
+                end
+
+                local formatted =
+                    string.format(
+                        "%."
+                        .. tostring(decimals)
+                        .. "f",
+                        scaled
+                    )
+
+                formatted =
+                    formatted:
+                    gsub(
+                        "%.?0+$",
+                        ""
+                    )
+
+                return
+                    formatted
+                    .. entry[2]
+            end
+        end
+
+        if number
+            == math.floor(number)
+        then
+            return tostring(
+                math.floor(number)
+            )
+        end
+
+        local formatted =
+            string.format(
+                "%.2f",
+                number
+            )
+
+        return formatted:
+            gsub(
+                "%.?0+$",
+                ""
+            )
+    end
+
+    function Extra.formatFullNumber(
+        value
+    )
+        local number =
+            tonumber(value)
+            or 0
+
+        if number
+            == math.floor(number)
+        then
+            return string.format(
+                "%.0f",
+                number
+            )
+        end
+
+        local formatted =
+            string.format(
+                "%.6f",
+                number
+            )
+
+        return formatted:
+            gsub(
+                "%.?0+$",
+                ""
+            )
+    end
+
+    function Extra.findTextboxByLabel(
+        labelText
+    )
+        local roots = {
+            game:GetService(
+                "CoreGui"
+            ),
+            LocalPlayer:
+            FindFirstChildOfClass(
+                "PlayerGui"
+            )
+        }
+
+        for _, root
+            in ipairs(
+                roots
+            )
+        do
+            if root then
+                for _, object
+                    in ipairs(
+                        root:GetDescendants()
+                    )
+                do
+                    if object:IsA(
+                        "TextBox"
+                    )
+                    then
+                        local ancestor =
+                            object.Parent
+
+                        for _ = 1, 7 do
+                            if not ancestor then
+                                break
+                            end
+
+                            local foundLabel =
+                                false
+
+                            for _, sibling
+                                in ipairs(
+                                    ancestor:
+                                    GetDescendants()
+                                )
+                            do
+                                if (
+                                    sibling:IsA(
+                                        "TextLabel"
+                                    )
+                                    or sibling:IsA(
+                                        "TextButton"
+                                    )
+                                )
+                                    and sibling.Text
+                                        == labelText
+                                then
+                                    foundLabel =
+                                        true
+                                    break
+                                end
+                            end
+
+                            if foundLabel then
+                                return object
+                            end
+
+                            ancestor =
+                                ancestor.Parent
+                        end
+                    end
+                end
+            end
+        end
+
+        return nil
+    end
+
+    function Extra.bindCompactIncomeTextbox(
+        labelText,
+        valueGetter
+    )
+        task.spawn(function()
+            local textBox
+
+            for _ = 1, 80 do
+                if Window.Destroyed then
+                    return
+                end
+
+                textBox =
+                    Extra.findTextboxByLabel(
+                        labelText
+                    )
+
+                if textBox then
+                    break
+                end
+
+                task.wait(0.1)
+            end
+
+            if not textBox then
+                Extra.log(
+                    "Income textbox bind failed:",
+                    labelText
+                )
+                return
+            end
+
+            pcall(function()
+                textBox.ClearTextOnFocus =
+                    false
+            end)
+
+            local function showCompact()
+                if not textBox
+                    or not textBox.Parent
+                then
+                    return
+                end
+
+                local value =
+                    tonumber(
+                        valueGetter()
+                    )
+                    or 0
+
+                textBox.Text =
+                    Extra.formatCompactNumber(
+                        value
+                    )
+            end
+
+            local function showFull()
+                if not textBox
+                    or not textBox.Parent
+                then
+                    return
+                end
+
+                local value =
+                    tonumber(
+                        valueGetter()
+                    )
+                    or 0
+
+                textBox.Text =
+                    Extra.formatFullNumber(
+                        value
+                    )
+
+                pcall(function()
+                    textBox.CursorPosition =
+                        #textBox.Text + 1
+                end)
+            end
+
+            showCompact()
+
+            textBox.Focused:
+            Connect(function()
+                task.defer(
+                    showFull
+                )
+            end)
+
+            textBox.FocusLost:
+            Connect(function()
+                task.defer(
+                    showCompact
+                )
+            end)
+
+            Extra.log(
+                "Income textbox compact display bound:",
+                labelText
+            )
+        end)
+    end
+
     function Extra.parseIncomeText(
         value
     )
@@ -4718,13 +5025,77 @@ return function(Context)
             return direct
         end
 
-        -- For a live hatch result, never substitute generic/base pet income when
-        -- the minimum-income filter is enabled. Base config values can ignore
-        -- weight/mutation rolls and were causing false accepts.
-        if Extra.minimumPetIncome > 0
-            and animal.Parent == Pickups
+        -- For live world pickups, calculate the exact income from the same
+        -- EggRewards function used by the game's value logic. This lets us
+        -- evaluate pets that were already in Workspace.AnimalPickups, including
+        -- pets dropped from eggs broken by OTHER players.
+        if animal.Parent == Pickups
+            and type(
+                EggRewards.PlacedCashPerSecond
+            ) == "function"
         then
-            return nil
+            local animalName =
+                animal:GetAttribute(
+                    "AnimalName"
+                )
+                or animal.Name
+
+            local weightKg =
+                tonumber(
+                    animal:GetAttribute(
+                        "WeightKg"
+                    )
+                )
+
+            local sizeMult =
+                tonumber(
+                    animal:GetAttribute(
+                        "SizeMult"
+                    )
+                )
+
+            if animalName
+                and weightKg
+                and sizeMult
+            then
+                local okIncome,
+                    calculatedIncome =
+                    pcall(
+                        EggRewards.PlacedCashPerSecond,
+                        animalName,
+                        weightKg,
+                        sizeMult
+                    )
+
+                calculatedIncome =
+                    okIncome
+                    and tonumber(
+                        calculatedIncome
+                    )
+                    or nil
+
+                if calculatedIncome then
+                    Extra.log(
+                        "World pet income:",
+                        animalName,
+                        "| Kg:",
+                        weightKg,
+                        "| Size:",
+                        sizeMult,
+                        "| Income/s:",
+                        calculatedIncome,
+                        "| Method: PlacedCashPerSecond"
+                    )
+
+                    return calculatedIncome
+                end
+            end
+
+            -- If exact live-pickup data is incomplete while a minimum filter is
+            -- active, do not fall back to base species cash and risk a false accept.
+            if Extra.minimumPetIncome > 0 then
+                return nil
+            end
         end
 
         -- First prefer a replicated value on the actual hatch result.
@@ -5227,7 +5598,9 @@ return function(Context)
                         animalZone
                     )
 
-                -- Global pickup is intentionally limited to:
+                -- Global pickup scans ALL hatched pets currently present
+                -- in Workspace.AnimalPickups, regardless of who broke the egg
+                -- or when the pet spawned. Range is intentionally limited to:
                 -- current safe zone + exactly one next zone.
                 -- Never scan/collect from Zone +2 or farther.
                 local withinPickupRange =
@@ -5345,7 +5718,7 @@ return function(Context)
                     best
                 )
                     or "N/A",
-                "| Source: any player egg"
+                "| Source: existing world pickup / any player egg"
             )
         end
 
@@ -8838,9 +9211,10 @@ return function(Context)
         return selected
     end
 
-    function Extra.runAutoSell()
+    function Extra.runAutoSell(
+        force
+    )
         if not Extra.autoSellEnabled
-            or Extra.autoSellBusy
             or Window.Destroyed
         then
             return
@@ -8856,13 +9230,24 @@ return function(Context)
             return
         end
 
+        if force then
+            Extra.autoSellBusy =
+                false
+            Extra.lastAutoSellAt =
+                0
+        end
+
+        if Extra.autoSellBusy then
+            return
+        end
+
         if not Extra.getBackpackSellConfig() then
             if not Extra.autoSellConfigWarned then
                 Extra.autoSellConfigWarned =
                     true
 
                 warn(
-                    "[CHLISE HUB][AUTO SELL][V4] BackpackSellConfig not found."
+                    "[CHLISE HUB][AUTO SELL][V5] BackpackSellConfig not found."
                 )
             end
 
@@ -8872,9 +9257,10 @@ return function(Context)
         Extra.autoSellConfigWarned =
             false
 
-        if os.clock()
-            - Extra.lastAutoSellAt
-            < 1.5
+        if not force
+            and os.clock()
+                - Extra.lastAutoSellAt
+                < 1
         then
             return
         end
@@ -8883,6 +9269,8 @@ return function(Context)
             Extra.collectAutoSellTools()
 
         if #tools == 0 then
+            Extra.lastAutoSellAt =
+                os.clock()
             return
         end
 
@@ -8895,7 +9283,9 @@ return function(Context)
         do
             if tool
                 and tool.Parent
-                and tool:IsA("Tool")
+                and tool:IsA(
+                    "Tool"
+                )
             then
                 table.insert(
                     validTools,
@@ -8905,6 +9295,8 @@ return function(Context)
         end
 
         if #validTools == 0 then
+            Extra.lastAutoSellAt =
+                os.clock()
             return
         end
 
@@ -8914,12 +9306,32 @@ return function(Context)
         Extra.lastAutoSellAt =
             os.clock()
 
+        local requestToken =
+            os.clock()
+
+        Extra.autoSellRequestToken =
+            requestToken
+
         Extra.log(
             "Auto Sell request:",
             #validTools,
             "tool(s)",
             "| Threshold:",
             threshold
+        )
+
+        -- Fail-safe: a RemoteFunction call should never permanently lock
+        -- the Auto Sell worker if the server does not answer.
+        task.delay(
+            3,
+            function()
+                if Extra.autoSellRequestToken
+                    == requestToken
+                then
+                    Extra.autoSellBusy =
+                        false
+                end
+            end
         )
 
         task.spawn(function()
@@ -8933,6 +9345,15 @@ return function(Context)
                         )
                 end)
 
+            if Extra.autoSellRequestToken
+                == requestToken
+            then
+                Extra.autoSellBusy =
+                    false
+                Extra.autoSellRequestToken =
+                    nil
+            end
+
             if ok then
                 Extra.log(
                     "Auto Sell success:",
@@ -8943,7 +9364,7 @@ return function(Context)
                 )
 
                 task.delay(
-                    0.25,
+                    0.2,
                     function()
                         if Extra.equipBestPetEnabled then
                             Extra.equipBestPet()
@@ -8952,30 +9373,112 @@ return function(Context)
                         if Extra.autoClaimIndex then
                             Extra.claimAllIndex()
                         end
+
+                        -- Immediately scan again because one server request
+                        -- can be capped and new pets may have appeared.
+                        if Extra.autoSellEnabled then
+                            Extra.runAutoSell(
+                                true
+                            )
+                        end
                     end
                 )
             else
                 warn(
-                    "[CHLISE HUB][AUTO SELL][V4] InvokeServer failed:",
+                    "[CHLISE HUB][AUTO SELL][V5] InvokeServer failed:",
                     result
                 )
             end
-
-            task.wait(1)
-
-            Extra.autoSellBusy =
-                false
         end)
+    end
+
+    function Extra.queueAutoSell(
+        delaySeconds
+    )
+        if not Extra.autoSellEnabled
+            or Extra.autoSellBelowIncome
+                <= 0
+        then
+            return
+        end
+
+        task.delay(
+            delaySeconds
+                or 0.1,
+            function()
+                if Extra.autoSellEnabled
+                    and not Window.Destroyed
+                then
+                    Extra.runAutoSell(
+                        true
+                    )
+                end
+            end
+        )
     end
 
     task.spawn(function()
         while not Window.Destroyed do
-            if Extra.autoSellEnabled and Extra.autoSellBelowIncome > 0 then
+            if Extra.autoSellEnabled
+                and Extra.autoSellBelowIncome
+                    > 0
+            then
                 Extra.runAutoSell()
             end
 
-            task.wait(1)
+            task.wait(0.75)
         end
+    end)
+
+    task.spawn(function()
+        local backpack =
+            LocalPlayer:
+            FindFirstChildOfClass(
+                "Backpack"
+            )
+            or LocalPlayer:
+            WaitForChild(
+                "Backpack"
+            )
+
+        if backpack then
+            backpack.ChildAdded:
+            Connect(function(child)
+                if child:IsA("Tool")
+                    and Extra.autoSellEnabled
+                then
+                    Extra.queueAutoSell(
+                        0.15
+                    )
+                end
+            end)
+        end
+
+        local function bindCharacter(
+            character
+        )
+            character.ChildAdded:
+            Connect(function(child)
+                if child:IsA("Tool")
+                    and Extra.autoSellEnabled
+                then
+                    Extra.queueAutoSell(
+                        0.15
+                    )
+                end
+            end)
+        end
+
+        if LocalPlayer.Character then
+            bindCharacter(
+                LocalPlayer.Character
+            )
+        end
+
+        LocalPlayer.CharacterAdded:
+        Connect(
+            bindCharacter
+        )
     end)
 
     -- UI - uses the same template/API as Ride A Pet.
@@ -9536,8 +10039,13 @@ return function(Context)
             )
 
             if Extra.autoSellEnabled then
-                Extra.lastAutoSellAt = 0
-                Extra.runAutoSell()
+                Extra.autoSellBusy =
+                    false
+                Extra.lastAutoSellAt =
+                    0
+                Extra.queueAutoSell(
+                    0.05
+                )
             end
         end
     )
@@ -9548,12 +10056,37 @@ return function(Context)
         false,
 
         function(state)
-            Extra.autoSellEnabled = state == true
+            Extra.autoSellEnabled =
+                state == true
+
+            Extra.autoSellBusy =
+                false
+            Extra.autoSellRequestToken =
+                nil
+            Extra.lastAutoSellAt =
+                0
 
             if Extra.autoSellEnabled then
-                Extra.lastAutoSellAt = 0
-                Extra.runAutoSell()
+                Extra.queueAutoSell(
+                    0.05
+                )
             end
+        end
+    )
+
+    Extra.bindCompactIncomeTextbox(
+        "Minimum Pet Income/s",
+        function()
+            return
+                Extra.minimumPetIncome
+        end
+    )
+
+    Extra.bindCompactIncomeTextbox(
+        "Sell Below Income/s",
+        function()
+            return
+                Extra.autoSellBelowIncome
         end
     )
 
