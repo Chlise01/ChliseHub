@@ -6,12 +6,15 @@
 -- Pipeline: unlimited pending hatch queue (A -> B -> C -> D ... without waiting)
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
 -- Titanic detection: standalone priority + event-driven physical index; no repeated full Workspace scan
+-- Titanic movement: target is locked until that exact egg is invalid/broken, preventing back-and-forth retargeting
+-- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
 -- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
--- Sell: Auto Sell below configured Income/s with broader pet-tool income detection
+-- Sell: Auto Sell uses BackpackSellController.ToolValue / PetIncomeSeconds
 -- Progression: Auto Next Zone checks speed, 10s break test, waits for next PickaxeTier on fallback
 -- Priority: Titanic Egg > Farm Egg > Treadmill (strict, no timer preemption)
+-- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
@@ -171,9 +174,17 @@ return function(Context)
         autoSellBelowIncome = 0,
         autoSellBusy = false,
         lastAutoSellAt = 0,
+        backpackSellConfig = nil,
 
         titanicCandidates = {},
         titanicDirty = true,
+
+        titanicLockedEgg = nil,
+        titanicLockedZone = nil,
+        titanicLockedSpawnId = nil,
+        titanicLockedAt = 0,
+        titanicIgnoredSpawnId = nil,
+        titanicIgnoredEgg = nil,
 
         autoNextZoneEnabled = false,
         autoNextZoneSafeZone = nil,
@@ -2716,10 +2727,192 @@ return function(Context)
     local cachedTitanicDistance = nil
     local cachedTitanicState = nil
 
+    function Extra.clearTitanicLock()
+        Extra.titanicLockedEgg = nil
+        Extra.titanicLockedZone = nil
+        Extra.titanicLockedSpawnId = nil
+        Extra.titanicLockedAt = 0
+    end
+
+    function Extra.getLockedTitanicEgg(
+        excludedEgg
+    )
+        local egg =
+            Extra.titanicLockedEgg
+
+        if not egg
+            or egg == excludedEgg
+            or not egg.Parent
+            or not Extra.validEgg(
+                egg
+            )
+        then
+            Extra.clearTitanicLock()
+            return nil
+        end
+
+        local state =
+            Extra.getTitanicState()
+
+        if Extra.titanicIgnoredSpawnId ~= nil
+            and state.SpawnId ~= nil
+            and tostring(Extra.titanicIgnoredSpawnId)
+                ~= tostring(state.SpawnId)
+        then
+            Extra.titanicIgnoredSpawnId = nil
+            Extra.titanicIgnoredEgg = nil
+        end
+
+        if Extra.titanicIgnoredSpawnId ~= nil
+            and state.SpawnId ~= nil
+            and tostring(Extra.titanicIgnoredSpawnId)
+                == tostring(state.SpawnId)
+        then
+            return nil
+        end
+
+        if Extra.titanicIgnoredEgg == egg
+            and egg.Parent
+        then
+            return nil
+        end
+
+        if Extra.titanicLockedAt > 0
+            and os.clock() - Extra.titanicLockedAt >= 20
+        then
+            Extra.log(
+                "Titanic ignored: >20s without breaking",
+                "| Egg:",
+                Extra.getEggName(egg),
+                "| SpawnId:",
+                state.SpawnId
+            )
+
+            if state.SpawnId ~= nil then
+                Extra.titanicIgnoredSpawnId = state.SpawnId
+            else
+                Extra.titanicIgnoredEgg = egg
+            end
+
+            Extra.clearTitanicLock()
+            return nil
+        end
+
+        if Extra.titanicLockedSpawnId ~= nil
+            and state.SpawnId ~= nil
+            and tostring(
+                Extra.titanicLockedSpawnId
+            ) ~= tostring(
+                state.SpawnId
+            )
+        then
+            Extra.clearTitanicLock()
+            return nil
+        end
+
+        if not Extra.isTitanicEggObject(
+            egg,
+            state
+        )
+        then
+            Extra.clearTitanicLock()
+            return nil
+        end
+
+        local _, _, hrp =
+            Extra.getCharacter()
+
+        local distance =
+            (
+                hrp.Position
+                - egg.Position
+            ).Magnitude
+
+        return
+            egg,
+            Extra.titanicLockedZone
+                or (
+                    state.ZoneIndex
+                    and (
+                        "Zone"
+                        .. tostring(
+                            state.ZoneIndex
+                        )
+                    )
+                )
+                or "TitanicEvent",
+            distance,
+            state
+    end
+
+    function Extra.lockTitanicTarget(
+        egg,
+        zoneName,
+        state
+    )
+        if not egg then
+            return
+        end
+
+        if Extra.titanicLockedEgg ~= egg then
+            Extra.titanicLockedAt = os.clock()
+        end
+
+        Extra.titanicLockedEgg =
+            egg
+
+        Extra.titanicLockedZone =
+            zoneName
+
+        Extra.titanicLockedSpawnId =
+            state
+            and state.SpawnId
+            or nil
+
+        Extra.log(
+            "Titanic target locked:",
+            Extra.getEggName(
+                egg
+            ),
+            "| Zone:",
+            zoneName,
+            "| SpawnId:",
+            Extra.titanicLockedSpawnId
+        )
+    end
+
     function Extra.findTitanicEgg(
         excludedEgg
     )
         if not prioritizeTitanicEgg then
+            Extra.clearTitanicLock()
+            return nil
+        end
+
+        local lockedEgg,
+            lockedZone,
+            lockedDistance,
+            lockedState =
+            Extra.getLockedTitanicEgg(
+                excludedEgg
+            )
+
+        if lockedEgg then
+            return
+                lockedEgg,
+                lockedZone,
+                lockedDistance,
+                lockedState
+        end
+
+        local stateNow =
+            Extra.getTitanicState()
+
+        if Extra.titanicIgnoredSpawnId ~= nil
+            and stateNow.SpawnId ~= nil
+            and tostring(Extra.titanicIgnoredSpawnId)
+                == tostring(stateNow.SpawnId)
+        then
             return nil
         end
 
@@ -2741,6 +2934,12 @@ return function(Context)
                     cachedTitanicEgg
                 )
             then
+                Extra.lockTitanicTarget(
+                    cachedTitanicEgg,
+                    cachedTitanicZone,
+                    cachedTitanicState
+                )
+
                 return
                     cachedTitanicEgg,
                     cachedTitanicZone,
@@ -2927,7 +3126,15 @@ return function(Context)
             or nil
         cachedTitanicState = state
 
-        if best then
+        if best
+            and Extra.titanicIgnoredEgg ~= best
+        then
+            Extra.lockTitanicTarget(
+                best,
+                bestZone,
+                state
+            )
+
             return
                 best,
                 bestZone,
@@ -2935,6 +3142,7 @@ return function(Context)
                 state
         end
 
+        Extra.clearTitanicLock()
         return nil
     end
 
@@ -3547,6 +3755,90 @@ return function(Context)
         return number
     end
 
+    function Extra.parseIncomeText(
+        value
+    )
+        local raw =
+            tostring(value or "")
+            :lower()
+
+        if raw == "" then
+            return nil
+        end
+
+        -- Typical game text examples:
+        -- "$2.5B/s", "2.5B / sec", "Income: 750M/s", "1,200,000/s"
+        -- Prefer numbers close to /s or per-second wording.
+        local compact =
+            raw:match(
+                "([%d%.,]+%s*[kmbt]%a*)%s*/%s*s"
+            )
+            or raw:match(
+                "([%d%.,]+%s*[kmbt]%a*)%s*per%s*sec"
+            )
+            or raw:match(
+                "([%d%.,]+%s*[kmbt]%a*)%s*per%s*second"
+            )
+
+        if compact then
+            compact =
+                compact:
+                gsub("%s+", "")
+
+            return
+                Extra.parseCompactNumber(
+                    compact
+                )
+        end
+
+        local plain =
+            raw:match(
+                "([%d%.,]+)%s*/%s*s"
+            )
+            or raw:match(
+                "([%d%.,]+)%s*per%s*sec"
+            )
+            or raw:match(
+                "([%d%.,]+)%s*per%s*second"
+            )
+
+        if plain then
+            -- Handle thousands separators conservatively.
+            local normalized =
+                plain:
+                gsub("%s+", "")
+
+            if normalized:find(",", 1, true)
+                and normalized:find(".", 1, true)
+            then
+                normalized =
+                    normalized:
+                    gsub(",", "")
+            elseif normalized:match(
+                "^%d+,%d%d%d,"
+            ) then
+                normalized =
+                    normalized:
+                    gsub(",", "")
+            elseif normalized:match(
+                "^%d+,%d%d%d$"
+            ) then
+                normalized =
+                    normalized:
+                    gsub(",", "")
+            else
+                normalized =
+                    normalized:
+                    gsub(",", ".")
+            end
+
+            return
+                tonumber(normalized)
+        end
+
+        return nil
+    end
+
     function Extra.readIncomeFromTable(
         value
     )
@@ -3588,6 +3880,15 @@ return function(Context)
 
         if direct ~= nil then
             return direct
+        end
+
+        -- For a live hatch result, never substitute generic/base pet income when
+        -- the minimum-income filter is enabled. Base config values can ignore
+        -- weight/mutation rolls and were causing false accepts.
+        if Extra.minimumPetIncome > 0
+            and animal.Parent == Pickups
+        then
+            return nil
         end
 
         -- First prefer a replicated value on the actual hatch result.
@@ -3768,51 +4069,19 @@ return function(Context)
             return nil
         end
 
-        for _, key in ipairs(
-            PET_INCOME_ATTRIBUTE_KEYS
-        ) do
-            local raw =
-                object:GetAttribute(
-                    key
+        local function inspectAttributes(
+            instance
+        )
+            for _, key
+                in ipairs(
+                    PET_INCOME_ATTRIBUTE_KEYS
                 )
+            do
+                local raw =
+                    instance:GetAttribute(
+                        key
+                    )
 
-            local parsed =
-                tonumber(raw)
-                or Extra.parseCompactNumber(
-                    raw
-                )
-
-            if parsed then
-                return parsed
-            end
-        end
-
-        for key, raw
-            in pairs(
-                object:GetAttributes()
-            )
-        do
-            local lower =
-                tostring(key):
-                lower()
-
-            if lower:find(
-                    "income",
-                    1,
-                    true
-                )
-                or lower:find(
-                    "cashper",
-                    1,
-                    true
-                )
-                or lower == "cps"
-                or lower:find(
-                    "earning",
-                    1,
-                    true
-                )
-            then
                 local parsed =
                     tonumber(raw)
                     or Extra.parseCompactNumber(
@@ -3823,6 +4092,60 @@ return function(Context)
                     return parsed
                 end
             end
+
+            for key, raw
+                in pairs(
+                    instance:GetAttributes()
+                )
+            do
+                local lower =
+                    tostring(key):
+                    lower()
+
+                if lower:find(
+                        "income",
+                        1,
+                        true
+                    )
+                    or lower:find(
+                        "cashper",
+                        1,
+                        true
+                    )
+                    or lower == "cps"
+                    or lower:find(
+                        "earning",
+                        1,
+                        true
+                    )
+                    or lower:find(
+                        "moneyper",
+                        1,
+                        true
+                    )
+                then
+                    local parsed =
+                        tonumber(raw)
+                        or Extra.parseCompactNumber(
+                            raw
+                        )
+
+                    if parsed then
+                        return parsed
+                    end
+                end
+            end
+
+            return nil
+        end
+
+        local rootIncome =
+            inspectAttributes(
+                object
+            )
+
+        if rootIncome ~= nil then
+            return rootIncome
         end
 
         for _, descendant
@@ -3830,6 +4153,15 @@ return function(Context)
                 object:GetDescendants()
             )
         do
+            local descendantIncome =
+                inspectAttributes(
+                    descendant
+                )
+
+            if descendantIncome ~= nil then
+                return descendantIncome
+            end
+
             if descendant:IsA(
                     "NumberValue"
                 )
@@ -3860,6 +4192,11 @@ return function(Context)
                         1,
                         true
                     )
+                    or lower:find(
+                        "moneyper",
+                        1,
+                        true
+                    )
                 then
                     local parsed =
                         tonumber(
@@ -3872,6 +4209,26 @@ return function(Context)
                     if parsed then
                         return parsed
                     end
+                end
+            end
+
+            if descendant:IsA(
+                    "TextLabel"
+                )
+                or descendant:IsA(
+                    "TextButton"
+                )
+                or descendant:IsA(
+                    "TextBox"
+                )
+            then
+                local parsed =
+                    Extra.parseIncomeText(
+                        descendant.Text
+                    )
+
+                if parsed then
+                    return parsed
                 end
             end
         end
@@ -4086,6 +4443,25 @@ return function(Context)
                     then
                         index += 1
                         continue
+                    end
+
+                    if resolvedIncome == nil then
+                        Extra.log(
+                            "Income unresolved:",
+                            rawName,
+                            "| Minimum:",
+                            Extra.minimumPetIncome,
+                            "| Rejecting hatch"
+                        )
+                    else
+                        Extra.log(
+                            "Income check:",
+                            rawName,
+                            "| Income/s:",
+                            resolvedIncome,
+                            "| Minimum:",
+                            Extra.minimumPetIncome
+                        )
                     end
                 end
 
@@ -5611,6 +5987,8 @@ return function(Context)
         titanicResumeRemaining = nil
         titanicOverrideRequested = false
 
+        Extra.clearTitanicLock()
+
         local desired
 
         -- Strict activity priority:
@@ -5900,46 +6278,89 @@ return function(Context)
         clearPlotConnections()
     end)
 
+    function Extra.getBackpackSellConfig()
+        local cached = Extra.backpackSellConfig
+
+        if type(cached) == "table"
+            and cached.RemoteName == "BackpackSellRemote"
+            and cached.AnimalToolTag == "AnimalTool"
+            and type(cached.ToolValue) == "function"
+            and type(cached.PetValue) == "function"
+        then
+            return cached
+        end
+
+        if type(getgc) ~= "function" then
+            return nil
+        end
+
+        local ok, objects = pcall(getgc, true)
+
+        if not ok
+            or type(objects) ~= "table"
+        then
+            return nil
+        end
+
+        for _, object in ipairs(objects) do
+            if type(object) == "table"
+                and object.RemoteName == "BackpackSellRemote"
+                and object.AnimalToolTag == "AnimalTool"
+                and type(object.ToolValue) == "function"
+                and type(object.PetValue) == "function"
+            then
+                Extra.backpackSellConfig = object
+
+                Extra.log(
+                    "Backpack sell config found",
+                    "| PetIncomeSeconds:",
+                    object.PetIncomeSeconds
+                )
+
+                return object
+            end
+        end
+
+        return nil
+    end
+
     function Extra.getSellablePetIncome(tool)
-        if not tool or not tool:IsA("Tool") then
+        if not tool
+            or not tool:IsA("Tool")
+            or not CollectionService:HasTag(tool, "AnimalTool")
+        then
             return nil
         end
 
-        local isAnimalTool =
-            CollectionService:HasTag(
-                tool,
-                "AnimalTool"
-            )
-            or tool:GetAttribute(
-                "AnimalName"
-            ) ~= nil
-            or tool:GetAttribute(
-                "PetName"
-            ) ~= nil
+        local config = Extra.getBackpackSellConfig()
 
-        if not isAnimalTool then
-            local ok,
-                rarity =
-                pcall(function()
-                    return
-                        EggRewards.RarityOf(
-                            tool.Name
-                        )
-                end)
-
-            isAnimalTool =
-                ok
-                and rarity ~= nil
-        end
-
-        if not isAnimalTool then
+        if not config then
             return nil
         end
 
-        return
-            Extra.getPetIncomePerSecond(
-                tool
-            )
+        local ok, value = pcall(
+            config.ToolValue,
+            tool
+        )
+
+        value =
+            ok
+            and tonumber(value)
+            or nil
+
+        if not value then
+            return nil
+        end
+
+        local seconds =
+            tonumber(config.PetIncomeSeconds)
+            or 60
+
+        if seconds <= 0 then
+            return nil
+        end
+
+        return value / seconds
     end
 
     function Extra.collectAutoSellTools()
@@ -6155,10 +6576,12 @@ return function(Context)
             prioritizeTitanicEgg =
                 state == true
 
-            if not prioritizeTitanicEgg
-                and titanicOverrideActive
-            then
-                Extra.restoreAfterTitanic()
+            if not prioritizeTitanicEgg then
+                Extra.clearTitanicLock()
+
+                if titanicOverrideActive then
+                    Extra.restoreAfterTitanic()
+                end
             end
 
             local titanicState =
