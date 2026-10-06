@@ -5,11 +5,12 @@
 -- Added: Titanic Egg event detection/prioritization via Workspace attributes
 -- Pipeline: unlimited pending hatch queue (A -> B -> C -> D ... without waiting)
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
--- Titanic detection: optimized known-zone scan only; no full Workspace descendant scan
+-- Titanic detection: standalone priority + event-driven physical index; no repeated full Workspace scan
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
 -- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
--- Sell: Auto Sell pet tools below configured Income/s through BackpackSellRemote
+-- Sell: Auto Sell below configured Income/s with broader pet-tool income detection
+-- Progression: Auto Next Zone checks speed, 10s break test, waits for next PickaxeTier on fallback
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
@@ -168,7 +169,16 @@ return function(Context)
         autoSellEnabled = false,
         autoSellBelowIncome = 0,
         autoSellBusy = false,
-        lastAutoSellAt = 0
+        lastAutoSellAt = 0,
+
+        titanicCandidates = {},
+        titanicDirty = true,
+
+        autoNextZoneEnabled = false,
+        autoNextZoneSafeZone = nil,
+        autoNextZoneTrialZone = nil,
+        autoNextZoneBlockedZone = nil,
+        autoNextZoneBlockedPickaxeTier = nil
     }
 
     function Extra.log(...)
@@ -2595,6 +2605,110 @@ return function(Context)
             ) ~= nil
     end
 
+    function Extra.registerTitanicCandidate(
+        object
+    )
+        if not object
+            or not object.Parent
+        then
+            return
+        end
+
+        local egg
+
+        if object:IsA("BasePart")
+            and typeof(
+                object:GetAttribute(
+                    "Health"
+                )
+            ) == "number"
+        then
+            egg = object
+        elseif Extra.objectLooksTitanic(
+            object
+        ) then
+            egg =
+                Extra.resolveEgg(
+                    object
+                )
+
+            if not egg
+                and object.Parent
+            then
+                egg =
+                    Extra.resolveEgg(
+                        object.Parent
+                    )
+            end
+        end
+
+        if egg
+            and egg:IsA("BasePart")
+        then
+            Extra.titanicCandidates[
+                egg
+            ] = true
+
+            Extra.titanicDirty = true
+        end
+    end
+
+    -- One initial chunked index, then only DescendantAdded updates.
+    -- This catches Titanic eggs spawned outside ZoneBuilds without doing
+    -- Workspace:GetDescendants() every scan.
+    task.spawn(function()
+        local descendants =
+            Workspace:GetDescendants()
+
+        for index, object
+            in ipairs(descendants)
+        do
+            if object:IsA("BasePart")
+                and (
+                    typeof(
+                        object:GetAttribute(
+                            "Health"
+                        )
+                    ) == "number"
+                    or Extra.objectLooksTitanic(
+                        object
+                    )
+                )
+            then
+                Extra.registerTitanicCandidate(
+                    object
+                )
+            end
+
+            if index % 400 == 0 then
+                task.wait()
+            end
+        end
+    end)
+
+    Workspace.DescendantAdded:
+    Connect(function(object)
+        task.defer(function()
+            Extra.registerTitanicCandidate(
+                object
+            )
+        end)
+
+        -- Some event objects receive their attributes shortly after parenting.
+        task.delay(
+            0.25,
+            function()
+                if object
+                    and object.Parent
+                then
+                    Extra.registerTitanicCandidate(
+                        object
+                    )
+                end
+            end
+        )
+    end)
+
     local lastTitanicScanAt = 0
     local cachedTitanicEgg = nil
     local cachedTitanicZone = nil
@@ -2611,26 +2725,32 @@ return function(Context)
         local nowClock =
             os.clock()
 
-        -- Titanic scan is intentionally throttled. We only inspect known
-        -- egg containers, never the entire Workspace.
-        if nowClock
+        -- Cache positive AND negative scans. Previously a missing target
+        -- caused this function to rescan zones on every call.
+        if not Extra.titanicDirty
+            and nowClock
                 - lastTitanicScanAt
-            < 0.5
-            and cachedTitanicEgg
-            and cachedTitanicEgg.Parent
-            and cachedTitanicEgg
-                ~= excludedEgg
-            and Extra.validEgg(
-                cachedTitanicEgg
-            )
+                < 0.25
         then
-            return
-                cachedTitanicEgg,
-                cachedTitanicZone,
-                cachedTitanicDistance,
-                cachedTitanicState
+            if cachedTitanicEgg
+                and cachedTitanicEgg.Parent
+                and cachedTitanicEgg
+                    ~= excludedEgg
+                and Extra.validEgg(
+                    cachedTitanicEgg
+                )
+            then
+                return
+                    cachedTitanicEgg,
+                    cachedTitanicZone,
+                    cachedTitanicDistance,
+                    cachedTitanicState
+            end
+
+            return nil
         end
 
+        Extra.titanicDirty = false
         lastTitanicScanAt =
             nowClock
 
@@ -2779,11 +2899,32 @@ return function(Context)
             end
         end
 
-        -- No Workspace:GetDescendants() fallback here.
-        -- The previous full-world scan every fraction of a second was the main
-        -- source of Titanic-event lag. The physical Titanic egg is expected in
-        -- the known zone egg containers; Workspace event attributes still tell
-        -- us which zone/name to prioritize.
+        -- 3) Event-driven physical registry. This catches event eggs placed
+        -- elsewhere in Workspace while avoiding repeated full-world scans.
+        if not best then
+            for egg
+                in pairs(
+                    Extra.titanicCandidates
+                )
+            do
+                if not egg
+                    or not egg.Parent
+                then
+                    Extra.titanicCandidates[
+                        egg
+                    ] = nil
+                else
+                    consider(egg)
+                end
+            end
+        end
+
+        cachedTitanicEgg = best
+        cachedTitanicZone = bestZone
+        cachedTitanicDistance =
+            best and bestDistance
+            or nil
+        cachedTitanicState = state
 
         if best then
             return
@@ -2807,6 +2948,438 @@ return function(Context)
         end
         local _, tier = EggRarity.LadderSpot(eggName)
         return rank, tonumber(tier) or 0
+    end
+
+    function Extra.zoneIndex(
+        zoneName
+    )
+        local wanted =
+            tostring(zoneName or "")
+
+        for index, name
+            in ipairs(
+                MASTER_ZONES
+            )
+        do
+            if name == wanted then
+                return index
+            end
+        end
+
+        return nil
+    end
+
+    function Extra.getZonePosition(
+        zoneName
+    )
+        local zone =
+            ZoneBuilds:
+            FindFirstChild(
+                zoneName
+            )
+
+        if not zone then
+            return nil
+        end
+
+        if zone:IsA(
+            "BasePart"
+        ) then
+            return zone.Position
+        end
+
+        if zone:IsA(
+            "Model"
+        ) then
+            local ok,
+                pivot =
+                pcall(function()
+                    return zone:GetPivot()
+                end)
+
+            if ok and pivot then
+                return pivot.Position
+            end
+        end
+
+        local part =
+            zone:
+            FindFirstChildWhichIsA(
+                "BasePart",
+                true
+            )
+
+        return
+            part
+            and part.Position
+            or nil
+    end
+
+    function Extra.readZoneSpeedRequirement(
+        zoneName
+    )
+        local info =
+            ZonesConfig.Get(
+                zoneName
+            )
+
+        local keys = {
+            "RequiredSpeed",
+            "SpeedRequirement",
+            "MinSpeed",
+            "MinimumSpeed",
+            "UnlockSpeed",
+            "RequiredWalkSpeed",
+            "WalkSpeed"
+        }
+
+        local function inspect(
+            value
+        )
+            if type(value)
+                ~= "table"
+            then
+                return nil
+            end
+
+            for _, key
+                in ipairs(keys)
+            do
+                local found =
+                    tonumber(
+                        value[key]
+                    )
+
+                if found then
+                    return found
+                end
+            end
+
+            for _, key
+                in ipairs({
+                    "Requirement",
+                    "Requirements",
+                    "Unlock",
+                    "Gate"
+                })
+            do
+                local nested =
+                    value[key]
+
+                if type(nested)
+                    == "table"
+                then
+                    local found =
+                        inspect(nested)
+
+                    if found then
+                        return found
+                    end
+                end
+            end
+
+            return nil
+        end
+
+        local fromConfig =
+            inspect(info)
+
+        if fromConfig then
+            return fromConfig
+        end
+
+        local zone =
+            ZoneBuilds:
+            FindFirstChild(
+                zoneName
+            )
+
+        if zone then
+            for _, key
+                in ipairs(keys)
+            do
+                local found =
+                    tonumber(
+                        zone:GetAttribute(
+                            key
+                        )
+                    )
+
+                if found then
+                    return found
+                end
+            end
+        end
+
+        return nil
+    end
+
+    function Extra.getProgressionSpeed()
+        local speed =
+            Extra.getCurrentMoveSpeed()
+
+        for _, key
+            in ipairs({
+                "Speed",
+                "WalkSpeed",
+                "MovementSpeed"
+            })
+        do
+            speed =
+                math.max(
+                    speed,
+                    tonumber(
+                        LocalPlayer:
+                        GetAttribute(
+                            key
+                        )
+                    )
+                    or 0
+                )
+        end
+
+        return speed
+    end
+
+    function Extra.speedAllowsZone(
+        zoneName
+    )
+        local requirement =
+            Extra.readZoneSpeedRequirement(
+                zoneName
+            )
+
+        if not requirement then
+            -- Unknown requirement: permit a trial. The 10-second egg check
+            -- below remains the safety net.
+            return true, nil
+        end
+
+        local speed =
+            Extra.getProgressionSpeed()
+
+        return
+            speed >= requirement,
+            requirement
+    end
+
+    function Extra.initializeAutoNextZone()
+        if Extra.autoNextZoneSafeZone
+            and Extra.zoneIndex(
+                Extra.autoNextZoneSafeZone
+            )
+        then
+            return
+        end
+
+        local _, _, hrp =
+            Extra.getCharacter()
+
+        local nearest
+        local nearestDistance =
+            math.huge
+
+        for _, zoneName
+            in ipairs(
+                MASTER_ZONES
+            )
+        do
+            local position =
+                Extra.getZonePosition(
+                    zoneName
+                )
+
+            if position then
+                local distance =
+                    (
+                        hrp.Position
+                        - position
+                    ).Magnitude
+
+                if distance
+                    < nearestDistance
+                then
+                    nearest =
+                        zoneName
+                    nearestDistance =
+                        distance
+                end
+            end
+        end
+
+        Extra.autoNextZoneSafeZone =
+            nearest
+            or MASTER_ZONES[1]
+
+        Extra.autoNextZoneTrialZone =
+            nil
+    end
+
+    function Extra.getAutoNextZoneTarget()
+        if not Extra.autoNextZoneEnabled then
+            return nil
+        end
+
+        Extra.initializeAutoNextZone()
+
+        local safe =
+            Extra.autoNextZoneSafeZone
+
+        local safeIndex =
+            Extra.zoneIndex(
+                safe
+            )
+            or 1
+
+        local blocked =
+            Extra.autoNextZoneBlockedZone
+
+        if blocked then
+            local currentTier =
+                tonumber(
+                    LocalPlayer:
+                    GetAttribute(
+                        "PickaxeTier"
+                    )
+                )
+                or 1
+
+            local blockedTier =
+                tonumber(
+                    Extra.autoNextZoneBlockedPickaxeTier
+                )
+                or currentTier
+
+            if currentTier
+                > blockedTier
+            then
+                local allowed =
+                    Extra.speedAllowsZone(
+                        blocked
+                    )
+
+                if allowed then
+                    Extra.log(
+                        "Auto Next Zone retry after pickaxe upgrade:",
+                        blocked,
+                        "| Pickaxe:",
+                        blockedTier,
+                        "->",
+                        currentTier
+                    )
+
+                    Extra.autoNextZoneBlockedZone =
+                        nil
+                    Extra.autoNextZoneBlockedPickaxeTier =
+                        nil
+                    Extra.autoNextZoneTrialZone =
+                        blocked
+
+                    return blocked
+                end
+            end
+
+            return safe
+        end
+
+        local nextZone =
+            MASTER_ZONES[
+                safeIndex + 1
+            ]
+
+        if not nextZone then
+            return safe
+        end
+
+        local allowed,
+            requirement =
+            Extra.speedAllowsZone(
+                nextZone
+            )
+
+        if allowed then
+            Extra.autoNextZoneTrialZone =
+                nextZone
+
+            Extra.log(
+                "Auto Next Zone trial:",
+                nextZone,
+                "| Speed:",
+                Extra.getProgressionSpeed(),
+                "| Required:",
+                requirement
+                    or "Unknown"
+            )
+
+            return nextZone
+        end
+
+        Extra.autoNextZoneTrialZone =
+            nil
+
+        return safe
+    end
+
+    function Extra.markAutoNextZoneTooSlow(
+        zoneName
+    )
+        if not Extra.autoNextZoneEnabled
+            or zoneName
+                ~= Extra.autoNextZoneTrialZone
+        then
+            return
+        end
+
+        Extra.autoNextZoneBlockedZone =
+            zoneName
+
+        Extra.autoNextZoneBlockedPickaxeTier =
+            tonumber(
+                LocalPlayer:
+                GetAttribute(
+                    "PickaxeTier"
+                )
+            )
+            or 1
+
+        Extra.autoNextZoneTrialZone =
+            nil
+
+        Extra.log(
+            "Auto Next Zone fallback:",
+            zoneName,
+            "took >10s to break.",
+            "Back to:",
+            Extra.autoNextZoneSafeZone,
+            "| Waiting PickaxeTier >",
+            Extra.autoNextZoneBlockedPickaxeTier
+        )
+    end
+
+    function Extra.markAutoNextZoneSuccess(
+        zoneName
+    )
+        if not Extra.autoNextZoneEnabled
+            or zoneName
+                ~= Extra.autoNextZoneTrialZone
+        then
+            return
+        end
+
+        Extra.autoNextZoneSafeZone =
+            zoneName
+
+        Extra.autoNextZoneTrialZone =
+            nil
+        Extra.autoNextZoneBlockedZone =
+            nil
+        Extra.autoNextZoneBlockedPickaxeTier =
+            nil
+
+        Extra.log(
+            "Auto Next Zone promoted:",
+            zoneName
+        )
     end
 
     function Extra.findBestEgg(excludedEgg)
@@ -2843,8 +3416,23 @@ return function(Context)
         local bestDistance = math.huge
         local bestRarity, bestTier = -1, -1
 
+        local autoZone =
+            Extra.getAutoNextZoneTarget()
+
         for _, zoneName in ipairs(MASTER_ZONES) do
-            if Extra.isSelected(selectedZones, zoneName) then
+            local zoneAllowed =
+                autoZone
+                    and zoneName
+                        == autoZone
+                or (
+                    not autoZone
+                    and Extra.isSelected(
+                        selectedZones,
+                        zoneName
+                    )
+                )
+
+            if zoneAllowed then
                 local zone = ZoneBuilds:FindFirstChild(zoneName)
                 local eggs = zone and zone:FindFirstChild("Eggs")
 
@@ -2992,6 +3580,15 @@ return function(Context)
             return nil
         end
 
+        local direct =
+            Extra.readIncomeFromInstance(
+                animal
+            )
+
+        if direct ~= nil then
+            return direct
+        end
+
         -- First prefer a replicated value on the actual hatch result.
         for _, key
             in ipairs(
@@ -3132,6 +3729,148 @@ return function(Context)
 
                 if result then
                     return result
+                end
+            end
+        end
+
+        for _, info
+            in ipairs(
+                EggRewards.Pool
+                or {}
+            )
+        do
+            if tostring(
+                info.Name
+                or ""
+            ) == tostring(
+                rawName
+            )
+            then
+                local result =
+                    Extra.readIncomeFromTable(
+                        info
+                    )
+
+                if result then
+                    return result
+                end
+            end
+        end
+
+        return nil
+    end
+
+    function Extra.readIncomeFromInstance(
+        object
+    )
+        if not object then
+            return nil
+        end
+
+        for _, key in ipairs(
+            PET_INCOME_ATTRIBUTE_KEYS
+        ) do
+            local raw =
+                object:GetAttribute(
+                    key
+                )
+
+            local parsed =
+                tonumber(raw)
+                or Extra.parseCompactNumber(
+                    raw
+                )
+
+            if parsed then
+                return parsed
+            end
+        end
+
+        for key, raw
+            in pairs(
+                object:GetAttributes()
+            )
+        do
+            local lower =
+                tostring(key):
+                lower()
+
+            if lower:find(
+                    "income",
+                    1,
+                    true
+                )
+                or lower:find(
+                    "cashper",
+                    1,
+                    true
+                )
+                or lower == "cps"
+                or lower:find(
+                    "earning",
+                    1,
+                    true
+                )
+            then
+                local parsed =
+                    tonumber(raw)
+                    or Extra.parseCompactNumber(
+                        raw
+                    )
+
+                if parsed then
+                    return parsed
+                end
+            end
+        end
+
+        for _, descendant
+            in ipairs(
+                object:GetDescendants()
+            )
+        do
+            if descendant:IsA(
+                    "NumberValue"
+                )
+                or descendant:IsA(
+                    "IntValue"
+                )
+                or descendant:IsA(
+                    "StringValue"
+                )
+            then
+                local lower =
+                    descendant.Name:
+                    lower()
+
+                if lower:find(
+                        "income",
+                        1,
+                        true
+                    )
+                    or lower:find(
+                        "cashper",
+                        1,
+                        true
+                    )
+                    or lower == "cps"
+                    or lower:find(
+                        "earning",
+                        1,
+                        true
+                    )
+                then
+                    local parsed =
+                        tonumber(
+                            descendant.Value
+                        )
+                        or Extra.parseCompactNumber(
+                            descendant.Value
+                        )
+
+                    if parsed then
+                        return parsed
+                    end
                 end
             end
         end
@@ -3578,6 +4317,9 @@ return function(Context)
             return nil, false
         end
 
+        local breakStartedAt =
+            os.clock()
+
         while autoFarmActive
             and currentActivity == "Farm"
             and Extra.validEgg(egg)
@@ -3651,6 +4393,21 @@ return function(Context)
                 end
             end
 
+            if Extra.autoNextZoneEnabled
+                and zoneName
+                    == Extra.autoNextZoneTrialZone
+                and os.clock()
+                    - breakStartedAt
+                    > 10
+            then
+                Extra.markAutoNextZoneTooSlow(
+                    zoneName
+                )
+
+                Extra.stopMoving()
+                return nil, false
+            end
+
             local tier =
                 LocalPlayer:GetAttribute(
                     "PickaxeTier"
@@ -3699,6 +4456,10 @@ return function(Context)
         if Extra.validEgg(egg) then
             return nil, false
         end
+
+        Extra.markAutoNextZoneSuccess(
+            zoneName
+        )
 
         Extra.log(
             "Egg done:",
@@ -4907,17 +5668,12 @@ return function(Context)
             local state =
                 Extra.getTitanicState()
 
-            local automationEnabled =
-                autoFarmEnabled
-                or autoTreadmillEnabled
-                or currentActivity ~= nil
-
             local titanicTargetExists =
                 false
 
-            if prioritizeTitanicEgg
-                and automationEnabled
-            then
+            -- Titanic priority is standalone: it can temporarily start Farm
+            -- even when Auto Farm and Auto Treadmill are both OFF.
+            if prioritizeTitanicEgg then
                 local target =
                     Extra.findTitanicEgg()
 
@@ -4942,7 +5698,6 @@ return function(Context)
                 -- We were waiting for a carried pet to finish banking.
                 local target =
                     prioritizeTitanicEgg
-                    and state.Active
                     and Extra.findTitanicEgg()
                     or nil
 
@@ -5153,47 +5908,116 @@ return function(Context)
         end
 
         local isAnimalTool =
-            CollectionService:HasTag(tool, "AnimalTool")
-            or tool:GetAttribute("AnimalName") ~= nil
-            or tool:GetAttribute("PetName") ~= nil
+            CollectionService:HasTag(
+                tool,
+                "AnimalTool"
+            )
+            or tool:GetAttribute(
+                "AnimalName"
+            ) ~= nil
+            or tool:GetAttribute(
+                "PetName"
+            ) ~= nil
+
+        if not isAnimalTool then
+            local ok,
+                rarity =
+                pcall(function()
+                    return
+                        EggRewards.RarityOf(
+                            tool.Name
+                        )
+                end)
+
+            isAnimalTool =
+                ok
+                and rarity ~= nil
+        end
 
         if not isAnimalTool then
             return nil
         end
 
-        return Extra.getPetIncomePerSecond(tool)
+        return
+            Extra.getPetIncomePerSecond(
+                tool
+            )
     end
 
     function Extra.collectAutoSellTools()
-        local threshold = tonumber(Extra.autoSellBelowIncome) or 0
+        local threshold =
+            tonumber(
+                Extra.autoSellBelowIncome
+            )
+            or 0
 
         if threshold <= 0 then
             return {}
         end
 
-        local backpack =
-            LocalPlayer:FindFirstChildOfClass("Backpack")
-            or LocalPlayer:FindFirstChild("Backpack")
-
-        if not backpack then
-            return {}
-        end
-
         local selected = {}
+        local seen = {}
 
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if #selected >= 200 then
-                break
+        local function scan(
+            container
+        )
+            if not container then
+                return
             end
 
-            if tool:IsA("Tool") then
-                local income = Extra.getSellablePetIncome(tool)
+            for _, tool
+                in ipairs(
+                    container:GetChildren()
+                )
+            do
+                if #selected >= 200 then
+                    return
+                end
 
-                if income ~= nil and income < threshold then
-                    table.insert(selected, tool)
+                if tool:IsA("Tool")
+                    and not seen[tool]
+                then
+                    seen[tool] = true
+
+                    local income =
+                        Extra.getSellablePetIncome(
+                            tool
+                        )
+
+                    if income ~= nil
+                        and income
+                            < threshold
+                    then
+                        table.insert(
+                            selected,
+                            tool
+                        )
+
+                        Extra.log(
+                            "Auto Sell candidate:",
+                            tool.Name,
+                            "| Income/s:",
+                            income
+                        )
+                    end
                 end
             end
         end
+
+        scan(
+            LocalPlayer:
+            FindFirstChildOfClass(
+                "Backpack"
+            )
+            or LocalPlayer:
+            FindFirstChild(
+                "Backpack"
+            )
+        )
+
+        scan(
+            LocalPlayer.Character
+        )
 
         return selected
     end
@@ -5236,10 +6060,28 @@ return function(Context)
                     #tools,
                     "pet(s) below",
                     threshold,
-                    "income/s"
+                    "income/s",
+                    "| Server:",
+                    result
+                )
+
+                task.delay(
+                    0.25,
+                    function()
+                        if Extra.equipBestPetEnabled then
+                            Extra.equipBestPet()
+                        end
+
+                        if Extra.autoClaimIndex then
+                            Extra.claimAllIndex()
+                        end
+                    end
                 )
             else
-                Extra.log("Auto Sell failed:", result)
+                Extra.log(
+                    "Auto Sell failed:",
+                    result
+                )
             end
 
             task.wait(1)
@@ -5332,6 +6174,40 @@ return function(Context)
                 "| NextAt:",
                 titanicState.NextAt
             )
+        end
+    )
+
+    FarmSection:AddToggle(
+        "BSAEAutoNextZone",
+        "Auto Next Zone",
+        false,
+
+        function(state)
+            Extra.autoNextZoneEnabled =
+                state == true
+
+            Extra.autoNextZoneSafeZone =
+                nil
+            Extra.autoNextZoneTrialZone =
+                nil
+            Extra.autoNextZoneBlockedZone =
+                nil
+            Extra.autoNextZoneBlockedPickaxeTier =
+                nil
+
+            if Extra.autoNextZoneEnabled then
+                Extra.initializeAutoNextZone()
+
+                Extra.log(
+                    "Auto Next Zone ON",
+                    "| Start:",
+                    Extra.autoNextZoneSafeZone
+                )
+            else
+                Extra.log(
+                    "Auto Next Zone OFF"
+                )
+            end
         end
     )
 
