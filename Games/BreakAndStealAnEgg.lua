@@ -21,11 +21,12 @@
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Global pickup: collect qualifying hatched pets from any player's broken egg, not only our pending hatches
 -- Global pickup safety: only collect when the pickup zone speed requirement is met
+-- Global pickup range: only current safe zone and exactly one next zone; never Zone +2 or farther
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: GLOBAL_PICKUP_SPEED_CHECK")
+    print("[CHLISE HUB] BreakAndSteal module build: GLOBAL_PICKUP_MAX_NEXT_ZONE")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -4953,6 +4954,31 @@ return function(Context)
         local _, _, hrp =
             Extra.getCharacter()
 
+        Extra.initializeAutoNextZone()
+
+        local currentZone =
+            Extra.autoNextZoneSafeZone
+            or Extra.detectCurrentZone()
+
+        local currentIndex =
+            Extra.zoneIndex(
+                currentZone
+            )
+
+        local maxPickupZone =
+            currentIndex
+            and MASTER_ZONES[
+                currentIndex + 1
+            ]
+            or nil
+
+        local maxPickupIndex =
+            maxPickupZone
+            and Extra.zoneIndex(
+                maxPickupZone
+            )
+            or currentIndex
+
         local best
         local bestDistance =
             math.huge
@@ -4980,86 +5006,90 @@ return function(Context)
                         position
                     )
 
-                -- Never steal a global drop from a zone whose speed
-                -- requirement is above our current progression speed.
-                -- If the pickup zone cannot be identified, skip it.
-                local zoneAllowed =
-                    false
-                local zoneRequirement
-
-                if animalZone
-                    and Extra.zoneIndex(
+                local animalZoneIndex =
+                    Extra.zoneIndex(
                         animalZone
                     )
-                then
-                    zoneAllowed,
+
+                -- Global pickup is intentionally limited to:
+                -- current safe zone + exactly one next zone.
+                -- Never scan/collect from Zone +2 or farther.
+                local withinPickupRange =
+                    animalZoneIndex ~= nil
+                    and currentIndex ~= nil
+                    and animalZoneIndex
+                        >= currentIndex
+                    and animalZoneIndex
+                        <= maxPickupIndex
+
+                if withinPickupRange then
+                    local zoneAllowed,
                         zoneRequirement =
                         Extra.speedAllowsZone(
                             animalZone
                         )
-                end
 
-                if zoneAllowed then
-                    local rawName =
-                        animal:GetAttribute(
-                            "AnimalName"
-                        )
-                        or animal.Name
+                    if zoneAllowed then
+                        local rawName =
+                            animal:GetAttribute(
+                                "AnimalName"
+                            )
+                            or animal.Name
 
-                    if Extra.isSelected(
-                        selectedPets,
-                        rawName
-                    ) then
-                        local income
-                        local incomeAllowed =
-                            Extra.minimumPetIncome
-                                <= 0
+                        if Extra.isSelected(
+                            selectedPets,
+                            rawName
+                        ) then
+                            local income
+                            local incomeAllowed =
+                                Extra.minimumPetIncome
+                                    <= 0
 
-                        if Extra.minimumPetIncome > 0 then
-                            income =
-                                Extra.getPetIncomePerSecond(
-                                    animal
-                                )
+                            if Extra.minimumPetIncome > 0 then
+                                income =
+                                    Extra.getPetIncomePerSecond(
+                                        animal
+                                    )
 
-                            incomeAllowed =
-                                income ~= nil
-                                and income
-                                    >= Extra.minimumPetIncome
-                        end
+                                incomeAllowed =
+                                    income ~= nil
+                                    and income
+                                        >= Extra.minimumPetIncome
+                            end
 
-                        if incomeAllowed then
-                            local distance =
-                                (
-                                    position
-                                    - hrp.Position
-                                ).Magnitude
+                            if incomeAllowed then
+                                local distance =
+                                    (
+                                        position
+                                        - hrp.Position
+                                    ).Magnitude
 
-                            if distance
-                                < bestDistance
-                            then
-                                best =
-                                    animal
-                                bestDistance =
-                                    distance
+                                if distance
+                                    < bestDistance
+                                then
+                                    best =
+                                        animal
+                                    bestDistance =
+                                        distance
+                                end
                             end
                         end
-                    end
-                else
-                    Extra.log(
-                        "Global pickup skipped by speed:",
-                        animal:GetAttribute(
-                            "AnimalName"
+                    else
+                        Extra.log(
+                            "Global pickup skipped by speed:",
+                            animal:GetAttribute(
+                                "AnimalName"
+                            )
+                                or animal.Name,
+                            "| Zone:",
+                            animalZone,
+                            "| Speed:",
+                            Extra.getProgressionSpeed(),
+                            "| Required:",
+                            zoneRequirement
+                                or "Unknown"
                         )
-                            or animal.Name,
-                        "| Zone:",
-                        animalZone
-                            or "Unknown",
-                        "| Speed:",
-                        Extra.getProgressionSpeed(),
-                        "| Required:",
-                        zoneRequirement
-                            or "Unknown"
-                    )
+                    end
                 end
             end
         end
@@ -5086,6 +5116,13 @@ return function(Context)
                     or best.Name,
                 "| Zone:",
                 bestZone
+                    or "Unknown",
+                "| Allowed range:",
+                currentZone
+                    or "Unknown",
+                "->",
+                maxPickupZone
+                    or currentZone
                     or "Unknown",
                 "| Income/s:",
                 Extra.getPetIncomePerSecond(
