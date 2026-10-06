@@ -17,6 +17,7 @@
 -- Auto Sell V4: uses EggRewards.PlacedCashPerSecond(AnimalName, WeightKg, SizeMult) for exact pet income before selling
 -- Auto Sell final: selects real Tool instances through BackpackSellController.onClick(tool) and confirms with confirmSell()
 -- Auto Sell income final: inventory threshold uses ToolValue(realTool) / PetIncomeSeconds, matching the game's displayed M/s
+-- Auto Break Max Hit Rate: 0 keeps stable default, custom rate capped to 20 hit/s
 -- World pet pickup: scans every hatched AnimalPickup already in the world and evaluates exact income with PlacedCashPerSecond
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
@@ -37,7 +38,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: AUTOSELL_TOOLVALUE_COMPACTFIX")
+    print("[CHLISE HUB] BreakAndSteal module build: MAX_HIT_RATE_AUTOBREAK")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -232,6 +233,10 @@ return function(Context)
 
     local farmTimerValue = 10
     local farmTimerUnit = "Minutes"
+
+    -- 0 = default stable rate (HIT_DELAY).
+    -- Custom value is capped to 20 hits/second.
+    local maxHitRateAutoBreak = 0
 
     local treadmillTimerValue = 10
     local treadmillTimerUnit = "Minutes"
@@ -5971,6 +5976,31 @@ return function(Context)
         return nil
     end
 
+    function Extra.getAutoBreakHitDelay()
+        local rate =
+            tonumber(
+                maxHitRateAutoBreak
+            )
+            or 0
+
+        if rate <= 0 then
+            return HIT_DELAY
+        end
+
+        rate =
+            math.clamp(
+                rate,
+                0.1,
+                20
+            )
+
+        return
+            math.max(
+                1 / rate,
+                0.05
+            )
+    end
+
     function Extra.waitHitDelayWatchingPending(
         duration
     )
@@ -6271,7 +6301,7 @@ return function(Context)
 
             local acceptedDuringDelay =
                 Extra.waitHitDelayWatchingPending(
-                    HIT_DELAY
+                    Extra.getAutoBreakHitDelay()
                 )
 
             if acceptedDuringDelay then
@@ -10033,6 +10063,68 @@ return function(Context)
                 movementMode = value
                 Extra.log("Movement mode changed:", movementMode)
             end
+        end
+    )
+
+    FarmSection:AddTextbox(
+        "BSAEMaxHitRateAutoBreak",
+        "Max Hit Rate Auto Break",
+        "0 = Default | Max 20",
+
+        function(value)
+            local normalized =
+                tostring(
+                    value
+                    or ""
+                ):
+                gsub(
+                    ",",
+                    "."
+                )
+
+            local parsed =
+                tonumber(
+                    normalized
+                )
+
+            if not parsed
+                or parsed <= 0
+            then
+                maxHitRateAutoBreak =
+                    0
+            else
+                maxHitRateAutoBreak =
+                    math.clamp(
+                        parsed,
+                        0.1,
+                        20
+                    )
+            end
+
+            Extra.log(
+                "Max Hit Rate Auto Break:",
+                maxHitRateAutoBreak > 0
+                    and (
+                        tostring(
+                            maxHitRateAutoBreak
+                        )
+                        .. " hit/s"
+                    )
+                    or (
+                        "Default (~"
+                        .. string.format(
+                            "%.2f",
+                            1 / HIT_DELAY
+                        )
+                        .. " hit/s)"
+                    ),
+                "| Delay:",
+                string.format(
+                    "%.3f",
+                    Extra.getAutoBreakHitDelay()
+                ),
+                "s"
+            )
         end
     )
 
