@@ -16,6 +16,7 @@
 -- Farm Teleport mode: teleport only when changing zones; move locally by walking inside the same zone
 -- Auto Sell V4: uses EggRewards.PlacedCashPerSecond(AnimalName, WeightKg, SizeMult) for exact pet income before selling
 -- Auto Sell final: selects real Tool instances through BackpackSellController.onClick(tool) and confirms with confirmSell()
+-- Auto Sell income final: inventory threshold uses ToolValue(realTool) / PetIncomeSeconds, matching the game's displayed M/s
 -- World pet pickup: scans every hatched AnimalPickup already in the world and evaluates exact income with PlacedCashPerSecond
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
@@ -36,7 +37,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: AUTOSELL_CONTROLLER_V2_UIFIX")
+    print("[CHLISE HUB] BreakAndSteal module build: AUTOSELL_TOOLVALUE_COMPACTFIX")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -4658,12 +4659,21 @@ return function(Context)
                         scaled
                     )
 
-                formatted =
-                    formatted:
-                    gsub(
-                        "%.?0+$",
-                        ""
-                    )
+                -- Only trim zeroes from the DECIMAL part.
+                -- Never trim integer zeroes: "100" must stay "100",
+                -- otherwise 100M incorrectly becomes 1M.
+                if decimals > 0 then
+                    formatted =
+                        formatted:
+                        gsub(
+                            "(%..-)0+$",
+                            "%1"
+                        ):
+                        gsub(
+                            "%.$",
+                            ""
+                        )
+                end
 
                 return
                     formatted
@@ -8906,7 +8916,8 @@ return function(Context)
     end
 
     function Extra.getSellablePetIncome(
-        tool
+        tool,
+        config
     )
         if not tool
             or not tool:IsA("Tool")
@@ -8919,68 +8930,20 @@ return function(Context)
             return nil
         end
 
-        local animalName =
-            tool:GetAttribute(
-                "AnimalName"
-            )
+        -- IMPORTANT:
+        -- Inventory display income is NOT PlacedCashPerSecond.
+        -- Tracer V9 proved the game's inventory value is:
+        --     ToolValue(realTool) / PetIncomeSeconds
+        -- Example: Leafy Sea Dragon displayed ~44.7M/s while
+        -- PlacedCashPerSecond returned ~20B/s.
+        config =
+            type(config) == "table"
+            and config
+            or Extra.getBackpackSellConfig()
 
-        local weightKg =
-            tonumber(
-                tool:GetAttribute(
-                    "WeightKg"
-                )
-            )
-
-        local sizeMult =
-            tonumber(
-                tool:GetAttribute(
-                    "SizeMult"
-                )
-            )
-
-        -- Primary path: exact pet income does not require BackpackSellConfig.
-        -- This avoids Auto Sell silently doing nothing if GC config discovery
-        -- is delayed or unavailable.
-        if animalName
-            and weightKg
-            and sizeMult
-            and type(
-                EggRewards.PlacedCashPerSecond
-            ) == "function"
+        if type(config)
+            ~= "table"
         then
-            local okIncome,
-                result =
-                pcall(
-                    EggRewards.PlacedCashPerSecond,
-                    animalName,
-                    weightKg,
-                    sizeMult
-                )
-
-            local income =
-                okIncome
-                and tonumber(result)
-                or nil
-
-            if income then
-                Extra.log(
-                    "Auto Sell income:",
-                    animalName,
-                    "| Income/s:",
-                    income,
-                    "| Method: PlacedCashPerSecond"
-                )
-
-                return income
-            end
-        end
-
-        -- Fallback only: use config.ToolValue if the controller config can
-        -- be resolved. Auto Sell no longer depends on this path.
-        local config =
-            Extra.getBackpackSellConfig()
-
-        if not config then
             return nil
         end
 
@@ -9019,19 +8982,21 @@ return function(Context)
             return nil
         end
 
-        local ok,
-            result =
+        local okValue,
+            sellValue =
             pcall(
                 toolValue,
                 tool
             )
 
-        local value =
-            ok
-            and tonumber(result)
+        sellValue =
+            okValue
+            and tonumber(
+                sellValue
+            )
             or nil
 
-        if not value then
+        if not sellValue then
             return nil
         end
 
@@ -9048,7 +9013,22 @@ return function(Context)
             return nil
         end
 
-        return value / seconds
+        local income =
+            sellValue / seconds
+
+        Extra.log(
+            "Auto Sell income:",
+            tool:GetAttribute(
+                "AnimalName"
+            )
+                or tool.Name,
+            "| Income/s:",
+            income,
+            "| Method: ToolValue/"
+                .. tostring(seconds)
+        )
+
+        return income
     end
 
     function Extra.getDebugFunction(
@@ -9355,7 +9335,8 @@ return function(Context)
     end
 
     function Extra.collectAutoSellTools(
-        maxPerRequest
+        maxPerRequest,
+        config
     )
         local threshold =
             tonumber(
@@ -9411,7 +9392,8 @@ return function(Context)
 
                     local income =
                         Extra.getSellablePetIncome(
-                            tool
+                            tool,
+                            config
                         )
 
                     if income ~= nil then
@@ -9552,7 +9534,8 @@ return function(Context)
 
         local tools =
             Extra.collectAutoSellTools(
-                maxPerRequest
+                maxPerRequest,
+                config
             )
 
         if #tools == 0 then
@@ -9607,11 +9590,26 @@ return function(Context)
                                     tool
                                 )
 
-                            -- V8 tracing proved the real controller stores
-                            -- the selected Tool as a key in the shared table.
+                            -- The controller selection table may expose Tool
+                            -- keys as their displayed name in executor logs.
+                            -- Accept the real Tool key and the two name forms.
+                            local animalName =
+                                tool:GetAttribute(
+                                    "AnimalName"
+                                )
+
                             local controllerSelected =
                                 selected[tool]
                                     == true
+                                or selected[
+                                    tool.Name
+                                ] == true
+                                or (
+                                    animalName
+                                    and selected[
+                                        animalName
+                                    ] == true
+                                )
 
                             if okClick
                                 and clickResult
