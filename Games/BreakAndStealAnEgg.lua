@@ -122,23 +122,37 @@ return function(Context)
     local penUpgradeRetryAt = 0
     local treadmillUpgradeRetryAt = 0
 
-    local autoBuyPickaxe = false
-    local autoBuyTrail = false
+    local Extra = {
+        Extra.autoBuyPickaxe = false,
+        Extra.autoBuyTrail = false,
 
-    local pickaxeBuyWorkerRunning = false
-    local trailBuyWorkerRunning = false
+        Extra.pickaxeBuyWorkerRunning = false,
+        Extra.trailBuyWorkerRunning = false,
 
-    local pickaxeBuyRetryAt = 0
-    local trailBuyRetryAt = 0
+        Extra.pickaxeBuyRetryAt = 0,
+        Extra.trailBuyRetryAt = 0,
 
-    local equipBestPetEnabled = false
-    local autoClaimIndex = false
+        Extra.equipBestPetEnabled = false,
+        Extra.autoClaimIndex = false,
 
-    local equipBestPetBusy = false
-    local autoClaimIndexBusy = false
+        Extra.equipBestPetBusy = false,
+        Extra.autoClaimIndexBusy = false,
 
-    local lastEquipBestPetAt = 0
-    local lastAutoClaimIndexAt = 0
+        Extra.lastEquipBestPetAt = 0,
+        Extra.lastAutoClaimIndexAt = 0,
+
+        Extra.minimumPetIncome = 0,
+
+        Extra.PET_INCOME_ATTRIBUTE_KEYS = {
+            "IncomePerSecond",
+            "CashPerSecond",
+            "Income",
+            "CashPerSec",
+            "CPS",
+            "EarningsPerSecond",
+            "MoneyPerSecond"
+        }
+    }
 
     -- Titanic is allowed to temporarily override the normal Farm/Treadmill
     -- schedule. We preserve the previous activity + remaining timer so it can
@@ -154,7 +168,6 @@ return function(Context)
     local selectedZones = {}
     local selectedEggs = {}
     local selectedPets = {}
-    local minimumPetIncome = 0
 
     local prioritizeTitanicEgg = true
 
@@ -908,7 +921,7 @@ return function(Context)
         end)
     end
 
-    local function parseOwnedTrails()
+    function Extra.parseOwnedTrails()
         local owned = {}
 
         local raw =
@@ -955,7 +968,7 @@ return function(Context)
         return owned
     end
 
-    local function getNextPickaxePurchase()
+    function Extra.getNextPickaxePurchase()
         local currentTier =
             tonumber(
                 LocalPlayer:GetAttribute(
@@ -996,9 +1009,9 @@ return function(Context)
         currentTier
     end
 
-    local function getNextTrailPurchase()
+    function Extra.getNextTrailPurchase()
         local owned =
-            parseOwnedTrails()
+            Extra.parseOwnedTrails()
 
         local trails =
             TrailsConfig.Trails
@@ -1030,7 +1043,7 @@ return function(Context)
         return nil
     end
 
-    local function waitForPickaxeTier(
+    function Extra.waitForPickaxeTier(
         oldTier,
         timeout
     )
@@ -1062,7 +1075,7 @@ return function(Context)
         return false, oldTier
     end
 
-    local function waitForTrailOwned(
+    function Extra.waitForTrailOwned(
         trailId,
         timeout
     )
@@ -1077,7 +1090,7 @@ return function(Context)
             < deadline
         do
             local owned =
-                parseOwnedTrails()
+                Extra.parseOwnedTrails()
 
             if owned[
                 trailId
@@ -1091,7 +1104,7 @@ return function(Context)
         return false
     end
 
-    local function waitForTrailEquipped(
+    function Extra.waitForTrailEquipped(
         trailId,
         timeout
     )
@@ -1128,20 +1141,20 @@ return function(Context)
         return false
     end
 
-    local function runAutoBuyPickaxe()
-        if pickaxeBuyWorkerRunning then
+    function Extra.runAutoBuyPickaxe()
+        if Extra.pickaxeBuyWorkerRunning then
             return
         end
 
-        pickaxeBuyWorkerRunning = true
+        Extra.pickaxeBuyWorkerRunning = true
 
         task.spawn(function()
-            while autoBuyPickaxe
+            while Extra.autoBuyPickaxe
                 and not Window.Destroyed
             do
                 local nextPurchase,
                     currentTier =
-                    getNextPickaxePurchase()
+                    Extra.getNextPickaxePurchase()
 
                 if not nextPurchase then
                     log(
@@ -1176,7 +1189,7 @@ return function(Context)
                 end
 
                 if os.clock()
-                    < pickaxeBuyRetryAt
+                    < Extra.pickaxeBuyRetryAt
                 then
                     break
                 end
@@ -1201,13 +1214,13 @@ return function(Context)
 
                 local confirmed,
                     newTier =
-                    waitForPickaxeTier(
+                    Extra.waitForPickaxeTier(
                         currentTier,
                         5
                     )
 
                 if not confirmed then
-                    pickaxeBuyRetryAt =
+                    Extra.pickaxeBuyRetryAt =
                         os.clock() + 10
 
                     log(
@@ -1218,7 +1231,7 @@ return function(Context)
                     break
                 end
 
-                pickaxeBuyRetryAt = 0
+                Extra.pickaxeBuyRetryAt = 0
 
                 log(
                     "Auto Buy Pickaxe confirmed",
@@ -1229,24 +1242,24 @@ return function(Context)
                 task.wait(0.05)
             end
 
-            pickaxeBuyWorkerRunning =
+            Extra.pickaxeBuyWorkerRunning =
                 false
         end)
     end
 
-    local function runAutoBuyTrail()
-        if trailBuyWorkerRunning then
+    function Extra.runAutoBuyTrail()
+        if Extra.trailBuyWorkerRunning then
             return
         end
 
-        trailBuyWorkerRunning = true
+        Extra.trailBuyWorkerRunning = true
 
         task.spawn(function()
-            while autoBuyTrail
+            while Extra.autoBuyTrail
                 and not Window.Destroyed
             do
                 local nextPurchase =
-                    getNextTrailPurchase()
+                    Extra.getNextTrailPurchase()
 
                 if not nextPurchase then
                     log(
@@ -1279,7 +1292,7 @@ return function(Context)
                 end
 
                 if os.clock()
-                    < trailBuyRetryAt
+                    < Extra.trailBuyRetryAt
                 then
                     break
                 end
@@ -1303,13 +1316,13 @@ return function(Context)
                     )
 
                 local confirmed =
-                    waitForTrailOwned(
+                    Extra.waitForTrailOwned(
                         nextPurchase.Id,
                         5
                     )
 
                 if not confirmed then
-                    trailBuyRetryAt =
+                    Extra.trailBuyRetryAt =
                         os.clock() + 10
 
                     log(
@@ -1320,7 +1333,7 @@ return function(Context)
                     break
                 end
 
-                trailBuyRetryAt = 0
+                Extra.trailBuyRetryAt = 0
 
                 log(
                     "Auto Buy Trail confirmed",
@@ -1335,7 +1348,7 @@ return function(Context)
                         nextPurchase.Id
                     )
 
-                waitForTrailEquipped(
+                Extra.waitForTrailEquipped(
                     nextPurchase.Id,
                     3
                 )
@@ -1343,24 +1356,24 @@ return function(Context)
                 task.wait(0.05)
             end
 
-            trailBuyWorkerRunning =
+            Extra.trailBuyWorkerRunning =
                 false
         end)
     end
 
-    local function triggerAutoPurchases()
-        if autoBuyPickaxe then
-            runAutoBuyPickaxe()
+    function Extra.triggerAutoPurchases()
+        if Extra.autoBuyPickaxe then
+            Extra.runAutoBuyPickaxe()
         end
 
-        if autoBuyTrail then
-            runAutoBuyTrail()
+        if Extra.autoBuyTrail then
+            Extra.runAutoBuyTrail()
         end
     end
 
-    local function equipBestPet()
-        if not equipBestPetEnabled
-            or equipBestPetBusy
+    function Extra.equipBestPet()
+        if not Extra.equipBestPetEnabled
+            or Extra.equipBestPetBusy
             or Window.Destroyed
         then
             return
@@ -1370,14 +1383,14 @@ return function(Context)
             os.clock()
 
         if now
-            - lastEquipBestPetAt
+            - Extra.lastEquipBestPetAt
             < 0.75
         then
             return
         end
 
-        equipBestPetBusy = true
-        lastEquipBestPetAt = now
+        Extra.equipBestPetBusy = true
+        Extra.lastEquipBestPetAt = now
 
         task.spawn(function()
             log(
@@ -1392,14 +1405,14 @@ return function(Context)
 
             task.wait(0.75)
 
-            equipBestPetBusy =
+            Extra.equipBestPetBusy =
                 false
         end)
     end
 
-    local function claimAllIndex()
-        if not autoClaimIndex
-            or autoClaimIndexBusy
+    function Extra.claimAllIndex()
+        if not Extra.autoClaimIndex
+            or Extra.autoClaimIndexBusy
             or Window.Destroyed
         then
             return
@@ -1409,14 +1422,14 @@ return function(Context)
             os.clock()
 
         if now
-            - lastAutoClaimIndexAt
+            - Extra.lastAutoClaimIndexAt
             < 1.5
         then
             return
         end
 
-        autoClaimIndexBusy = true
-        lastAutoClaimIndexAt = now
+        Extra.autoClaimIndexBusy = true
+        Extra.lastAutoClaimIndexAt = now
 
         task.spawn(function()
             log(
@@ -1431,23 +1444,23 @@ return function(Context)
 
             task.wait(1.5)
 
-            autoClaimIndexBusy =
+            Extra.autoClaimIndexBusy =
                 false
         end)
     end
 
-    local function onPetInventoryChanged()
-        if equipBestPetEnabled then
+    function Extra.onPetInventoryChanged()
+        if Extra.equipBestPetEnabled then
             task.delay(
                 0.25,
-                equipBestPet
+                Extra.equipBestPet
             )
         end
 
-        if autoClaimIndex then
+        if Extra.autoClaimIndex then
             task.delay(
                 0.5,
-                claimAllIndex
+                Extra.claimAllIndex
             )
         end
     end
@@ -1469,7 +1482,7 @@ return function(Context)
     ):
     Connect(function()
         triggerAutoUpgrades()
-        triggerAutoPurchases()
+        Extra.triggerAutoPurchases()
     end)
 
     local function treadmillMultiplier(object)
@@ -2880,17 +2893,7 @@ return function(Context)
         return snapshot
     end
 
-    local PET_INCOME_ATTRIBUTE_KEYS = {
-        "IncomePerSecond",
-        "CashPerSecond",
-        "Income",
-        "CashPerSec",
-        "CPS",
-        "EarningsPerSecond",
-        "MoneyPerSecond"
-    }
-
-    local function parseCompactNumber(value)
+    function Extra.parseCompactNumber(value)
         local raw =
             tostring(value or "")
             :lower()
@@ -2949,7 +2952,7 @@ return function(Context)
         return number
     end
 
-    local function readIncomeFromTable(
+    function Extra.readIncomeFromTable(
         value
     )
         if type(value)
@@ -2960,7 +2963,7 @@ return function(Context)
 
         for _, key
             in ipairs(
-                PET_INCOME_ATTRIBUTE_KEYS
+                Extra.PET_INCOME_ATTRIBUTE_KEYS
             )
         do
             local parsed =
@@ -2976,7 +2979,7 @@ return function(Context)
         return nil
     end
 
-    local function getPetIncomePerSecond(
+    function Extra.getPetIncomePerSecond(
         animal
     )
         if not animal then
@@ -2986,7 +2989,7 @@ return function(Context)
         -- First prefer a replicated value on the actual hatch result.
         for _, key
             in ipairs(
-                PET_INCOME_ATTRIBUTE_KEYS
+                Extra.PET_INCOME_ATTRIBUTE_KEYS
             )
         do
             local value =
@@ -3064,7 +3067,7 @@ return function(Context)
             if ok then
                 return
                     tonumber(result)
-                    or readIncomeFromTable(
+                    or Extra.readIncomeFromTable(
                         result
                     )
             end
@@ -3117,7 +3120,7 @@ return function(Context)
 
                 local result =
                     tonumber(entry)
-                    or readIncomeFromTable(
+                    or Extra.readIncomeFromTable(
                         entry
                     )
 
@@ -3130,7 +3133,7 @@ return function(Context)
         return nil
     end
 
-    local function waitForPetIncome(
+    function Extra.waitForPetIncome(
         animal,
         timeout
     )
@@ -3143,7 +3146,7 @@ return function(Context)
 
         repeat
             local income =
-                getPetIncomePerSecond(
+                Extra.getPetIncomePerSecond(
                     animal
                 )
 
@@ -3160,7 +3163,7 @@ return function(Context)
         return nil
     end
 
-    local function petMatchesFilter(
+    function Extra.petMatchesFilter(
         animal,
         resolvedIncome
     )
@@ -3178,7 +3181,7 @@ return function(Context)
             return false
         end
 
-        if minimumPetIncome <= 0 then
+        if Extra.minimumPetIncome <= 0 then
             return true
         end
 
@@ -3187,7 +3190,7 @@ return function(Context)
 
         if income == nil then
             income =
-                getPetIncomePerSecond(
+                Extra.getPetIncomePerSecond(
                     animal
                 )
         end
@@ -3195,7 +3198,7 @@ return function(Context)
         return
             income ~= nil
             and income
-                >= minimumPetIncome
+                >= Extra.minimumPetIncome
     end
 
     -- Hatch pipeline
@@ -3320,14 +3323,14 @@ return function(Context)
 
                 -- Give replicated income metadata a brief moment to arrive
                 -- only when the user actually enabled the minimum-income filter.
-                if minimumPetIncome > 0
+                if Extra.minimumPetIncome > 0
                     and isSelected(
                         selectedPets,
                         rawName
                     )
                 then
                     resolvedIncome =
-                        getPetIncomePerSecond(
+                        Extra.getPetIncomePerSecond(
                             best
                         )
 
@@ -3345,7 +3348,7 @@ return function(Context)
                     index
                 )
 
-                if petMatchesFilter(
+                if Extra.petMatchesFilter(
                     best,
                     resolvedIncome
                 ) then
@@ -4328,20 +4331,20 @@ return function(Context)
 
         local income
 
-        if minimumPetIncome > 0 then
+        if Extra.minimumPetIncome > 0 then
             income =
-                waitForPetIncome(
+                Extra.waitForPetIncome(
                     animal,
                     1.5
                 )
         else
             income =
-                getPetIncomePerSecond(
+                Extra.getPetIncomePerSecond(
                     animal
                 )
         end
 
-        if not petMatchesFilter(
+        if not Extra.petMatchesFilter(
             animal,
             income
         ) then
@@ -5062,7 +5065,7 @@ return function(Context)
 
     AnimalBankedRemote.OnClientEvent:
     Connect(function()
-        onPetInventoryChanged()
+        Extra.onPetInventoryChanged()
     end)
 
     task.spawn(function()
@@ -5116,10 +5119,10 @@ return function(Context)
                         attributeName
                     ):
                     Connect(function()
-                        if equipBestPetEnabled then
+                        if Extra.equipBestPetEnabled then
                             task.delay(
                                 0.25,
-                                equipBestPet
+                                Extra.equipBestPet
                             )
                         end
                     end)
@@ -5257,24 +5260,24 @@ return function(Context)
 
         function(value)
             local parsed =
-                parseCompactNumber(
+                Extra.parseCompactNumber(
                     value
                 )
 
             if parsed
                 and parsed > 0
             then
-                minimumPetIncome =
+                Extra.minimumPetIncome =
                     parsed
             else
-                minimumPetIncome =
+                Extra.minimumPetIncome =
                     0
             end
 
             log(
                 "Minimum Pet Income/s:",
-                minimumPetIncome > 0
-                    and minimumPetIncome
+                Extra.minimumPetIncome > 0
+                    and Extra.minimumPetIncome
                     or "OFF"
             )
         end
@@ -5524,12 +5527,12 @@ return function(Context)
         false,
 
         function(state)
-            autoBuyPickaxe =
+            Extra.autoBuyPickaxe =
                 state == true
 
-            if autoBuyPickaxe then
-                pickaxeBuyRetryAt = 0
-                runAutoBuyPickaxe()
+            if Extra.autoBuyPickaxe then
+                Extra.pickaxeBuyRetryAt = 0
+                Extra.runAutoBuyPickaxe()
             end
         end
     )
@@ -5540,12 +5543,12 @@ return function(Context)
         false,
 
         function(state)
-            autoBuyTrail =
+            Extra.autoBuyTrail =
                 state == true
 
-            if autoBuyTrail then
-                trailBuyRetryAt = 0
-                runAutoBuyTrail()
+            if Extra.autoBuyTrail then
+                Extra.trailBuyRetryAt = 0
+                Extra.runAutoBuyTrail()
             end
         end
     )
@@ -5556,12 +5559,12 @@ return function(Context)
         false,
 
         function(state)
-            equipBestPetEnabled =
+            Extra.equipBestPetEnabled =
                 state == true
 
-            if equipBestPetEnabled then
-                lastEquipBestPetAt = 0
-                equipBestPet()
+            if Extra.equipBestPetEnabled then
+                Extra.lastEquipBestPetAt = 0
+                Extra.equipBestPet()
             end
         end
     )
@@ -5572,12 +5575,12 @@ return function(Context)
         false,
 
         function(state)
-            autoClaimIndex =
+            Extra.autoClaimIndex =
                 state == true
 
-            if autoClaimIndex then
-                lastAutoClaimIndexAt = 0
-                claimAllIndex()
+            if Extra.autoClaimIndex then
+                Extra.lastAutoClaimIndexAt = 0
+                Extra.claimAllIndex()
             end
         end
     )
