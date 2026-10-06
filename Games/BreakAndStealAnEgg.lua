@@ -3390,7 +3390,6 @@ return function(Context)
                             "| Continue breaking eggs"
                         )
                     end
-                end
 
             elseif os.clock()
                     >= pending.Deadline
