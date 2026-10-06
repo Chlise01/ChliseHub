@@ -19,11 +19,13 @@
 -- Priority: Titanic Egg > Farm first > Treadmill; both ON alternate by timer
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
+-- Global pickup: collect qualifying hatched pets from any player's broken egg, not only our pending hatches
+-- Global pickup safety: only collect when the pickup zone speed requirement is met
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: NEXTZONE_CURRENTZONE_FIX")
+    print("[CHLISE HUB] BreakAndSteal module build: GLOBAL_PICKUP_SPEED_CHECK")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -269,7 +271,10 @@ return function(Context)
         autoNextZoneTrialZone = nil,
         autoNextZoneBlockedZone = nil,
         autoNextZoneBlockedPickaxeTier = nil,
-        autoNextZoneTrialHits = 0
+        autoNextZoneTrialHits = 0,
+
+        globalPickupScanAt = 0,
+        globalPickupCached = nil
     }
 
     function Extra.log(...)
@@ -3560,16 +3565,14 @@ return function(Context)
             requirement
     end
 
-    function Extra.detectCurrentZone()
-        local _, _, hrp =
-            Extra.getCharacter()
-
-        if not hrp then
+    function Extra.detectZoneAtPosition(
+        position
+    )
+        if typeof(position)
+            ~= "Vector3"
+        then
             return nil
         end
-
-        local position =
-            hrp.Position
 
         local containingZone
         local containingDistance =
@@ -3691,6 +3694,20 @@ return function(Context)
         return
             containingZone
             or nearestZone
+    end
+
+    function Extra.detectCurrentZone()
+        local _, _, hrp =
+            Extra.getCharacter()
+
+        if not hrp then
+            return nil
+        end
+
+        return
+            Extra.detectZoneAtPosition(
+                hrp.Position
+            )
     end
 
     function Extra.initializeAutoNextZone()
@@ -4906,6 +4923,182 @@ return function(Context)
                 >= Extra.minimumPetIncome
     end
 
+    function Extra.findGlobalAcceptedPickup()
+        if not autoFarmActive
+            or currentActivity ~= "Farm"
+            or Extra.isCarrying()
+            or Extra.isBeingChased()
+        then
+            return nil
+        end
+
+        local now =
+            os.clock()
+
+        if Extra.globalPickupCached
+            and Extra.globalPickupCached.Parent
+            and now
+                - Extra.globalPickupScanAt
+                < 0.15
+        then
+            return
+                Extra.globalPickupCached
+        end
+
+        Extra.globalPickupScanAt =
+            now
+        Extra.globalPickupCached =
+            nil
+
+        local _, _, hrp =
+            Extra.getCharacter()
+
+        local best
+        local bestDistance =
+            math.huge
+
+        for _, animal
+            in ipairs(
+                Pickups:GetChildren()
+            )
+        do
+            if animal:IsA("Model")
+                and animal:GetAttribute(
+                    "Hatched"
+                ) == true
+            then
+                local position =
+                    animal:GetPivot().Position
+
+                local animalZone =
+                    Extra.normalizeZone(
+                        animal:GetAttribute(
+                            "ZoneId"
+                        )
+                    )
+                    or Extra.detectZoneAtPosition(
+                        position
+                    )
+
+                -- Never steal a global drop from a zone whose speed
+                -- requirement is above our current progression speed.
+                -- If the pickup zone cannot be identified, skip it.
+                local zoneAllowed =
+                    false
+                local zoneRequirement
+
+                if animalZone
+                    and Extra.zoneIndex(
+                        animalZone
+                    )
+                then
+                    zoneAllowed,
+                        zoneRequirement =
+                        Extra.speedAllowsZone(
+                            animalZone
+                        )
+                end
+
+                if zoneAllowed then
+                    local rawName =
+                        animal:GetAttribute(
+                            "AnimalName"
+                        )
+                        or animal.Name
+
+                    if Extra.isSelected(
+                        selectedPets,
+                        rawName
+                    ) then
+                        local income
+                        local incomeAllowed =
+                            Extra.minimumPetIncome
+                                <= 0
+
+                        if Extra.minimumPetIncome > 0 then
+                            income =
+                                Extra.getPetIncomePerSecond(
+                                    animal
+                                )
+
+                            incomeAllowed =
+                                income ~= nil
+                                and income
+                                    >= Extra.minimumPetIncome
+                        end
+
+                        if incomeAllowed then
+                            local distance =
+                                (
+                                    position
+                                    - hrp.Position
+                                ).Magnitude
+
+                            if distance
+                                < bestDistance
+                            then
+                                best =
+                                    animal
+                                bestDistance =
+                                    distance
+                            end
+                        end
+                    end
+                else
+                    Extra.log(
+                        "Global pickup skipped by speed:",
+                        animal:GetAttribute(
+                            "AnimalName"
+                        )
+                            or animal.Name,
+                        "| Zone:",
+                        animalZone
+                            or "Unknown",
+                        "| Speed:",
+                        Extra.getProgressionSpeed(),
+                        "| Required:",
+                        zoneRequirement
+                            or "Unknown"
+                    )
+                end
+            end
+        end
+
+        Extra.globalPickupCached =
+            best
+
+        if best then
+            local bestZone =
+                Extra.normalizeZone(
+                    best:GetAttribute(
+                        "ZoneId"
+                    )
+                )
+                or Extra.detectZoneAtPosition(
+                    best:GetPivot().Position
+                )
+
+            Extra.log(
+                "Global pickup candidate:",
+                best:GetAttribute(
+                    "AnimalName"
+                )
+                    or best.Name,
+                "| Zone:",
+                bestZone
+                    or "Unknown",
+                "| Income/s:",
+                Extra.getPetIncomePerSecond(
+                    best
+                )
+                    or "N/A",
+                "| Source: any player egg"
+            )
+        end
+
+        return best
+    end
+
     -- Hatch pipeline
     --
     -- Important behavior:
@@ -5210,7 +5403,12 @@ return function(Context)
 
         local function interruptForPending()
             acceptedDuringMove =
-                Extra.scanPendingHatches()
+                Extra.findGlobalAcceptedPickup()
+
+            if not acceptedDuringMove then
+                acceptedDuringMove =
+                    Extra.scanPendingHatches()
+            end
 
             return acceptedDuringMove ~= nil
                 or checkTitanicSwitch()
@@ -5316,7 +5514,12 @@ return function(Context)
             end
 
             local accepted =
-                Extra.scanPendingHatches()
+                Extra.findGlobalAcceptedPickup()
+
+            if not accepted then
+                accepted =
+                    Extra.scanPendingHatches()
+            end
 
             if accepted then
                 Extra.stopMoving()
@@ -5531,6 +5734,26 @@ return function(Context)
                     )
                 end
             else
+                -- Any hatched pet in AnimalPickups can be collected when it
+                -- passes the active pet/minimum-income filters, regardless of
+                -- which player broke the egg that spawned it.
+                local globalPickup =
+                    Extra.findGlobalAcceptedPickup()
+
+                if globalPickup then
+                    Extra.stopMoving()
+
+                    Extra.log(
+                        "Interrupt farm for global pickup:",
+                        globalPickup:GetAttribute(
+                            "AnimalName"
+                        )
+                            or globalPickup.Name
+                    )
+
+                    return globalPickup
+                end
+
                 local accepted =
                     Extra.scanPendingHatches()
 
@@ -6069,6 +6292,10 @@ return function(Context)
     end
 
     function Extra.stealAndBank(animal)
+        if Extra.globalPickupCached == animal then
+            Extra.globalPickupCached = nil
+        end
+
         if not animal or not animal.Parent then
             return false
         end
