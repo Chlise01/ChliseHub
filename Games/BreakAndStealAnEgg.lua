@@ -15,6 +15,7 @@
 -- Sell safety: GC candidate probing uses rawget to avoid proxy __index errors (GoodSignal/Connection tables)
 -- Progression: Auto Next Zone checks speed, 15-hit break test, then waits for next PickaxeTier and rechecks requirement
 -- Farm fallback: when current safe-zone eggs are empty, temporarily try the next eligible zone while waiting for respawn
+-- Next-zone safety: detect actual current zone by zone bounds and only ever advance exactly +1 zone
 -- Priority: Titanic Egg > Farm first > Treadmill; both ON alternate by timer
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
@@ -22,7 +23,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: ZONE_EMPTY_FALLBACK")
+    print("[CHLISE HUB] BreakAndSteal module build: NEXTZONE_CURRENTZONE_FIX")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -3559,6 +3560,139 @@ return function(Context)
             requirement
     end
 
+    function Extra.detectCurrentZone()
+        local _, _, hrp =
+            Extra.getCharacter()
+
+        if not hrp then
+            return nil
+        end
+
+        local position =
+            hrp.Position
+
+        local containingZone
+        local containingDistance =
+            math.huge
+
+        local nearestZone
+        local nearestDistance =
+            math.huge
+
+        for _, zoneName
+            in ipairs(
+                MASTER_ZONES
+            )
+        do
+            local zone =
+                ZoneBuilds:
+                FindFirstChild(
+                    zoneName
+                )
+
+            if zone then
+                local center
+                local size
+
+                if zone:IsA("BasePart") then
+                    center =
+                        zone.CFrame
+                    size =
+                        zone.Size
+
+                elseif zone:IsA("Model") then
+                    local ok,
+                        cf,
+                        modelSize =
+                        pcall(function()
+                            return
+                                zone:
+                                GetBoundingBox()
+                        end)
+
+                    if ok then
+                        center =
+                            cf
+                        size =
+                            modelSize
+                    end
+                end
+
+                if center
+                    and size
+                then
+                    local localPoint =
+                        center:
+                        PointToObjectSpace(
+                            position
+                        )
+
+                    local half =
+                        size * 0.5
+
+                    local inside =
+                        math.abs(
+                            localPoint.X
+                        ) <= half.X
+                        and math.abs(
+                            localPoint.Z
+                        ) <= half.Z
+
+                    local distance =
+                        (
+                            position
+                            - center.Position
+                        ).Magnitude
+
+                    if inside
+                        and distance
+                            < containingDistance
+                    then
+                        containingZone =
+                            zoneName
+                        containingDistance =
+                            distance
+                    end
+
+                    if distance
+                        < nearestDistance
+                    then
+                        nearestZone =
+                            zoneName
+                        nearestDistance =
+                            distance
+                    end
+                else
+                    local zonePosition =
+                        Extra.getZonePosition(
+                            zoneName
+                        )
+
+                    if zonePosition then
+                        local distance =
+                            (
+                                position
+                                - zonePosition
+                            ).Magnitude
+
+                        if distance
+                            < nearestDistance
+                        then
+                            nearestZone =
+                                zoneName
+                            nearestDistance =
+                                distance
+                        end
+                    end
+                end
+            end
+        end
+
+        return
+            containingZone
+            or nearestZone
+    end
+
     function Extra.initializeAutoNextZone()
         if Extra.autoNextZoneSafeZone
             and Extra.zoneIndex(
@@ -3568,43 +3702,11 @@ return function(Context)
             return
         end
 
-        local _, _, hrp =
-            Extra.getCharacter()
-
-        local nearest
-        local nearestDistance =
-            math.huge
-
-        for _, zoneName
-            in ipairs(
-                MASTER_ZONES
-            )
-        do
-            local position =
-                Extra.getZonePosition(
-                    zoneName
-                )
-
-            if position then
-                local distance =
-                    (
-                        hrp.Position
-                        - position
-                    ).Magnitude
-
-                if distance
-                    < nearestDistance
-                then
-                    nearest =
-                        zoneName
-                    nearestDistance =
-                        distance
-                end
-            end
-        end
+        local detected =
+            Extra.detectCurrentZone()
 
         Extra.autoNextZoneSafeZone =
-            nearest
+            detected
             or MASTER_ZONES[1]
 
         Extra.autoNextZoneTrialZone =
@@ -3612,6 +3714,11 @@ return function(Context)
 
         Extra.autoNextZoneTrialHits =
             0
+
+        Extra.log(
+            "Auto Next Zone current zone:",
+            Extra.autoNextZoneSafeZone
+        )
     end
 
     function Extra.getAutoNextZoneTarget()
@@ -3632,6 +3739,34 @@ return function(Context)
 
         local blocked =
             Extra.autoNextZoneBlockedZone
+
+        local expectedNextZone =
+            MASTER_ZONES[
+                safeIndex + 1
+            ]
+
+        if blocked
+            and blocked
+                ~= expectedNextZone
+        then
+            Extra.log(
+                "Auto Next Zone stale block cleared:",
+                blocked,
+                "| Expected:",
+                expectedNextZone
+            )
+
+            Extra.autoNextZoneBlockedZone =
+                nil
+            Extra.autoNextZoneBlockedPickaxeTier =
+                nil
+            Extra.autoNextZoneTrialZone =
+                nil
+            Extra.autoNextZoneTrialHits =
+                0
+
+            blocked = nil
+        end
 
         if blocked then
             local currentTier =
@@ -3692,9 +3827,7 @@ return function(Context)
         end
 
         local nextZone =
-            MASTER_ZONES[
-                safeIndex + 1
-            ]
+            expectedNextZone
 
         if not nextZone then
             return safe
@@ -3778,6 +3911,36 @@ return function(Context)
             or zoneName
                 ~= Extra.autoNextZoneTrialZone
         then
+            return
+        end
+
+        local safeIndex =
+            Extra.zoneIndex(
+                Extra.autoNextZoneSafeZone
+            )
+
+        local zoneIndex =
+            Extra.zoneIndex(
+                zoneName
+            )
+
+        if not safeIndex
+            or not zoneIndex
+            or zoneIndex
+                ~= safeIndex + 1
+        then
+            Extra.log(
+                "Auto Next Zone promotion rejected:",
+                zoneName,
+                "| Safe:",
+                Extra.autoNextZoneSafeZone
+            )
+
+            Extra.autoNextZoneTrialZone =
+                nil
+            Extra.autoNextZoneTrialHits =
+                0
+
             return
         end
 
