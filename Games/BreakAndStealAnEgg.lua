@@ -11,9 +11,10 @@
 -- Pickup: qualifying hatch teleports directly to the pet before pickup
 -- Auto Steal: optional Bat-based normal melee automation for players carrying pets; dropped pet still passes filters
 -- Auto Steal precheck: identify and validate carried pet before selecting/chasing a player
--- Auto Steal carry fix: correct ChaseState.IsCarrying call and nearest-carried-pickup fallback
+-- Auto Steal final: carried pet data comes directly from Player Carrying/CarryingZone/CarryingKg/CarryingSizeMult attributes
 -- Recovery teleport: if the carried pet drops during chase/return, teleport directly to that exact pet before pickup
 -- Farm Teleport mode: teleport only when changing zones; move locally by walking inside the same zone
+-- Auto Sell V4: uses EggRewards.PlacedCashPerSecond(AnimalName, WeightKg, SizeMult) for exact pet income before selling
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
@@ -33,7 +34,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: CHASE_DROP_ZONE_TELEPORT")
+    print("[CHLISE HUB] BreakAndSteal module build: FINAL_AUTOSTEAL_AUTOSELL_PCS")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -6755,202 +6756,103 @@ return function(Context)
             ) ~= false
     end
 
-    function Extra.getCarriedPetObject(
+    function Extra.getCarriedPetInfo(
         player
     )
         if not player
             or player == LocalPlayer
+            or not Extra.playerIsCarryingPet(
+                player
+            )
         then
             return nil
         end
 
-        local character =
-            player.Character
-
-        local targetHRP =
-            character
-            and character:
-                FindFirstChild(
-                    "HumanoidRootPart"
-                )
-
-        -- 1) Replicated pet model parented under the carrier.
-        if character then
-            for _, object
-                in ipairs(
-                    character:GetDescendants()
-                )
-            do
-                if object:IsA("Model")
-                    and (
-                        object:GetAttribute(
-                            "AnimalName"
-                        ) ~= nil
-                        or object:GetAttribute(
-                            "HatchId"
-                        ) ~= nil
-                    )
-                then
-                    return object
-                end
-            end
-        end
-
-        -- 2) Pickup explicitly identifies its holder/carrier.
-        local carrierKeys = {
-            "CarrierUserId",
-            "CarryingUserId",
-            "HolderUserId",
-            "CarriedByUserId",
-            "Carrier",
-            "CarriedBy",
-            "Holder",
-            "OwnerUserId"
-        }
-
-        for _, animal
-            in ipairs(
-                Pickups:GetChildren()
-            )
-        do
-            if animal:IsA("Model") then
-                for _, key
-                    in ipairs(
-                        carrierKeys
-                    )
-                do
-                    local value =
-                        animal:GetAttribute(
-                            key
-                        )
-
-                    if value ~= nil then
-                        local matches =
-                            tostring(value)
-                                == tostring(
-                                    player.UserId
-                                )
-                            or tostring(value)
-                                == tostring(
-                                    player.Name
-                                )
-
-                        if matches then
-                            return animal
-                        end
-                    end
-                end
-            end
-        end
-
-        -- 3) Carrying attribute may itself contain HatchId/name.
-        local carryingAttribute =
-            ChaseState.CarryingAttribute
-            or "Carrying"
-
-        local carryingValue =
+        local animalName =
             player:GetAttribute(
-                carryingAttribute
+                "Carrying"
             )
 
-        if carryingValue ~= nil
-            and type(carryingValue)
-                ~= "boolean"
+        if animalName == nil
+            or animalName == false
+            or tostring(animalName)
+                == ""
         then
-            local wanted =
-                tostring(
-                    carryingValue
+            return nil
+        end
+
+        local zoneName =
+            Extra.normalizeZone(
+                player:GetAttribute(
+                    "CarryingZone"
+                )
+            )
+
+        local weightKg =
+            tonumber(
+                player:GetAttribute(
+                    "CarryingKg"
+                )
+            )
+
+        local sizeMult =
+            tonumber(
+                player:GetAttribute(
+                    "CarryingSizeMult"
+                )
+            )
+
+        local bracket =
+            player:GetAttribute(
+                "CarryingBracket"
+            )
+
+        local rarity =
+            player:GetAttribute(
+                "CarryingRarity"
+            )
+
+        local income
+
+        if type(
+            EggRewards.PlacedCashPerSecond
+        ) == "function"
+            and weightKg
+            and sizeMult
+        then
+            local okIncome,
+                result =
+                pcall(
+                    EggRewards.PlacedCashPerSecond,
+                    tostring(animalName),
+                    weightKg,
+                    sizeMult
                 )
 
-            for _, animal
-                in ipairs(
-                    Pickups:GetChildren()
-                )
-            do
-                if animal:IsA("Model") then
-                    local hatchId =
-                        animal:GetAttribute(
-                            "HatchId"
-                        )
-
-                    local animalName =
-                        animal:GetAttribute(
-                            "AnimalName"
-                        )
-                        or animal.Name
-
-                    if (
-                        hatchId ~= nil
-                        and tostring(hatchId)
-                            == wanted
+            if okIncome then
+                income =
+                    tonumber(
+                        result
                     )
-                        or tostring(animalName)
-                            == wanted
-                    then
-                        return animal
-                    end
-                end
             end
         end
 
-        -- 4) Fallback for this game version:
-        -- while a player is carrying, the pet can remain under AnimalPickups
-        -- without any carrier attribute. Choose the nearest HATCHED pickup
-        -- around that carrier before deciding whether to chase.
-        if targetHRP then
-            local nearest
-            local nearestDistance =
-                math.huge
-
-            for _, animal
-                in ipairs(
-                    Pickups:GetChildren()
-                )
-            do
-                if animal:IsA("Model")
-                    and animal:GetAttribute(
-                        "Hatched"
-                    ) == true
-                then
-                    local ok,
-                        position =
-                        pcall(function()
-                            return
-                                animal:
-                                GetPivot().Position
-                        end)
-
-                    if ok
-                        and position
-                    then
-                        local distance =
-                            (
-                                position
-                                - targetHRP.Position
-                            ).Magnitude
-
-                        -- A carried pet should stay very close to the carrier.
-                        -- Keep this tight so a random ground pet is not mistaken
-                        -- for the one they are holding.
-                        if distance <= 10
-                            and distance
-                                < nearestDistance
-                        then
-                            nearest =
-                                animal
-                            nearestDistance =
-                                distance
-                        end
-                    end
-                end
-            end
-
-            if nearest then
-                return nearest
-            end
-        end
-
-        return nil
+        return {
+            AnimalName =
+                tostring(animalName),
+            ZoneName =
+                zoneName,
+            WeightKg =
+                weightKg,
+            SizeMult =
+                sizeMult,
+            Bracket =
+                bracket,
+            Rarity =
+                rarity,
+            Income =
+                income
+        }
     end
 
     function Extra.carriedPetPassesAutoSteal(
@@ -6962,83 +6864,40 @@ return function(Context)
             return false, nil
         end
 
-        local animal =
-            Extra.getCarriedPetObject(
+        local info =
+            Extra.getCarriedPetInfo(
                 player
             )
 
-        if not animal then
+        if not info then
             Extra.log(
                 "Auto Steal skip:",
                 player.Name,
-                "| carried pet object unresolved"
+                "| Carry attributes unresolved"
             )
             return false, nil
         end
 
-        local rawName =
-            animal:GetAttribute(
-                "AnimalName"
-            )
-            or animal.Name
-
         if not Extra.isSelected(
             selectedPets,
-            rawName
+            info.AnimalName
         ) then
             Extra.log(
                 "Auto Steal skip:",
                 player.Name,
                 "| Pet filter:",
-                rawName
+                info.AnimalName
             )
-            return false, animal
+            return false, info
         end
 
-        local position
-        pcall(function()
-            position =
-                animal:GetPivot().Position
-        end)
-
-        if not position then
-            local character =
-                player.Character
-
-            local hrp =
-                character
-                and character:
-                    FindFirstChild(
-                        "HumanoidRootPart"
-                    )
-
-            position =
-                hrp
-                and hrp.Position
-                or nil
-        end
-
-        if not position then
-            return false, animal
-        end
-
-        local animalZone =
-            Extra.normalizeZone(
-                animal:GetAttribute(
-                    "ZoneId"
-                )
-            )
-            or Extra.detectZoneAtPosition(
-                position
-            )
-
-        if not animalZone then
+        if not info.ZoneName then
             Extra.log(
                 "Auto Steal skip:",
                 player.Name,
-                "| zone unresolved"
+                "| CarryingZone unresolved"
             )
-            return false, animal
+            return false, info
         end
 
         Extra.initializeAutoNextZone()
@@ -7052,23 +6911,23 @@ return function(Context)
                 currentZone
             )
 
-        local animalIndex =
+        local carriedIndex =
             Extra.zoneIndex(
-                animalZone
+                info.ZoneName
             )
 
         if not currentIndex
-            or not animalIndex
-            or animalIndex
+            or not carriedIndex
+            or carriedIndex
                 < currentIndex
-            or animalIndex
+            or carriedIndex
                 > currentIndex + 1
         then
             Extra.log(
                 "Auto Steal skip:",
                 player.Name,
                 "| Zone:",
-                animalZone,
+                info.ZoneName,
                 "| Allowed:",
                 currentZone,
                 "->",
@@ -7078,13 +6937,13 @@ return function(Context)
                     ]
                     or "?"
             )
-            return false, animal
+            return false, info
         end
 
         local speedAllowed,
             speedRequirement =
             Extra.speedAllowsZone(
-                animalZone
+                info.ZoneName
             )
 
         if not speedAllowed then
@@ -7093,70 +6952,64 @@ return function(Context)
                 player.Name,
                 "| Speed insufficient",
                 "| Zone:",
-                animalZone,
+                info.ZoneName,
                 "| Speed:",
                 Extra.getProgressionSpeed(),
                 "| Required:",
                 speedRequirement
                     or "Unknown"
             )
-            return false, animal
+            return false, info
         end
 
-        local income
-
         if Extra.minimumPetIncome > 0 then
-            income =
-                Extra.getPetIncomePerSecond(
-                    animal
+            if info.Income == nil then
+                Extra.log(
+                    "Auto Steal skip:",
+                    player.Name,
+                    "| Pet:",
+                    info.AnimalName,
+                    "| Income unresolved"
                 )
-
-            if income == nil then
-                -- Some carried-pet labels/attributes replicate a little later.
-                income =
-                    Extra.waitForPetIncome(
-                        animal,
-                        0.6
-                    )
+                return false, info
             end
 
-            if income == nil
-                or income
-                    < Extra.minimumPetIncome
+            if info.Income
+                < Extra.minimumPetIncome
             then
                 Extra.log(
                     "Auto Steal skip:",
                     player.Name,
                     "| Pet:",
-                    rawName,
+                    info.AnimalName,
                     "| Income/s:",
-                    income
-                        or "Unresolved",
+                    info.Income,
                     "| Minimum:",
                     Extra.minimumPetIncome
                 )
-                return false, animal
+                return false, info
             end
-        else
-            income =
-                Extra.getPetIncomePerSecond(
-                    animal
-                )
         end
 
         Extra.log(
             "Auto Steal precheck PASS:",
             player.Name,
             "| Pet:",
-            rawName,
+            info.AnimalName,
             "| Zone:",
-            animalZone,
+            info.ZoneName,
+            "| Kg:",
+            info.WeightKg
+                or "N/A",
+            "| Size:",
+            info.SizeMult
+                or "N/A",
             "| Income/s:",
-            income
+            info.Income
                 or "N/A"
         )
 
-        return true, animal
+        return true, info
     end
 
     function Extra.findAutoStealTarget()
@@ -7165,7 +7018,7 @@ return function(Context)
 
         local bestPlayer
         local bestHRP
-        local bestAnimal
+        local bestInfo
         local bestDistance =
             math.huge
 
@@ -7179,15 +7032,15 @@ return function(Context)
                     player
                 )
             then
-                -- Check the carried pet FIRST.
-                -- Only qualifying players become chase targets.
                 local accepted,
-                    carriedAnimal =
+                    carriedInfo =
                     Extra.carriedPetPassesAutoSteal(
                         player
                     )
 
-                if accepted then
+                if accepted
+                    and carriedInfo
+                then
                     local character =
                         player.Character
 
@@ -7222,8 +7075,8 @@ return function(Context)
                                 player
                             bestHRP =
                                 hrp
-                            bestAnimal =
-                                carriedAnimal
+                            bestInfo =
+                                carriedInfo
                             bestDistance =
                                 distance
                         end
@@ -7236,7 +7089,7 @@ return function(Context)
             bestPlayer,
             bestHRP,
             bestDistance,
-            bestAnimal
+            bestInfo
     end
 
     function Extra.findAcceptedPickupNear(
@@ -7385,12 +7238,12 @@ return function(Context)
                         local targetPlayer,
                             targetHRP,
                             _,
-                            targetAnimal =
+                            targetInfo =
                             Extra.findAutoStealTarget()
 
                         if not targetPlayer
                             or not targetHRP
-                            or not targetAnimal
+                            or not targetInfo
                         then
                             task.wait(0.2)
                             return
@@ -7400,14 +7253,12 @@ return function(Context)
                             "Auto Steal target accepted BEFORE chase:",
                             targetPlayer.Name,
                             "| Pet:",
-                            targetAnimal:GetAttribute(
-                                "AnimalName"
-                            )
-                                or targetAnimal.Name,
+                            targetInfo.AnimalName,
+                            "| Zone:",
+                            targetInfo.ZoneName
+                                or "Unknown",
                             "| Income/s:",
-                            Extra.getPetIncomePerSecond(
-                                targetAnimal
-                            )
+                            targetInfo.Income
                                 or "N/A"
                         )
 
@@ -7513,11 +7364,71 @@ return function(Context)
                             local dropped
 
                             repeat
-                                dropped =
-                                    Extra.findAcceptedPickupNear(
-                                        lastPosition,
-                                        20
+                                for _, candidate
+                                    in ipairs(
+                                        Pickups:GetChildren()
                                     )
+                                do
+                                    if candidate:IsA("Model")
+                                        and candidate:GetAttribute(
+                                            "Hatched"
+                                        ) == true
+                                    then
+                                        local candidateName =
+                                            candidate:GetAttribute(
+                                                "AnimalName"
+                                            )
+                                            or candidate.Name
+
+                                        local candidateZone =
+                                            Extra.normalizeZone(
+                                                candidate:GetAttribute(
+                                                    "ZoneId"
+                                                )
+                                            )
+
+                                        local position =
+                                            candidate:GetPivot().Position
+
+                                        local closeEnough =
+                                            (
+                                                position
+                                                - lastPosition
+                                            ).Magnitude
+                                            <= 20
+
+                                        if closeEnough
+                                            and tostring(
+                                                candidateName
+                                            ) == tostring(
+                                                targetInfo.AnimalName
+                                            )
+                                            and (
+                                                not targetInfo.ZoneName
+                                                or not candidateZone
+                                                or candidateZone
+                                                    == targetInfo.ZoneName
+                                            )
+                                        then
+                                            local income =
+                                                Extra.getPetIncomePerSecond(
+                                                    candidate
+                                                )
+
+                                            if Extra.minimumPetIncome <= 0
+                                                or (
+                                                    income ~= nil
+                                                    and income
+                                                        >= Extra.minimumPetIncome
+                                                )
+                                            then
+                                                dropped =
+                                                    candidate
+                                                break
+                                            end
+                                        end
+                                    end
+                                end
 
                                 if dropped then
                                     break
@@ -7536,6 +7447,11 @@ return function(Context)
                                         "AnimalName"
                                     )
                                         or dropped.Name
+                                )
+
+                                Extra.teleportToAnimal(
+                                    dropped,
+                                    "Auto Steal drop -> instant teleport:"
                                 )
 
                                 Extra.stealAndBank(
@@ -8618,11 +8534,6 @@ return function(Context)
     )
         if not tool
             or not tool:IsA("Tool")
-            or not CollectionService:
-                HasTag(
-                    tool,
-                    "AnimalTool"
-                )
         then
             return nil
         end
@@ -8634,11 +8545,112 @@ return function(Context)
             return nil
         end
 
+        local isSellable =
+            rawget(
+                config,
+                "IsSellable"
+            )
+
+        if type(isSellable)
+            == "function"
+        then
+            local okSellable,
+                sellable =
+                pcall(
+                    isSellable,
+                    tool
+                )
+
+            if not okSellable
+                or sellable ~= true
+            then
+                return nil
+            end
+        elseif not CollectionService:
+            HasTag(
+                tool,
+                "AnimalTool"
+            )
+        then
+            return nil
+        end
+
+        local animalName =
+            tool:GetAttribute(
+                "AnimalName"
+            )
+
+        local weightKg =
+            tonumber(
+                tool:GetAttribute(
+                    "WeightKg"
+                )
+            )
+
+        local sizeMult =
+            tonumber(
+                tool:GetAttribute(
+                    "SizeMult"
+                )
+            )
+
+        -- The game's real pet income function was traced from
+        -- ReplicatedStorage.Shared.EggRewards:
+        -- PlacedCashPerSecond(name, kg, sizeMult, ...)
+        -- The first three arguments are sufficient for normal pets.
+        if animalName
+            and weightKg
+            and sizeMult
+            and type(
+                EggRewards.PlacedCashPerSecond
+            ) == "function"
+        then
+            local okIncome,
+                income =
+                pcall(
+                    EggRewards.PlacedCashPerSecond,
+                    animalName,
+                    weightKg,
+                    sizeMult
+                )
+
+            income =
+                okIncome
+                and tonumber(income)
+                or nil
+
+            if income
+                and income >= 0
+            then
+                Extra.log(
+                    "Auto Sell income:",
+                    animalName,
+                    "| Kg:",
+                    weightKg,
+                    "| Size:",
+                    sizeMult,
+                    "| Income/s:",
+                    income,
+                    "| Method: PlacedCashPerSecond"
+                )
+
+                return income
+            end
+        end
+
+        -- Compatibility fallback: use the game's ToolValue calculation
+        -- on the real tagged Tool, then convert sell value back to income/s.
         local toolValue =
             rawget(
                 config,
                 "ToolValue"
             )
+
+        if type(toolValue)
+            ~= "function"
+        then
+            return nil
+        end
 
         local ok,
             result =
@@ -8690,9 +8702,20 @@ return function(Context)
             return nil
         end
 
-        return
-            value
-            / seconds
+        local income =
+            value / seconds
+
+        Extra.log(
+            "Auto Sell income:",
+            animalName
+                or tool.Name,
+            "| Income/s:",
+            income,
+            "| Method: ToolValue/"
+                .. tostring(seconds)
+        )
+
+        return income
     end
 
     function Extra.collectAutoSellTools()
@@ -8705,6 +8728,30 @@ return function(Context)
         if threshold <= 0 then
             return {}
         end
+
+        local config =
+            Extra.getBackpackSellConfig()
+
+        if not config then
+            return {}
+        end
+
+        local maxPerRequest =
+            tonumber(
+                rawget(
+                    config,
+                    "MaxPerRequest"
+                )
+            )
+            or 200
+
+        maxPerRequest =
+            math.max(
+                1,
+                math.floor(
+                    maxPerRequest
+                )
+            )
 
         local selected = {}
         local seen = {}
@@ -8721,7 +8768,9 @@ return function(Context)
                     container:GetChildren()
                 )
             do
-                if #selected >= 200 then
+                if #selected
+                    >= maxPerRequest
+                then
                     return
                 end
 
@@ -8735,21 +8784,37 @@ return function(Context)
                             tool
                         )
 
-                    if income ~= nil
-                        and income
-                            < threshold
-                    then
-                        table.insert(
-                            selected,
-                            tool
-                        )
+                    if income ~= nil then
+                        local animalName =
+                            tool:GetAttribute(
+                                "AnimalName"
+                            )
+                            or tool.Name
 
-                        Extra.log(
-                            "Auto Sell candidate:",
-                            tool.Name,
-                            "| Income/s:",
-                            income
-                        )
+                        if income < threshold then
+                            table.insert(
+                                selected,
+                                tool
+                            )
+
+                            Extra.log(
+                                "Auto Sell candidate:",
+                                animalName,
+                                "| Income/s:",
+                                income,
+                                "| Threshold:",
+                                threshold
+                            )
+                        else
+                            Extra.log(
+                                "Auto Sell keep:",
+                                animalName,
+                                "| Income/s:",
+                                income,
+                                "| Threshold:",
+                                threshold
+                            )
+                        end
                     end
                 end
             end
@@ -8781,7 +8846,11 @@ return function(Context)
             return
         end
 
-        local threshold = tonumber(Extra.autoSellBelowIncome) or 0
+        local threshold =
+            tonumber(
+                Extra.autoSellBelowIncome
+            )
+            or 0
 
         if threshold <= 0 then
             return
@@ -8789,43 +8858,86 @@ return function(Context)
 
         if not Extra.getBackpackSellConfig() then
             if not Extra.autoSellConfigWarned then
-                Extra.autoSellConfigWarned = true
+                Extra.autoSellConfigWarned =
+                    true
 
                 warn(
-                    "[CHLISE HUB][AUTO SELL][V3] BackpackSellController config not found."
+                    "[CHLISE HUB][AUTO SELL][V4] BackpackSellConfig not found."
                 )
             end
 
             return
         end
 
-        Extra.autoSellConfigWarned = false
+        Extra.autoSellConfigWarned =
+            false
 
-        if os.clock() - Extra.lastAutoSellAt < 1.5 then
+        if os.clock()
+            - Extra.lastAutoSellAt
+            < 1.5
+        then
             return
         end
 
-        local tools = Extra.collectAutoSellTools()
+        local tools =
+            Extra.collectAutoSellTools()
 
         if #tools == 0 then
             return
         end
 
-        Extra.autoSellBusy = true
-        Extra.lastAutoSellAt = os.clock()
+        local validTools = {}
+
+        for _, tool
+            in ipairs(
+                tools
+            )
+        do
+            if tool
+                and tool.Parent
+                and tool:IsA("Tool")
+            then
+                table.insert(
+                    validTools,
+                    tool
+                )
+            end
+        end
+
+        if #validTools == 0 then
+            return
+        end
+
+        Extra.autoSellBusy =
+            true
+
+        Extra.lastAutoSellAt =
+            os.clock()
+
+        Extra.log(
+            "Auto Sell request:",
+            #validTools,
+            "tool(s)",
+            "| Threshold:",
+            threshold
+        )
 
         task.spawn(function()
-            local ok, result = pcall(function()
-                return BackpackSellRemote:InvokeServer(tools)
-            end)
+            local ok,
+                result =
+                pcall(function()
+                    return
+                        BackpackSellRemote:
+                        InvokeServer(
+                            validTools
+                        )
+                end)
 
             if ok then
                 Extra.log(
-                    "Auto Sell:",
-                    #tools,
-                    "pet(s) below",
-                    threshold,
-                    "income/s",
+                    "Auto Sell success:",
+                    #validTools,
+                    "pet(s)",
                     "| Server:",
                     result
                 )
@@ -8843,14 +8955,16 @@ return function(Context)
                     end
                 )
             else
-                Extra.log(
-                    "Auto Sell failed:",
+                warn(
+                    "[CHLISE HUB][AUTO SELL][V4] InvokeServer failed:",
                     result
                 )
             end
 
             task.wait(1)
-            Extra.autoSellBusy = false
+
+            Extra.autoSellBusy =
+                false
         end)
     end
 
