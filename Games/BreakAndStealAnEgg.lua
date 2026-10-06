@@ -16,6 +16,7 @@
 -- Progression: Auto Next Zone checks speed, 15-hit break test, then waits for next PickaxeTier and rechecks requirement
 -- Farm fallback: when current safe-zone eggs are empty, temporarily try the next eligible zone while waiting for respawn
 -- Next-zone safety: detect actual current zone by zone bounds and only ever advance exactly +1 zone
+-- Next-zone lock: selected/current zone is authoritative; unknown requirements are rejected; max one promotion per PickaxeTier
 -- Priority: Titanic Egg > Farm first > Treadmill; both ON alternate by timer
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
@@ -26,7 +27,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: GLOBAL_PICKUP_MAX_NEXT_ZONE")
+    print("[CHLISE HUB] BreakAndSteal module build: ANTIAFK_V3_NEXTZONE_LOCK")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -79,75 +80,107 @@ return function(Context)
     local CollectionService = game:GetService("CollectionService")
 
     -- Anti AFK
-    -- Prefer disabling idle connections when the executor exposes
-    -- getconnections(). Keep VirtualUser as a fallback.
+    -- Do not rely only on LocalPlayer.Idled. Some executors/games still
+    -- disconnect even when that callback is hooked, so send harmless input
+    -- periodically as well.
     pcall(function()
-        local disabledIdleConnection = false
-
-        if type(getconnections) == "function" then
-            local okConnections,
-                connections =
-                pcall(
-                    getconnections,
-                    LocalPlayer.Idled
-                )
-
-            if okConnections
-                and type(connections) == "table"
-            then
-                for _, connection
-                    in ipairs(connections)
-                do
-                    pcall(function()
-                        if connection.Disable then
-                            connection:Disable()
-                            disabledIdleConnection = true
-                        elseif connection.Disconnect then
-                            connection:Disconnect()
-                            disabledIdleConnection = true
-                        end
-                    end)
-                end
-            end
-        end
-
         local VirtualUser =
             game:GetService(
                 "VirtualUser"
             )
 
+        local VirtualInputManager
+        pcall(function()
+            VirtualInputManager =
+                game:GetService(
+                    "VirtualInputManager"
+                )
+        end)
+
+        local function sendAntiAFKInput()
+            local sent =
+                false
+
+            if VirtualInputManager then
+                sent =
+                    pcall(function()
+                        VirtualInputManager:
+                            SendMouseButtonEvent(
+                                0,
+                                0,
+                                1,
+                                true,
+                                game,
+                                0
+                            )
+
+                        task.wait(0.05)
+
+                        VirtualInputManager:
+                            SendMouseButtonEvent(
+                                0,
+                                0,
+                                1,
+                                false,
+                                game,
+                                0
+                            )
+                    end)
+            end
+
+            if not sent then
+                pcall(function()
+                    VirtualUser:
+                        CaptureController()
+
+                    local camera =
+                        Workspace.CurrentCamera
+
+                    local cameraCFrame =
+                        camera
+                        and camera.CFrame
+                        or CFrame.new()
+
+                    VirtualUser:
+                        Button2Down(
+                            Vector2.new(
+                                0,
+                                0
+                            ),
+                            cameraCFrame
+                        )
+
+                    task.wait(0.08)
+
+                    VirtualUser:
+                        Button2Up(
+                            Vector2.new(
+                                0,
+                                0
+                            ),
+                            cameraCFrame
+                        )
+                end)
+            end
+        end
+
+        -- Immediate activity so the anti-AFK worker is known to be alive.
+        sendAntiAFKInput()
+
         LocalPlayer.Idled:
-        Connect(function()
-            pcall(function()
-                VirtualUser:
-                    CaptureController()
-
-                VirtualUser:
-                    Button2Down(
-                        Vector2.new(
-                            0,
-                            0
-                        ),
-                        Workspace.CurrentCamera.CFrame
-                    )
-
-                task.wait(0.2)
-
-                VirtualUser:
-                    Button2Up(
-                        Vector2.new(
-                            0,
-                            0
-                        ),
-                        Workspace.CurrentCamera.CFrame
-                    )
+            Connect(function()
+                sendAntiAFKInput()
             end)
+
+        task.spawn(function()
+            while true do
+                task.wait(45)
+                sendAntiAFKInput()
+            end
         end)
 
         print(
-            "[CHLISE HUB] Anti AFK ready",
-            "| Idle connections disabled:",
-            disabledIdleConnection
+            "[CHLISE HUB] Anti AFK V3 active | periodic input: 45s"
         )
     end)
 
@@ -273,6 +306,7 @@ return function(Context)
         autoNextZoneBlockedZone = nil,
         autoNextZoneBlockedPickaxeTier = nil,
         autoNextZoneTrialHits = 0,
+        autoNextZonePromotedPickaxeTier = nil,
 
         globalPickupScanAt = 0,
         globalPickupCached = nil
@@ -3553,9 +3587,9 @@ return function(Context)
             )
 
         if not requirement then
-            -- Unknown requirement: permit a trial. The 10-second egg check
-            -- below remains the safety net.
-            return true, nil
+            -- Never guess. If the requirement cannot be resolved, stay in the
+            -- current safe zone instead of accidentally walking to the last zone.
+            return false, nil
         end
 
         local speed =
@@ -3711,6 +3745,80 @@ return function(Context)
             )
     end
 
+    function Extra.getSelectedCurrentZone()
+        local selected =
+            {}
+
+        for _, zoneName
+            in ipairs(
+                MASTER_ZONES
+            )
+        do
+            if Extra.isSelected(
+                selectedZones,
+                zoneName
+            )
+            and not Extra.selectionEmpty(
+                selectedZones
+            )
+            then
+                table.insert(
+                    selected,
+                    zoneName
+                )
+            end
+        end
+
+        if #selected == 1 then
+            return selected[1]
+        end
+
+        if #selected > 1 then
+            local _, _, hrp =
+                Extra.getCharacter()
+
+            local best
+            local bestDistance =
+                math.huge
+
+            for _, zoneName
+                in ipairs(
+                    selected
+                )
+            do
+                local position =
+                    Extra.getZonePosition(
+                        zoneName
+                    )
+
+                if position then
+                    local distance =
+                        (
+                            hrp.Position
+                            - position
+                        ).Magnitude
+
+                    if distance
+                        < bestDistance
+                    then
+                        best =
+                            zoneName
+                        bestDistance =
+                            distance
+                    end
+                end
+            end
+
+            if best then
+                return best
+            end
+
+            return selected[1]
+        end
+
+        return nil
+    end
+
     function Extra.initializeAutoNextZone()
         if Extra.autoNextZoneSafeZone
             and Extra.zoneIndex(
@@ -3720,22 +3828,33 @@ return function(Context)
             return
         end
 
-        local detected =
+        local selectedZone =
+            Extra.getSelectedCurrentZone()
+
+        local detectedZone =
             Extra.detectCurrentZone()
 
         Extra.autoNextZoneSafeZone =
-            detected
+            selectedZone
+            or detectedZone
             or MASTER_ZONES[1]
 
         Extra.autoNextZoneTrialZone =
             nil
-
         Extra.autoNextZoneTrialHits =
             0
+        Extra.autoNextZonePromotedPickaxeTier =
+            nil
 
         Extra.log(
-            "Auto Next Zone current zone:",
-            Extra.autoNextZoneSafeZone
+            "Auto Next Zone base:",
+            Extra.autoNextZoneSafeZone,
+            "| Selected:",
+            selectedZone
+                or "None",
+            "| Detected:",
+            detectedZone
+                or "Unknown"
         )
     end
 
@@ -3757,6 +3876,37 @@ return function(Context)
 
         local blocked =
             Extra.autoNextZoneBlockedZone
+
+        local currentPickaxeTier =
+            tonumber(
+                LocalPlayer:
+                    GetAttribute(
+                        "PickaxeTier"
+                    )
+            )
+            or 1
+
+        local promotedTier =
+            tonumber(
+                Extra.autoNextZonePromotedPickaxeTier
+            )
+
+        if promotedTier
+            and currentPickaxeTier
+                <= promotedTier
+        then
+            -- A zone was already promoted on this exact pickaxe tier.
+            -- Stay there and do NOT immediately chain to another zone.
+            return safe
+        end
+
+        if promotedTier
+            and currentPickaxeTier
+                > promotedTier
+        then
+            Extra.autoNextZonePromotedPickaxeTier =
+                nil
+        end
 
         local expectedNextZone =
             MASTER_ZONES[
@@ -3964,6 +4114,15 @@ return function(Context)
 
         Extra.autoNextZoneSafeZone =
             zoneName
+
+        Extra.autoNextZonePromotedPickaxeTier =
+            tonumber(
+                LocalPlayer:
+                    GetAttribute(
+                        "PickaxeTier"
+                    )
+            )
+            or 1
 
         Extra.autoNextZoneTrialZone =
             nil
@@ -7637,7 +7796,28 @@ return function(Context)
         selectedZones,
 
         function(value)
-            selectedZones = Extra.decodeSelection(value, zoneLabels)
+            selectedZones =
+                Extra.decodeSelection(
+                    value,
+                    zoneLabels
+                )
+
+            if Extra.autoNextZoneEnabled then
+                Extra.autoNextZoneSafeZone =
+                    nil
+                Extra.autoNextZoneTrialZone =
+                    nil
+                Extra.autoNextZoneBlockedZone =
+                    nil
+                Extra.autoNextZoneBlockedPickaxeTier =
+                    nil
+                Extra.autoNextZoneTrialHits =
+                    0
+                Extra.autoNextZonePromotedPickaxeTier =
+                    nil
+
+                Extra.initializeAutoNextZone()
+            end
         end
     )
 
@@ -7703,6 +7883,8 @@ return function(Context)
                 nil
             Extra.autoNextZoneTrialHits =
                 0
+            Extra.autoNextZonePromotedPickaxeTier =
+                nil
 
             if Extra.autoNextZoneEnabled then
                 Extra.initializeAutoNextZone()
