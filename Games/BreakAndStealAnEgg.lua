@@ -15,6 +15,7 @@
 -- Recovery teleport: if the carried pet drops during chase/return, teleport directly to that exact pet before pickup
 -- Farm Teleport mode: teleport only when changing zones; move locally by walking inside the same zone
 -- Auto Sell V4: uses EggRewards.PlacedCashPerSecond(AnimalName, WeightKg, SizeMult) for exact pet income before selling
+-- Auto Sell final: selects real Tool instances through BackpackSellController.onClick(tool) and confirms with confirmSell()
 -- World pet pickup: scans every hatched AnimalPickup already in the world and evaluates exact income with PlacedCashPerSecond
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
@@ -35,7 +36,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: INCOME_UI_AUTOSELL_V5")
+    print("[CHLISE HUB] BreakAndSteal module build: AUTOSELL_CONTROLLER_FINAL")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -295,6 +296,8 @@ return function(Context)
         backpackSellConfig = nil,
         autoSellConfigWarned = false,
         autoSellRequestToken = nil,
+        autoSellController = nil,
+        autoSellControllerWarned = false,
 
         titanicCandidates = {},
         titanicDirty = true,
@@ -9091,6 +9094,309 @@ return function(Context)
         return income
     end
 
+    function Extra.getDebugFunction(
+        name
+    )
+        local environment =
+            getgenv
+            and getgenv()
+            or _G
+
+        local fn =
+            rawget(
+                environment,
+                name
+            )
+
+        if type(fn)
+            == "function"
+        then
+            return fn
+        end
+
+        if debug then
+            fn =
+                rawget(
+                    debug,
+                    name
+                )
+
+            if type(fn)
+                == "function"
+            then
+                return fn
+            end
+        end
+
+        return nil
+    end
+
+    function Extra.resolveAutoSellController()
+        local cached =
+            Extra.autoSellController
+
+        if cached
+            and type(
+                cached.OnClick
+            ) == "function"
+            and type(
+                cached.ConfirmSell
+            ) == "function"
+            and type(
+                cached.Selected
+            ) == "table"
+        then
+            return cached
+        end
+
+        local getConnectionsFn =
+            Extra.getDebugFunction(
+                "getconnections"
+            )
+
+        local getInfoFn =
+            Extra.getDebugFunction(
+                "getinfo"
+            )
+
+        local getUpvaluesFn =
+            Extra.getDebugFunction(
+                "getupvalues"
+            )
+
+        if type(getConnectionsFn)
+            ~= "function"
+            or type(getInfoFn)
+                ~= "function"
+            or type(getUpvaluesFn)
+                ~= "function"
+        then
+            return nil,
+                "executor debug APIs unavailable"
+        end
+
+        local playerGui =
+            LocalPlayer:
+            FindFirstChildOfClass(
+                "PlayerGui"
+            )
+
+        local scatchel =
+            playerGui
+            and playerGui:
+                FindFirstChild(
+                    "Scatchel"
+                )
+
+        local hotBarUi =
+            scatchel
+            and scatchel:
+                FindFirstChild(
+                    "HotBarUi"
+                )
+
+        local inventory =
+            hotBarUi
+            and hotBarUi:
+                FindFirstChild(
+                    "Inventory"
+                )
+
+        local sellButton =
+            inventory
+            and inventory:
+                FindFirstChild(
+                    "Sell"
+                )
+
+        if not sellButton
+            or not sellButton:IsA(
+                "GuiButton"
+            )
+        then
+            return nil,
+                "inventory sell button unavailable"
+        end
+
+        local okConnections,
+            connections =
+            pcall(
+                getConnectionsFn,
+                sellButton.Activated
+            )
+
+        if not okConnections
+            or type(connections)
+                ~= "table"
+        then
+            return nil,
+                "sell connections unavailable"
+        end
+
+        local onSellPressed
+
+        for _, connection
+            in ipairs(
+                connections
+            )
+        do
+            local fn =
+                connection.Function
+
+            if type(fn)
+                == "function"
+            then
+                local okInfo,
+                    info =
+                    pcall(
+                        getInfoFn,
+                        fn
+                    )
+
+                if okInfo
+                    and type(info)
+                        == "table"
+                    and info.name
+                        == "onSellPressed"
+                    and tostring(
+                        info.source
+                        or ""
+                    ):find(
+                        "BackpackSellController",
+                        1,
+                        true
+                    )
+                then
+                    onSellPressed =
+                        fn
+                    break
+                end
+            end
+        end
+
+        if type(onSellPressed)
+            ~= "function"
+        then
+            return nil,
+                "original onSellPressed not found"
+        end
+
+        local okRoot,
+            rootUps =
+            pcall(
+                getUpvaluesFn,
+                onSellPressed
+            )
+
+        if not okRoot
+            or type(rootUps)
+                ~= "table"
+        then
+            return nil,
+                "onSellPressed upvalues unavailable"
+        end
+
+        local confirmSell =
+            rootUps[3]
+
+        local onClick =
+            rootUps[7]
+
+        if type(confirmSell)
+            ~= "function"
+            or type(onClick)
+                ~= "function"
+        then
+            return nil,
+                "controller helper functions unresolved"
+        end
+
+        local okConfirm,
+            confirmUps =
+            pcall(
+                getUpvaluesFn,
+                confirmSell
+            )
+
+        local okClick,
+            clickUps =
+            pcall(
+                getUpvaluesFn,
+                onClick
+            )
+
+        if not okConfirm
+            or type(confirmUps)
+                ~= "table"
+            or not okClick
+            or type(clickUps)
+                ~= "table"
+        then
+            return nil,
+                "controller helper upvalues unavailable"
+        end
+
+        local confirmSelected =
+            confirmUps[1]
+
+        local clickSelected =
+            clickUps[3]
+
+        if type(confirmSelected)
+            ~= "table"
+            or confirmSelected
+                ~= clickSelected
+        then
+            return nil,
+                "controller selection table mismatch"
+        end
+
+        local config =
+            confirmUps[9]
+
+        if type(config)
+            ~= "table"
+        then
+            config =
+                Extra.getBackpackSellConfig()
+        end
+
+        cached = {
+            OnSellPressed =
+                onSellPressed,
+            ConfirmSell =
+                confirmSell,
+            OnClick =
+                onClick,
+            Selected =
+                confirmSelected,
+            Config =
+                config,
+            SellButton =
+                sellButton
+        }
+
+        Extra.autoSellController =
+            cached
+
+        Extra.log(
+            "Auto Sell controller resolved",
+            "| Shared selection:",
+            confirmSelected
+                == clickSelected,
+            "| MaxPerRequest:",
+            type(config)
+                == "table"
+                and rawget(
+                    config,
+                    "MaxPerRequest"
+                )
+                or "N/A"
+        )
+
+        return cached
+    end
+
     function Extra.collectAutoSellTools()
         local threshold =
             tonumber(
@@ -9231,8 +9537,6 @@ return function(Context)
         end
 
         if force then
-            Extra.autoSellBusy =
-                false
             Extra.lastAutoSellAt =
                 0
         end
@@ -9241,152 +9545,255 @@ return function(Context)
             return
         end
 
-        if not Extra.getBackpackSellConfig() then
-            if not Extra.autoSellConfigWarned then
-                Extra.autoSellConfigWarned =
-                    true
-
-                warn(
-                    "[CHLISE HUB][AUTO SELL][V5] BackpackSellConfig not found."
-                )
-            end
-
-            return
-        end
-
-        Extra.autoSellConfigWarned =
-            false
-
         if not force
             and os.clock()
                 - Extra.lastAutoSellAt
-                < 1
+                < 0.75
         then
             return
         end
+
+        Extra.lastAutoSellAt =
+            os.clock()
+
+        local controller,
+            controllerError =
+            Extra.resolveAutoSellController()
+
+        if not controller then
+            if not Extra.autoSellControllerWarned then
+                Extra.autoSellControllerWarned =
+                    true
+
+                warn(
+                    "[CHLISE HUB][AUTO SELL][CONTROLLER] ",
+                    controllerError
+                        or "controller unavailable"
+                )
+            end
+
+            Extra.autoSellController =
+                nil
+            return
+        end
+
+        Extra.autoSellControllerWarned =
+            false
 
         local tools =
             Extra.collectAutoSellTools()
 
         if #tools == 0 then
-            Extra.lastAutoSellAt =
-                os.clock()
             return
         end
 
-        local validTools = {}
+        local config =
+            controller.Config
+            or Extra.getBackpackSellConfig()
 
-        for _, tool
-            in ipairs(
-                tools
+        local maxPerRequest =
+            type(config)
+                == "table"
+                and tonumber(
+                    rawget(
+                        config,
+                        "MaxPerRequest"
+                    )
+                )
+                or 200
+
+        maxPerRequest =
+            math.max(
+                1,
+                math.floor(
+                    maxPerRequest
+                    or 200
+                )
             )
-        do
-            if tool
-                and tool.Parent
-                and tool:IsA(
-                    "Tool"
-                )
-            then
-                table.insert(
-                    validTools,
-                    tool
-                )
-            end
-        end
-
-        if #validTools == 0 then
-            Extra.lastAutoSellAt =
-                os.clock()
-            return
-        end
 
         Extra.autoSellBusy =
             true
 
-        Extra.lastAutoSellAt =
-            os.clock()
-
-        local requestToken =
-            os.clock()
-
-        Extra.autoSellRequestToken =
-            requestToken
-
-        Extra.log(
-            "Auto Sell request:",
-            #validTools,
-            "tool(s)",
-            "| Threshold:",
-            threshold
-        )
-
-        -- Fail-safe: a RemoteFunction call should never permanently lock
-        -- the Auto Sell worker if the server does not answer.
-        task.delay(
-            3,
-            function()
-                if Extra.autoSellRequestToken
-                    == requestToken
-                then
-                    Extra.autoSellBusy =
-                        false
-                end
-            end
-        )
-
         task.spawn(function()
-            local ok,
-                result =
+            local okBatch,
+                batchError =
                 pcall(function()
-                    return
-                        BackpackSellRemote:
-                        InvokeServer(
-                            validTools
+                    local selected =
+                        controller.Selected
+
+                    if type(selected)
+                        ~= "table"
+                    then
+                        error(
+                            "controller selection table missing"
                         )
+                    end
+
+                    -- Always begin with a clean controller selection,
+                    -- exactly like opening a fresh manual sell session.
+                    table.clear(
+                        selected
+                    )
+
+                    local selectedTools = {}
+
+                    for _, tool
+                        in ipairs(
+                            tools
+                        )
+                    do
+                        if #selectedTools
+                            >= maxPerRequest
+                        then
+                            break
+                        end
+
+                        if tool
+                            and tool.Parent
+                            and tool:IsA(
+                                "Tool"
+                            )
+                        then
+                            local okClick,
+                                clickResult =
+                                pcall(
+                                    controller.OnClick,
+                                    tool
+                                )
+
+                            if okClick
+                                and clickResult
+                                    ~= false
+                            then
+                                table.insert(
+                                    selectedTools,
+                                    tool
+                                )
+
+                                Extra.log(
+                                    "Auto Sell controller selected:",
+                                    tool:GetAttribute(
+                                        "AnimalName"
+                                    )
+                                        or tool.Name
+                                )
+                            else
+                                Extra.log(
+                                    "Auto Sell controller skip:",
+                                    tool.Name,
+                                    "| onClick:",
+                                    clickResult
+                                )
+                            end
+                        end
+                    end
+
+                    if #selectedTools
+                        == 0
+                    then
+                        table.clear(
+                            selected
+                        )
+
+                        return
+                    end
+
+                    Extra.log(
+                        "Auto Sell confirm:",
+                        #selectedTools,
+                        "pet(s)",
+                        "| Threshold:",
+                        threshold
+                    )
+
+                    local okConfirm,
+                        confirmResult =
+                        pcall(
+                            controller.ConfirmSell
+                        )
+
+                    if not okConfirm then
+                        error(
+                            tostring(
+                                confirmResult
+                            )
+                        )
+                    end
+
+                    task.wait(0.2)
+
+                    local soldCount =
+                        0
+
+                    for _, tool
+                        in ipairs(
+                            selectedTools
+                        )
+                    do
+                        if not tool.Parent then
+                            soldCount += 1
+                        end
+                    end
+
+                    Extra.log(
+                        "Auto Sell controller result:",
+                        soldCount,
+                        "/",
+                        #selectedTools,
+                        "removed",
+                        "| confirm:",
+                        confirmResult
+                    )
+
+                    -- The real controller normally clears this after confirm.
+                    -- Clear defensively so the next automated batch is fresh.
+                    table.clear(
+                        selected
+                    )
                 end)
 
-            if Extra.autoSellRequestToken
-                == requestToken
-            then
-                Extra.autoSellBusy =
-                    false
-                Extra.autoSellRequestToken =
+            if not okBatch then
+                warn(
+                    "[CHLISE HUB][AUTO SELL][CONTROLLER] batch failed:",
+                    batchError
+                )
+
+                pcall(function()
+                    if controller
+                        and type(
+                            controller.Selected
+                        ) == "table"
+                    then
+                        table.clear(
+                            controller.Selected
+                        )
+                    end
+                end)
+
+                -- Re-resolve on the next scan in case the UI/controller
+                -- was rebuilt after respawn or inventory refresh.
+                Extra.autoSellController =
                     nil
             end
 
-            if ok then
-                Extra.log(
-                    "Auto Sell success:",
-                    #validTools,
-                    "pet(s)",
-                    "| Server:",
-                    result
-                )
+            Extra.autoSellBusy =
+                false
 
+            if Extra.autoSellEnabled
+                and Extra.autoSellBelowIncome
+                    > 0
+            then
                 task.delay(
-                    0.2,
+                    0.25,
                     function()
-                        if Extra.equipBestPetEnabled then
-                            Extra.equipBestPet()
-                        end
-
-                        if Extra.autoClaimIndex then
-                            Extra.claimAllIndex()
-                        end
-
-                        -- Immediately scan again because one server request
-                        -- can be capped and new pets may have appeared.
-                        if Extra.autoSellEnabled then
+                        if Extra.autoSellEnabled
+                            and not Window.Destroyed
+                        then
                             Extra.runAutoSell(
                                 true
                             )
                         end
                     end
-                )
-            else
-                warn(
-                    "[CHLISE HUB][AUTO SELL][V5] InvokeServer failed:",
-                    result
                 )
             end
         end)
@@ -10065,6 +10472,8 @@ return function(Context)
                 nil
             Extra.lastAutoSellAt =
                 0
+            Extra.autoSellController =
+                nil
 
             if Extra.autoSellEnabled then
                 Extra.queueAutoSell(
