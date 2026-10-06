@@ -21,7 +21,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: ANTIAFK_NEXTZONE_15HIT")
+    print("[CHLISE HUB] BreakAndSteal module build: ANTIAFK_NEXTZONE_15HIT_FIX1")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -89,9 +89,7 @@ return function(Context)
                             0,
                             0
                         ),
-                        Workspace:
-                        CurrentCamera:
-                        CFrame
+                        Workspace.CurrentCamera.CFrame
                     )
 
                 task.wait(0.1)
@@ -102,9 +100,7 @@ return function(Context)
                             0,
                             0
                         ),
-                        Workspace:
-                        CurrentCamera:
-                        CFrame
+                        Workspace.CurrentCamera.CFrame
                     )
             end)
         end)
