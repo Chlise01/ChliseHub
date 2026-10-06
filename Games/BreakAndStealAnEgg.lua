@@ -8,6 +8,7 @@
 -- Titanic detection: optimized known-zone scan only; no full Workspace descendant scan
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
+-- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
@@ -55,6 +56,8 @@ return function(Context)
     local UpgradeTreadmillRequest = ReplicatedStorage:WaitForChild("UpgradeTreadmillRequest")
     local PickaxeShopRequest = ReplicatedStorage:WaitForChild("PickaxeShopRequest")
     local TrailShopRequest = ReplicatedStorage:WaitForChild("TrailShopRequest")
+    local PetsInventoryRemote = ReplicatedStorage:WaitForChild("PetsInventoryRemote")
+    local IndexRemote = ReplicatedStorage:WaitForChild("IndexRemote")
 
     local Build = Workspace:WaitForChild(ZonesConfig.BuildFolderName or "Build")
     local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
@@ -127,6 +130,15 @@ return function(Context)
 
     local pickaxeBuyRetryAt = 0
     local trailBuyRetryAt = 0
+
+    local equipBestPetEnabled = false
+    local autoClaimIndex = false
+
+    local equipBestPetBusy = false
+    local autoClaimIndexBusy = false
+
+    local lastEquipBestPetAt = 0
+    local lastAutoClaimIndexAt = 0
 
     -- Titanic is allowed to temporarily override the normal Farm/Treadmill
     -- schedule. We preserve the previous activity + remaining timer so it can
@@ -1343,6 +1355,100 @@ return function(Context)
 
         if autoBuyTrail then
             runAutoBuyTrail()
+        end
+    end
+
+    local function equipBestPet()
+        if not equipBestPetEnabled
+            or equipBestPetBusy
+            or Window.Destroyed
+        then
+            return
+        end
+
+        local now =
+            os.clock()
+
+        if now
+            - lastEquipBestPetAt
+            < 0.75
+        then
+            return
+        end
+
+        equipBestPetBusy = true
+        lastEquipBestPetAt = now
+
+        task.spawn(function()
+            log(
+                "Equip Best Pet request"
+            )
+
+            PetsInventoryRemote:
+                FireServer(
+                    "EquipBest",
+                    nil
+                )
+
+            task.wait(0.75)
+
+            equipBestPetBusy =
+                false
+        end)
+    end
+
+    local function claimAllIndex()
+        if not autoClaimIndex
+            or autoClaimIndexBusy
+            or Window.Destroyed
+        then
+            return
+        end
+
+        local now =
+            os.clock()
+
+        if now
+            - lastAutoClaimIndexAt
+            < 1.5
+        then
+            return
+        end
+
+        autoClaimIndexBusy = true
+        lastAutoClaimIndexAt = now
+
+        task.spawn(function()
+            log(
+                "Auto Claim Index request"
+            )
+
+            IndexRemote:
+                FireServer(
+                    "ClaimAll",
+                    nil
+                )
+
+            task.wait(1.5)
+
+            autoClaimIndexBusy =
+                false
+        end)
+    end
+
+    local function onPetInventoryChanged()
+        if equipBestPetEnabled then
+            task.delay(
+                0.25,
+                equipBestPet
+            )
+        end
+
+        if autoClaimIndex then
+            task.delay(
+                0.5,
+                claimAllIndex
+            )
         end
     end
 
@@ -4955,6 +5061,84 @@ return function(Context)
         end
     end)
 
+    AnimalBankedRemote.OnClientEvent:
+    Connect(function()
+        onPetInventoryChanged()
+    end)
+
+    task.spawn(function()
+        local boundPlot
+        local plotConnections = {}
+
+        local function clearPlotConnections()
+            for _, connection
+                in ipairs(
+                    plotConnections
+                )
+            do
+                pcall(function()
+                    connection:
+                        Disconnect()
+                end)
+            end
+
+            table.clear(
+                plotConnections
+            )
+        end
+
+        local function bindPlot(
+            plot
+        )
+            if plot == boundPlot then
+                return
+            end
+
+            clearPlotConnections()
+
+            boundPlot =
+                plot
+
+            if not plot then
+                return
+            end
+
+            for _, attributeName
+                in ipairs({
+                    "MaxAnimals",
+                    "PlotLevel",
+                    "BuildLevel"
+                })
+            do
+                table.insert(
+                    plotConnections,
+                    plot:
+                    GetAttributeChangedSignal(
+                        attributeName
+                    ):
+                    Connect(function()
+                        if equipBestPetEnabled then
+                            task.delay(
+                                0.25,
+                                equipBestPet
+                            )
+                        end
+                    end)
+                )
+            end
+        end
+
+        while not Window.Destroyed do
+            bindPlot(
+                getOwnedPlotExact()
+            )
+
+            task.wait(1)
+        end
+
+        clearPlotConnections()
+    end)
+
     -- UI - uses the same template/API as Ride A Pet.
     local FarmTab =
         Window:AddTab(
@@ -5363,6 +5547,38 @@ return function(Context)
             if autoBuyTrail then
                 trailBuyRetryAt = 0
                 runAutoBuyTrail()
+            end
+        end
+    )
+
+    UpgradeSection:AddToggle(
+        "BSAEEquipBestPet",
+        "Equip Best Pet",
+        false,
+
+        function(state)
+            equipBestPetEnabled =
+                state == true
+
+            if equipBestPetEnabled then
+                lastEquipBestPetAt = 0
+                equipBestPet()
+            end
+        end
+    )
+
+    UpgradeSection:AddToggle(
+        "BSAEAutoClaimIndex",
+        "Auto Claim Index",
+        false,
+
+        function(state)
+            autoClaimIndex =
+                state == true
+
+            if autoClaimIndex then
+                lastAutoClaimIndexAt = 0
+                claimAllIndex()
             end
         end
     )
