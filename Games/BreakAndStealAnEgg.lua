@@ -11,6 +11,7 @@
 -- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
 -- Sell: Auto Sell below configured Income/s with broader pet-tool income detection
 -- Progression: Auto Next Zone checks speed, 10s break test, waits for next PickaxeTier on fallback
+-- Priority: Titanic Egg > Farm Egg > Treadmill (strict, no timer preemption)
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
@@ -5502,11 +5503,9 @@ return function(Context)
                 "Activity -> Auto Farm Egg"
             )
 
-            if titanicOverrideActive then
-                activityDeadline = nil
-            else
-                Extra.refreshActivityDeadline()
-            end
+            -- Farm has higher priority than Treadmill, so no timer may
+            -- preempt it while Auto Farm remains enabled.
+            activityDeadline = nil
 
             Extra.startAutoFarm()
 
@@ -5515,7 +5514,7 @@ return function(Context)
                 "Activity -> Auto Treadmill"
             )
 
-            Extra.refreshActivityDeadline()
+            activityDeadline = nil
 
             Extra.teleportToTreadmill()
             Extra.startAutoTreadmill()
@@ -5614,17 +5613,11 @@ return function(Context)
 
         local desired
 
-        if resumeActivity == "Treadmill"
-            and autoTreadmillEnabled
-        then
-            desired = "Treadmill"
-
-        elseif resumeActivity == "Farm"
-            and autoFarmEnabled
-        then
-            desired = "Farm"
-
-        elseif autoFarmEnabled then
+        -- Strict activity priority:
+        -- Titanic Egg > Farm Egg > Treadmill.
+        -- After Titanic ends, Farm always wins when Auto Farm is enabled,
+        -- even if Titanic interrupted an active treadmill session.
+        if autoFarmEnabled then
             desired = "Farm"
 
         elseif autoTreadmillEnabled then
@@ -5658,11 +5651,14 @@ return function(Context)
 
     -- Priority coordinator.
     --
-    -- Priority order:
+    -- Strict activity priority:
     -- 1. Already-carried pet recovery/banking (safety)
     -- 2. Titanic Egg
-    -- 3. Active Farm/Treadmill timer
-    -- 4. Normal egg pipeline / pending normal pets
+    -- 3. Farm Egg
+    -- 4. Treadmill
+    --
+    -- When Auto Farm and Auto Treadmill are both enabled, Farm owns the
+    -- activity. Treadmill is only allowed when Auto Farm is disabled.
     task.spawn(function()
         while not Window.Destroyed do
             local state =
@@ -5709,37 +5705,39 @@ return function(Context)
                 end
             end
 
-            -- Normal alternating timers are suspended during Titanic override.
+            -- Strict normal priority when Titanic is not active:
+            -- Farm Egg > Treadmill.
+            --
+            -- This intentionally prevents a Farm timer from handing control to
+            -- Treadmill while Auto Farm is still enabled. Treadmill becomes the
+            -- active fallback only after Auto Farm is turned OFF.
             if not titanicOverrideActive
                 and not titanicOverrideRequested
-                and currentActivity
-                and activityDeadline
-                and os.clock()
-                    >= activityDeadline
+                and not Extra.isCarrying()
+                and not Extra.isBeingChased()
             then
-                if currentActivity
-                    == "Treadmill"
-                then
-                    if autoFarmEnabled then
-                        Extra.setActivity("Farm")
-                    else
-                        activityDeadline = nil
+                if autoFarmEnabled then
+                    if currentActivity
+                        ~= "Farm"
+                    then
+                        Extra.setActivity(
+                            "Farm"
+                        )
+                    end
+
+                elseif autoTreadmillEnabled then
+                    if currentActivity
+                        ~= "Treadmill"
+                    then
+                        Extra.setActivity(
+                            "Treadmill"
+                        )
                     end
 
                 elseif currentActivity
-                    == "Farm"
+                    ~= nil
                 then
-                    if autoTreadmillEnabled then
-                        if not Extra.isCarrying()
-                            and not Extra.isBeingChased()
-                        then
-                            Extra.setActivity(
-                                "Treadmill"
-                            )
-                        end
-                    else
-                        activityDeadline = nil
-                    end
+                    Extra.setActivity(nil)
                 end
             end
 
