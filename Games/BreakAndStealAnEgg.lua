@@ -13,14 +13,15 @@
 -- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
 -- Sell: Auto Sell resolves BackpackSellController config from GC table/upvalues and uses ToolValue / PetIncomeSeconds
 -- Sell safety: GC candidate probing uses rawget to avoid proxy __index errors (GoodSignal/Connection tables)
--- Progression: Auto Next Zone checks speed, 10s break test, waits for next PickaxeTier on fallback
--- Priority: Titanic Egg > Farm Egg > Treadmill (strict, no timer preemption)
+-- Progression: Auto Next Zone checks speed, 15-hit break test, then waits for next PickaxeTier and rechecks requirement
+-- Priority: Titanic Egg > timed Farm/Treadmill cycle; both ON alternate by timer
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
+    print("[CHLISE HUB] BreakAndSteal module build: ANTIAFK_NEXTZONE_15HIT")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -71,6 +72,43 @@ return function(Context)
     local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
     local Pickups = Workspace:WaitForChild("AnimalPickups")
     local CollectionService = game:GetService("CollectionService")
+
+    -- Anti AFK
+    pcall(function()
+        LocalPlayer.Idled:
+        Connect(function()
+            pcall(function()
+                local virtualUser =
+                    game:GetService(
+                        "VirtualUser"
+                    )
+
+                virtualUser:
+                    Button2Down(
+                        Vector2.new(
+                            0,
+                            0
+                        ),
+                        Workspace:
+                        CurrentCamera:
+                        CFrame
+                    )
+
+                task.wait(0.1)
+
+                virtualUser:
+                    Button2Up(
+                        Vector2.new(
+                            0,
+                            0
+                        ),
+                        Workspace:
+                        CurrentCamera:
+                        CFrame
+                    )
+            end)
+        end)
+    end)
 
     -- Tunables
     local HIT_DISTANCE = 7
@@ -192,7 +230,8 @@ return function(Context)
         autoNextZoneSafeZone = nil,
         autoNextZoneTrialZone = nil,
         autoNextZoneBlockedZone = nil,
-        autoNextZoneBlockedPickaxeTier = nil
+        autoNextZoneBlockedPickaxeTier = nil,
+        autoNextZoneTrialHits = 0
     }
 
     function Extra.log(...)
@@ -3533,6 +3572,9 @@ return function(Context)
 
         Extra.autoNextZoneTrialZone =
             nil
+
+        Extra.autoNextZoneTrialHits =
+            0
     end
 
     function Extra.getAutoNextZoneTarget()
@@ -3585,7 +3627,9 @@ return function(Context)
                         "| Pickaxe:",
                         blockedTier,
                         "->",
-                        currentTier
+                        currentTier,
+                        "| Speed:",
+                        Extra.getProgressionSpeed()
                     )
 
                     Extra.autoNextZoneBlockedZone =
@@ -3594,9 +3638,17 @@ return function(Context)
                         nil
                     Extra.autoNextZoneTrialZone =
                         blocked
+                    Extra.autoNextZoneTrialHits =
+                        0
 
                     return blocked
                 end
+
+                Extra.log(
+                    "Auto Next Zone still locked after pickaxe upgrade:",
+                    blocked,
+                    "| Speed requirement not met"
+                )
             end
 
             return safe
@@ -3620,6 +3672,9 @@ return function(Context)
         if allowed then
             Extra.autoNextZoneTrialZone =
                 nextZone
+
+            Extra.autoNextZoneTrialHits =
+                0
 
             Extra.log(
                 "Auto Next Zone trial:",
@@ -3665,10 +3720,13 @@ return function(Context)
         Extra.autoNextZoneTrialZone =
             nil
 
+        Extra.autoNextZoneTrialHits =
+            0
+
         Extra.log(
             "Auto Next Zone fallback:",
             zoneName,
-            "took >10s to break.",
+            "survived 15 hits.",
             "Back to:",
             Extra.autoNextZoneSafeZone,
             "| Waiting PickaxeTier >",
@@ -3691,6 +3749,8 @@ return function(Context)
 
         Extra.autoNextZoneTrialZone =
             nil
+        Extra.autoNextZoneTrialHits =
+            0
         Extra.autoNextZoneBlockedZone =
             nil
         Extra.autoNextZoneBlockedPickaxeTier =
@@ -4805,9 +4865,6 @@ return function(Context)
             return nil, false
         end
 
-        local breakStartedAt =
-            os.clock()
-
         while autoFarmActive
             and currentActivity == "Farm"
             and Extra.validEgg(egg)
@@ -4881,21 +4938,6 @@ return function(Context)
                 end
             end
 
-            if Extra.autoNextZoneEnabled
-                and zoneName
-                    == Extra.autoNextZoneTrialZone
-                and os.clock()
-                    - breakStartedAt
-                    > 10
-            then
-                Extra.markAutoNextZoneTooSlow(
-                    zoneName
-                )
-
-                Extra.stopMoving()
-                return nil, false
-            end
-
             local tier =
                 LocalPlayer:GetAttribute(
                     "PickaxeTier"
@@ -4906,6 +4948,28 @@ return function(Context)
                 egg,
                 tier
             )
+
+            if Extra.autoNextZoneEnabled
+                and zoneName
+                    == Extra.autoNextZoneTrialZone
+            then
+                Extra.autoNextZoneTrialHits += 1
+
+                if Extra.autoNextZoneTrialHits
+                    >= 15
+                then
+                    task.wait(0.05)
+
+                    if Extra.validEgg(egg) then
+                        Extra.markAutoNextZoneTooSlow(
+                            zoneName
+                        )
+
+                        Extra.stopMoving()
+                        return nil, false
+                    end
+                end
+            end
 
             Extra.log(
                 "Hit",
@@ -5990,9 +6054,11 @@ return function(Context)
                 "Activity -> Auto Farm Egg"
             )
 
-            -- Farm has higher priority than Treadmill, so no timer may
-            -- preempt it while Auto Farm remains enabled.
-            activityDeadline = nil
+            if titanicOverrideActive then
+                activityDeadline = nil
+            else
+                Extra.refreshActivityDeadline()
+            end
 
             Extra.startAutoFarm()
 
@@ -6001,7 +6067,11 @@ return function(Context)
                 "Activity -> Auto Treadmill"
             )
 
-            activityDeadline = nil
+            if titanicOverrideActive then
+                activityDeadline = nil
+            else
+                Extra.refreshActivityDeadline()
+            end
 
             Extra.teleportToTreadmill()
             Extra.startAutoTreadmill()
@@ -6102,11 +6172,20 @@ return function(Context)
 
         local desired
 
-        -- Strict activity priority:
-        -- Titanic Egg > Farm Egg > Treadmill.
-        -- After Titanic ends, Farm always wins when Auto Farm is enabled,
-        -- even if Titanic interrupted an active treadmill session.
-        if autoFarmEnabled then
+        -- Titanic always has absolute priority. When it ends, resume the
+        -- exact activity that was interrupted so the Farm/Treadmill timer
+        -- cycle continues naturally.
+        if resumeActivity == "Farm"
+            and autoFarmEnabled
+        then
+            desired = "Farm"
+
+        elseif resumeActivity == "Treadmill"
+            and autoTreadmillEnabled
+        then
+            desired = "Treadmill"
+
+        elseif autoFarmEnabled then
             desired = "Farm"
 
         elseif autoTreadmillEnabled then
@@ -6140,14 +6219,13 @@ return function(Context)
 
     -- Priority coordinator.
     --
-    -- Strict activity priority:
+    -- Activity priority:
     -- 1. Already-carried pet recovery/banking (safety)
     -- 2. Titanic Egg
-    -- 3. Farm Egg
-    -- 4. Treadmill
+    -- 3. Current Farm/Treadmill timed activity
     --
-    -- When Auto Farm and Auto Treadmill are both enabled, Farm owns the
-    -- activity. Treadmill is only allowed when Auto Farm is disabled.
+    -- If Auto Farm + Auto Treadmill are both enabled, they alternate using
+    -- the configured Farm Timer and Treadmill Timer.
     task.spawn(function()
         while not Window.Destroyed do
             local state =
@@ -6194,39 +6272,54 @@ return function(Context)
                 end
             end
 
-            -- Strict normal priority when Titanic is not active:
-            -- Farm Egg > Treadmill.
+            -- Normal Farm/Treadmill behavior:
+            -- Titanic > active timed activity.
             --
-            -- This intentionally prevents a Farm timer from handing control to
-            -- Treadmill while Auto Farm is still enabled. Treadmill becomes the
-            -- active fallback only after Auto Farm is turned OFF.
+            -- If both Auto Farm and Auto Treadmill are ON, alternate using
+            -- their configured timers:
+            -- Farm timer expires -> Treadmill
+            -- Treadmill timer expires -> Farm
+            --
+            -- If only one is enabled, stay on that activity.
             if not titanicOverrideActive
                 and not titanicOverrideRequested
                 and not Extra.isCarrying()
                 and not Extra.isBeingChased()
             then
-                if autoFarmEnabled then
-                    if currentActivity
-                        ~= "Farm"
-                    then
-                        Extra.setActivity(
-                            "Farm"
-                        )
+                if currentActivity == nil then
+                    if autoFarmEnabled then
+                        Extra.setActivity("Farm")
+                    elseif autoTreadmillEnabled then
+                        Extra.setActivity("Treadmill")
                     end
 
-                elseif autoTreadmillEnabled then
-                    if currentActivity
-                        ~= "Treadmill"
+                elseif currentActivity == "Farm" then
+                    if not autoFarmEnabled then
+                        if autoTreadmillEnabled then
+                            Extra.setActivity("Treadmill")
+                        else
+                            Extra.setActivity(nil)
+                        end
+                    elseif autoTreadmillEnabled
+                        and activityDeadline
+                        and os.clock() >= activityDeadline
                     then
-                        Extra.setActivity(
-                            "Treadmill"
-                        )
+                        Extra.setActivity("Treadmill")
                     end
 
-                elseif currentActivity
-                    ~= nil
-                then
-                    Extra.setActivity(nil)
+                elseif currentActivity == "Treadmill" then
+                    if not autoTreadmillEnabled then
+                        if autoFarmEnabled then
+                            Extra.setActivity("Farm")
+                        else
+                            Extra.setActivity(nil)
+                        end
+                    elseif autoFarmEnabled
+                        and activityDeadline
+                        and os.clock() >= activityDeadline
+                    then
+                        Extra.setActivity("Farm")
+                    end
                 end
             end
 
@@ -6396,32 +6489,34 @@ return function(Context)
             return false
         end
 
-        -- getgc() also returns proxy/signal tables whose __index metamethod
-        -- can throw when reading an unknown key. Use rawget so probing a
-        -- candidate never triggers that metamethod.
-        local remoteName =
-            rawget(
-                object,
-                "RemoteName"
-            )
+        local ok,
+            remoteName,
+            animalToolTag,
+            toolValue,
+            petValue =
+            pcall(function()
+                return
+                    rawget(
+                        object,
+                        "RemoteName"
+                    ),
+                    rawget(
+                        object,
+                        "AnimalToolTag"
+                    ),
+                    rawget(
+                        object,
+                        "ToolValue"
+                    ),
+                    rawget(
+                        object,
+                        "PetValue"
+                    )
+            end)
 
-        local animalToolTag =
-            rawget(
-                object,
-                "AnimalToolTag"
-            )
-
-        local toolValue =
-            rawget(
-                object,
-                "ToolValue"
-            )
-
-        local petValue =
-            rawget(
-                object,
-                "PetValue"
-            )
+        if not ok then
+            return false
+        end
 
         return
             remoteName
@@ -6472,13 +6567,20 @@ return function(Context)
                 Extra.backpackSellConfig =
                     object
 
+                local seconds
+
+                pcall(function()
+                    seconds =
+                        rawget(
+                            object,
+                            "PetIncomeSeconds"
+                        )
+                end)
+
                 Extra.log(
                     "Backpack sell config found (table)",
                     "| PetIncomeSeconds:",
-                    rawget(
-                        object,
-                        "PetIncomeSeconds"
-                    )
+                    seconds
                 )
 
                 return object
@@ -6530,13 +6632,20 @@ return function(Context)
                             Extra.backpackSellConfig =
                                 upvalue
 
+                            local seconds
+
+                            pcall(function()
+                                seconds =
+                                    rawget(
+                                        upvalue,
+                                        "PetIncomeSeconds"
+                                    )
+                            end)
+
                             Extra.log(
                                 "Backpack sell config found (upvalue)",
                                 "| PetIncomeSeconds:",
-                                rawget(
-                                    upvalue,
-                                    "PetIncomeSeconds"
-                                )
+                                seconds
                             )
 
                             return upvalue
@@ -6728,7 +6837,7 @@ return function(Context)
                 Extra.autoSellConfigWarned = true
 
                 warn(
-                    "[CHLISE HUB][AUTO SELL] BackpackSellController config not found."
+                    "[CHLISE HUB][AUTO SELL][V3] BackpackSellController config not found."
                 )
             end
 
@@ -6897,6 +7006,8 @@ return function(Context)
                 nil
             Extra.autoNextZoneBlockedPickaxeTier =
                 nil
+            Extra.autoNextZoneTrialHits =
+                0
 
             if Extra.autoNextZoneEnabled then
                 Extra.initializeAutoNextZone()
