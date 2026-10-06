@@ -11,7 +11,7 @@
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
 -- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
--- Sell: Auto Sell uses BackpackSellController.ToolValue / PetIncomeSeconds
+-- Sell: Auto Sell resolves BackpackSellController config from GC table/upvalues and uses ToolValue / PetIncomeSeconds
 -- Progression: Auto Next Zone checks speed, 10s break test, waits for next PickaxeTier on fallback
 -- Priority: Titanic Egg > Farm Egg > Treadmill (strict, no timer preemption)
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
@@ -175,6 +175,7 @@ return function(Context)
         autoSellBusy = false,
         lastAutoSellAt = 0,
         backpackSellConfig = nil,
+        autoSellConfigWarned = false,
 
         titanicCandidates = {},
         titanicDirty = true,
@@ -1029,6 +1030,119 @@ return function(Context)
         currentTier
     end
 
+    function Extra.getBestOwnedTrail()
+        local owned =
+            Extra.parseOwnedTrails()
+
+        local bestId
+        local bestMultiplier =
+            -math.huge
+
+        for _, info
+            in ipairs(
+                TrailsConfig.Trails
+                or {}
+            )
+        do
+            local id =
+                tonumber(
+                    info.Id
+                )
+
+            if id
+                and owned[id]
+            then
+                local multiplier =
+                    tonumber(
+                        info.Multiplier
+                    )
+
+                if not multiplier
+                    and type(
+                        TrailsConfig.MultiplierFor
+                    ) == "function"
+                then
+                    local ok,
+                        result =
+                        pcall(
+                            TrailsConfig.MultiplierFor,
+                            id
+                        )
+
+                    multiplier =
+                        ok
+                        and tonumber(result)
+                        or nil
+                end
+
+                multiplier =
+                    multiplier
+                    or id
+
+                if multiplier
+                    > bestMultiplier
+                then
+                    bestMultiplier =
+                        multiplier
+                    bestId =
+                        id
+                end
+            end
+        end
+
+        return
+            bestId,
+            bestMultiplier
+    end
+
+    function Extra.equipBestOwnedTrail()
+        local bestId,
+            multiplier =
+            Extra.getBestOwnedTrail()
+
+        if not bestId then
+            return false
+        end
+
+        local attribute =
+            TrailsConfig.EquippedAttribute
+            or "EquippedTrail"
+
+        local equipped =
+            tonumber(
+                LocalPlayer:
+                GetAttribute(
+                    attribute
+                )
+            )
+
+        if equipped == bestId then
+            return true
+        end
+
+        Extra.log(
+            "Equip best trail",
+            "| Current:",
+            equipped,
+            "| Best:",
+            bestId,
+            "| Multiplier:",
+            multiplier
+        )
+
+        TrailShopRequest:
+            FireServer(
+                "Equip",
+                bestId
+            )
+
+        return
+            Extra.waitForTrailEquipped(
+                bestId,
+                3
+            )
+    end
+
     function Extra.getNextTrailPurchase()
         local owned =
             Extra.parseOwnedTrails()
@@ -1278,6 +1392,10 @@ return function(Context)
             while Extra.autoBuyTrail
                 and not Window.Destroyed
             do
+                -- Always keep the strongest owned trail equipped, even when
+                -- the next trail is not yet affordable or all trails are owned.
+                Extra.equipBestOwnedTrail()
+
                 local nextPurchase =
                     Extra.getNextTrailPurchase()
 
@@ -1361,17 +1479,9 @@ return function(Context)
                     nextPurchase.Id
                 )
 
-                -- Equip the newly bought/best trail after ownership is confirmed.
-                TrailShopRequest:
-                    FireServer(
-                        "Equip",
-                        nextPurchase.Id
-                    )
-
-                Extra.waitForTrailEquipped(
-                    nextPurchase.Id,
-                    3
-                )
+                -- Re-evaluate the inventory and equip the strongest owned
+                -- trail instead of assuming the just-bought ID is always best.
+                Extra.equipBestOwnedTrail()
 
                 task.wait(0.05)
             end
@@ -6278,15 +6388,30 @@ return function(Context)
         clearPlotConnections()
     end)
 
-    function Extra.getBackpackSellConfig()
-        local cached = Extra.backpackSellConfig
+    function Extra.isBackpackSellConfig(
+        object
+    )
+        return
+            type(object) == "table"
+            and object.RemoteName
+                == "BackpackSellRemote"
+            and object.AnimalToolTag
+                == "AnimalTool"
+            and type(
+                object.ToolValue
+            ) == "function"
+            and type(
+                object.PetValue
+            ) == "function"
+    end
 
-        if type(cached) == "table"
-            and cached.RemoteName == "BackpackSellRemote"
-            and cached.AnimalToolTag == "AnimalTool"
-            and type(cached.ToolValue) == "function"
-            and type(cached.PetValue) == "function"
-        then
+    function Extra.getBackpackSellConfig()
+        local cached =
+            Extra.backpackSellConfig
+
+        if Extra.isBackpackSellConfig(
+            cached
+        ) then
             return cached
         end
 
@@ -6294,25 +6419,32 @@ return function(Context)
             return nil
         end
 
-        local ok, objects = pcall(getgc, true)
+        local ok,
+            objects =
+            pcall(
+                getgc,
+                true
+            )
 
         if not ok
-            or type(objects) ~= "table"
+            or type(objects)
+                ~= "table"
         then
             return nil
         end
 
-        for _, object in ipairs(objects) do
-            if type(object) == "table"
-                and object.RemoteName == "BackpackSellRemote"
-                and object.AnimalToolTag == "AnimalTool"
-                and type(object.ToolValue) == "function"
-                and type(object.PetValue) == "function"
-            then
-                Extra.backpackSellConfig = object
+        -- Fast path: some executors expose the config table itself.
+        for _, object
+            in ipairs(objects)
+        do
+            if Extra.isBackpackSellConfig(
+                object
+            ) then
+                Extra.backpackSellConfig =
+                    object
 
                 Extra.log(
-                    "Backpack sell config found",
+                    "Backpack sell config found (table)",
                     "| PetIncomeSeconds:",
                     object.PetIncomeSeconds
                 )
@@ -6321,46 +6453,138 @@ return function(Context)
             end
         end
 
-        return nil
-    end
+        -- Reliable path for this game: BackpackSellController keeps the config
+        -- table as an upvalue of its controller functions.
+        local getUpvaluesFn =
+            rawget(
+                getgenv and getgenv()
+                    or _G,
+                "getupvalues"
+            )
+            or getupvalues
 
-    function Extra.getSellablePetIncome(tool)
-        if not tool
-            or not tool:IsA("Tool")
-            or not CollectionService:HasTag(tool, "AnimalTool")
+        if type(getUpvaluesFn)
+            ~= "function"
         then
             return nil
         end
 
-        local config = Extra.getBackpackSellConfig()
+        for _, object
+            in ipairs(objects)
+        do
+            if type(object)
+                == "function"
+            then
+                local okUp,
+                    upvalues =
+                    pcall(
+                        getUpvaluesFn,
+                        object
+                    )
+
+                if okUp
+                    and type(upvalues)
+                        == "table"
+                then
+                    for _,
+                        upvalue
+                        in pairs(
+                            upvalues
+                        )
+                    do
+                        if Extra.isBackpackSellConfig(
+                            upvalue
+                        ) then
+                            Extra.backpackSellConfig =
+                                upvalue
+
+                            Extra.log(
+                                "Backpack sell config found (upvalue)",
+                                "| PetIncomeSeconds:",
+                                upvalue.PetIncomeSeconds
+                            )
+
+                            return upvalue
+                        end
+                    end
+                end
+            end
+        end
+
+        return nil
+    end
+
+    function Extra.getSellablePetIncome(
+        tool
+    )
+        if not tool
+            or not tool:IsA("Tool")
+            or not CollectionService:
+                HasTag(
+                    tool,
+                    "AnimalTool"
+                )
+        then
+            return nil
+        end
+
+        local config =
+            Extra.getBackpackSellConfig()
 
         if not config then
             return nil
         end
 
-        local ok, value = pcall(
-            config.ToolValue,
-            tool
-        )
+        local ok,
+            result =
+            pcall(
+                config.ToolValue,
+                tool
+            )
 
-        value =
-            ok
-            and tonumber(value)
-            or nil
+        if not ok then
+            Extra.log(
+                "ToolValue failed:",
+                tool.Name,
+                result
+            )
+
+            return nil
+        end
+
+        local value =
+            tonumber(result)
+
+        if not value
+            and type(result)
+                == "table"
+        then
+            value =
+                tonumber(
+                    result.Value
+                    or result.SellValue
+                    or result.Cash
+                    or result.Amount
+                )
+        end
 
         if not value then
             return nil
         end
 
         local seconds =
-            tonumber(config.PetIncomeSeconds)
+            tonumber(
+                config.PetIncomeSeconds
+            )
             or 60
 
         if seconds <= 0 then
             return nil
         end
 
-        return value / seconds
+        return
+            value
+            / seconds
     end
 
     function Extra.collectAutoSellTools()
@@ -6454,6 +6678,20 @@ return function(Context)
         if threshold <= 0 then
             return
         end
+
+        if not Extra.getBackpackSellConfig() then
+            if not Extra.autoSellConfigWarned then
+                Extra.autoSellConfigWarned = true
+
+                warn(
+                    "[CHLISE HUB][AUTO SELL] BackpackSellController config not found."
+                )
+            end
+
+            return
+        end
+
+        Extra.autoSellConfigWarned = false
 
         if os.clock() - Extra.lastAutoSellAt < 1.5 then
             return
