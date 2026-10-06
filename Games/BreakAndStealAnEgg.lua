@@ -12,6 +12,8 @@
 -- Auto Steal: optional Bat-based normal melee automation for players carrying pets; dropped pet still passes filters
 -- Auto Steal precheck: identify and validate carried pet before selecting/chasing a player
 -- Auto Steal carry fix: correct ChaseState.IsCarrying call and nearest-carried-pickup fallback
+-- Recovery teleport: if the carried pet drops during chase/return, teleport directly to that exact pet before pickup
+-- Farm Teleport mode: teleport only when changing zones; move locally by walking inside the same zone
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
@@ -31,7 +33,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: AUTOSTEAL_CARRY_FIX_V2")
+    print("[CHLISE HUB] BreakAndSteal module build: CHASE_DROP_ZONE_TELEPORT")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -2247,11 +2249,62 @@ return function(Context)
         Extra.log("Movement:", movementMode)
 
         if movementMode == "Teleport" then
-            return Extra.teleportTo(
+            local _, _, hrp =
+                Extra.getCharacter()
+
+            local currentZone
+            local targetZone
+
+            if type(
+                Extra.detectZoneAtPosition
+            ) == "function"
+            then
+                currentZone =
+                    Extra.detectZoneAtPosition(
+                        hrp.Position
+                    )
+
+                targetZone =
+                    Extra.detectZoneAtPosition(
+                        targetPosition
+                    )
+            end
+
+            -- Teleport mode is zone-based:
+            -- only teleport when crossing into another zone.
+            -- Once inside that zone, use normal walking between eggs/targets.
+            if targetZone
+                and currentZone
+                and targetZone ~= currentZone
+            then
+                Extra.log(
+                    "Zone teleport:",
+                    currentZone,
+                    "->",
+                    targetZone
+                )
+
+                return Extra.teleportTo(
+                    targetPosition,
+                    stopDistance,
+                    extraCheck,
+                    timeout
+                )
+            end
+
+            Extra.log(
+                "Teleport mode local movement -> Walk",
+                "| Zone:",
+                targetZone
+                    or currentZone
+                    or "Unknown"
+            )
+
+            return Extra.walkTo(
                 targetPosition,
                 stopDistance,
-                extraCheck,
-                timeout
+                timeout,
+                extraCheck
             )
         end
 
@@ -6411,6 +6464,88 @@ return function(Context)
         return nil
     end
 
+    function Extra.teleportToAnimal(
+        animal,
+        label
+    )
+        if not animal
+            or not animal.Parent
+        then
+            return false
+        end
+
+        local ok,
+            result =
+            pcall(function()
+                local _, _, hrp =
+                    Extra.getCharacter()
+
+                local petPosition =
+                    animal:GetPivot().Position
+
+                local direction =
+                    hrp.Position
+                    - petPosition
+
+                direction =
+                    Vector3.new(
+                        direction.X,
+                        0,
+                        direction.Z
+                    )
+
+                if direction.Magnitude < 0.1 then
+                    direction =
+                        Vector3.new(
+                            0,
+                            0,
+                            1
+                        )
+                else
+                    direction =
+                        direction.Unit
+                end
+
+                local destination =
+                    petPosition
+                    + direction * 2
+
+                hrp.CFrame =
+                    CFrame.lookAt(
+                        Vector3.new(
+                            destination.X,
+                            hrp.Position.Y,
+                            destination.Z
+                        ),
+                        Vector3.new(
+                            petPosition.X,
+                            hrp.Position.Y,
+                            petPosition.Z
+                        )
+                    )
+
+                hrp.AssemblyLinearVelocity =
+                    Vector3.zero
+                hrp.AssemblyAngularVelocity =
+                    Vector3.zero
+
+                Extra.log(
+                    label
+                        or "Teleport to pet",
+                    animal:GetAttribute(
+                        "AnimalName"
+                    )
+                        or animal.Name
+                )
+
+                return true
+            end)
+
+        return
+            ok
+            and result == true
+    end
+
     function Extra.pickUpAnimal(animal, animalName)
         if not animal or not animal.Parent then return false end
         local signature = Extra.getAnimalSignature(animal)
@@ -7487,65 +7622,11 @@ return function(Context)
         )
 
         -- Accepted pets are time-sensitive. Teleport directly to the pickup
-        -- instead of using the configured Walk/Tween movement mode.
-        pcall(function()
-            local _, _, pickupHRP =
-                Extra.getCharacter()
-
-            local petPosition =
-                animal:GetPivot().Position
-
-            local direction =
-                pickupHRP.Position
-                - petPosition
-
-            direction =
-                Vector3.new(
-                    direction.X,
-                    0,
-                    direction.Z
-                )
-
-            if direction.Magnitude < 0.1 then
-                direction =
-                    Vector3.new(
-                        0,
-                        0,
-                        1
-                    )
-            else
-                direction =
-                    direction.Unit
-            end
-
-            local destination =
-                petPosition
-                + direction * 2
-
-            pickupHRP.CFrame =
-                CFrame.lookAt(
-                    Vector3.new(
-                        destination.X,
-                        pickupHRP.Position.Y,
-                        destination.Z
-                    ),
-                    Vector3.new(
-                        petPosition.X,
-                        pickupHRP.Position.Y,
-                        petPosition.Z
-                    )
-                )
-
-            pickupHRP.AssemblyLinearVelocity =
-                Vector3.zero
-            pickupHRP.AssemblyAngularVelocity =
-                Vector3.zero
-
-            Extra.log(
-                "Accepted pet -> instant teleport:",
-                animalName
-            )
-        end)
+        -- instead of using the configured Walk/Tween/zone-teleport movement.
+        Extra.teleportToAnimal(
+            animal,
+            "Accepted pet -> instant teleport:"
+        )
 
         local banked = false
 
@@ -7616,6 +7697,13 @@ return function(Context)
                 Extra.log(
                     "Retry pickup:",
                     animalName
+                )
+
+                -- Chase/drop recovery is time-sensitive:
+                -- jump straight back to the exact dropped pet first.
+                Extra.teleportToAnimal(
+                    dropped,
+                    "Chase drop -> instant teleport:"
                 )
 
                 if not Extra.pickUpAnimal(
