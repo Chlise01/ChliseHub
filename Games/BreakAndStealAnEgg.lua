@@ -14,6 +14,7 @@
 -- Sell: Auto Sell resolves BackpackSellController config from GC table/upvalues and uses ToolValue / PetIncomeSeconds
 -- Sell safety: GC candidate probing uses rawget to avoid proxy __index errors (GoodSignal/Connection tables)
 -- Progression: Auto Next Zone checks speed, 15-hit break test, then waits for next PickaxeTier and rechecks requirement
+-- Farm fallback: when current safe-zone eggs are empty, temporarily try the next eligible zone while waiting for respawn
 -- Priority: Titanic Egg > Farm first > Treadmill; both ON alternate by timer
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
@@ -21,7 +22,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: FARM_FIRST_TIMER_CYCLE")
+    print("[CHLISE HUB] BreakAndSteal module build: ZONE_EMPTY_FALLBACK")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -74,15 +75,76 @@ return function(Context)
     local CollectionService = game:GetService("CollectionService")
 
     -- Anti AFK
+    -- Prefer disabling idle connections when the executor exposes
+    -- getconnections(). Keep VirtualUser as a fallback.
     pcall(function()
-        local VirtualUser = game:GetService("VirtualUser")
+        local disabledIdleConnection = false
 
-        LocalPlayer.Idled:Connect(function()
+        if type(getconnections) == "function" then
+            local okConnections,
+                connections =
+                pcall(
+                    getconnections,
+                    LocalPlayer.Idled
+                )
+
+            if okConnections
+                and type(connections) == "table"
+            then
+                for _, connection
+                    in ipairs(connections)
+                do
+                    pcall(function()
+                        if connection.Disable then
+                            connection:Disable()
+                            disabledIdleConnection = true
+                        elseif connection.Disconnect then
+                            connection:Disconnect()
+                            disabledIdleConnection = true
+                        end
+                    end)
+                end
+            end
+        end
+
+        local VirtualUser =
+            game:GetService(
+                "VirtualUser"
+            )
+
+        LocalPlayer.Idled:
+        Connect(function()
             pcall(function()
-                VirtualUser:CaptureController()
-                VirtualUser:ClickButton2(Vector2.new(0, 0))
+                VirtualUser:
+                    CaptureController()
+
+                VirtualUser:
+                    Button2Down(
+                        Vector2.new(
+                            0,
+                            0
+                        ),
+                        Workspace.CurrentCamera.CFrame
+                    )
+
+                task.wait(0.2)
+
+                VirtualUser:
+                    Button2Up(
+                        Vector2.new(
+                            0,
+                            0
+                        ),
+                        Workspace.CurrentCamera.CFrame
+                    )
             end)
         end)
+
+        print(
+            "[CHLISE HUB] Anti AFK ready",
+            "| Idle connections disabled:",
+            disabledIdleConnection
+        )
     end)
 
     -- Tunables
@@ -3737,6 +3799,116 @@ return function(Context)
         )
     end
 
+    function Extra.findBestEggInZone(
+        zoneName,
+        excludedEgg
+    )
+        if not zoneName then
+            return nil
+        end
+
+        local zone =
+            ZoneBuilds:
+            FindFirstChild(
+                zoneName
+            )
+
+        local eggs =
+            zone
+            and zone:
+                FindFirstChild(
+                    "Eggs"
+                )
+
+        if not eggs then
+            return nil
+        end
+
+        local _, _, hrp =
+            Extra.getCharacter()
+
+        local bestEgg
+        local bestDistance =
+            math.huge
+        local bestRarity =
+            -1
+        local bestTier =
+            -1
+
+        for _, container
+            in ipairs(
+                eggs:GetChildren()
+            )
+        do
+            local egg =
+                Extra.resolveEgg(
+                    container
+                )
+
+            if egg ~= excludedEgg
+                and Extra.validEgg(
+                    egg
+                )
+            then
+                local eggName =
+                    Extra.getEggName(
+                        egg
+                    )
+
+                if Extra.isSelected(
+                    selectedEggs,
+                    eggName
+                )
+                then
+                    local distance =
+                        (
+                            hrp.Position
+                            - egg.Position
+                        ).Magnitude
+
+                    local rarity,
+                        tier =
+                        Extra.getEggPriority(
+                            egg,
+                            zoneName
+                        )
+
+                    if rarity
+                            > bestRarity
+                        or (
+                            rarity
+                                == bestRarity
+                            and tier
+                                > bestTier
+                        )
+                        or (
+                            rarity
+                                == bestRarity
+                            and tier
+                                == bestTier
+                            and distance
+                                < bestDistance
+                        )
+                    then
+                        bestEgg =
+                            egg
+                        bestDistance =
+                            distance
+                        bestRarity =
+                            rarity
+                        bestTier =
+                            tier
+                    end
+                end
+            end
+        end
+
+        return
+            bestEgg,
+            zoneName,
+            bestDistance
+    end
+
     function Extra.findBestEgg(excludedEgg)
         local titanicEgg,
             titanicZone,
@@ -3748,7 +3920,9 @@ return function(Context)
         if titanicEgg then
             Extra.log(
                 "Titanic priority target:",
-                Extra.getEggName(titanicEgg),
+                Extra.getEggName(
+                    titanicEgg
+                ),
                 "| Zone:",
                 titanicZone,
                 "| Distance:",
@@ -3764,52 +3938,168 @@ return function(Context)
                 titanicDistance
         end
 
-        local _, _, hrp = Extra.getCharacter()
+        -- Auto Next Zone behavior:
+        -- 1) Prefer the current safe zone while it still has a selected egg.
+        -- 2) Only when that zone is temporarily empty, try the next eligible zone.
+        -- 3) The existing 15-hit trial still decides whether that next zone is
+        --    actually strong enough to promote, or whether we fall back.
+        if Extra.autoNextZoneEnabled then
+            Extra.initializeAutoNextZone()
+
+            local safeZone =
+                Extra.autoNextZoneSafeZone
+
+            local safeEgg,
+                safeName,
+                safeDistance =
+                Extra.findBestEggInZone(
+                    safeZone,
+                    excludedEgg
+                )
+
+            if safeEgg then
+                return
+                    safeEgg,
+                    safeName,
+                    safeDistance
+            end
+
+            local fallbackZone =
+                Extra.getAutoNextZoneTarget()
+
+            if fallbackZone
+                and fallbackZone
+                    ~= safeZone
+            then
+                local nextEgg,
+                    nextName,
+                    nextDistance =
+                    Extra.findBestEggInZone(
+                        fallbackZone,
+                        excludedEgg
+                    )
+
+                if nextEgg then
+                    Extra.log(
+                        "Current zone empty -> temporary next zone:",
+                        safeZone,
+                        "->",
+                        fallbackZone
+                    )
+
+                    return
+                        nextEgg,
+                        nextName,
+                        nextDistance
+                end
+            end
+
+            -- If the next zone has no usable egg either, remain logically on
+            -- the safe zone and wait for its eggs to respawn.
+            return nil
+        end
+
+        local _, _, hrp =
+            Extra.getCharacter()
 
         local bestEgg
         local bestZone
-        local bestDistance = math.huge
-        local bestRarity, bestTier = -1, -1
+        local bestDistance =
+            math.huge
+        local bestRarity,
+            bestTier =
+            -1,
+            -1
 
-        local autoZone =
-            Extra.getAutoNextZoneTarget()
-
-        for _, zoneName in ipairs(MASTER_ZONES) do
-            local zoneAllowed =
-                autoZone
-                    and zoneName
-                        == autoZone
-                or (
-                    not autoZone
-                    and Extra.isSelected(
-                        selectedZones,
+        for _, zoneName
+            in ipairs(
+                MASTER_ZONES
+            )
+        do
+            if Extra.isSelected(
+                selectedZones,
+                zoneName
+            )
+            then
+                local zone =
+                    ZoneBuilds:
+                    FindFirstChild(
                         zoneName
                     )
-                )
 
-            if zoneAllowed then
-                local zone = ZoneBuilds:FindFirstChild(zoneName)
-                local eggs = zone and zone:FindFirstChild("Eggs")
+                local eggs =
+                    zone
+                    and zone:
+                        FindFirstChild(
+                            "Eggs"
+                        )
 
                 if eggs then
-                    for _, container in ipairs(eggs:GetChildren()) do
-                        local egg = Extra.resolveEgg(container)
+                    for _, container
+                        in ipairs(
+                            eggs:GetChildren()
+                        )
+                    do
+                        local egg =
+                            Extra.resolveEgg(
+                                container
+                            )
 
-                        if egg ~= excludedEgg and Extra.validEgg(egg) then
-                            local eggName = Extra.getEggName(egg)
+                        if egg ~= excludedEgg
+                            and Extra.validEgg(
+                                egg
+                            )
+                        then
+                            local eggName =
+                                Extra.getEggName(
+                                    egg
+                                )
 
-                            if Extra.isSelected(selectedEggs, eggName) then
-                                local distance = (hrp.Position - egg.Position).Magnitude
+                            if Extra.isSelected(
+                                selectedEggs,
+                                eggName
+                            )
+                            then
+                                local distance =
+                                    (
+                                        hrp.Position
+                                        - egg.Position
+                                    ).Magnitude
 
-                                local rarity, tier = Extra.getEggPriority(egg, zoneName)
-                                if rarity > bestRarity
-                                    or (rarity == bestRarity and tier > bestTier)
-                                    or (rarity == bestRarity and tier == bestTier
-                                        and distance < bestDistance) then
-                                    bestEgg = egg
-                                    bestZone = zoneName
-                                    bestDistance = distance
-                                    bestRarity, bestTier = rarity, tier
+                                local rarity,
+                                    tier =
+                                    Extra.getEggPriority(
+                                        egg,
+                                        zoneName
+                                    )
+
+                                if rarity
+                                        > bestRarity
+                                    or (
+                                        rarity
+                                            == bestRarity
+                                        and tier
+                                            > bestTier
+                                    )
+                                    or (
+                                        rarity
+                                            == bestRarity
+                                        and tier
+                                            == bestTier
+                                        and distance
+                                            < bestDistance
+                                    )
+                                then
+                                    bestEgg =
+                                        egg
+                                    bestZone =
+                                        zoneName
+                                    bestDistance =
+                                        distance
+                                    bestRarity =
+                                        rarity
+                                    bestTier =
+                                        tier
                                 end
                             end
                         end
@@ -3818,7 +4108,10 @@ return function(Context)
             end
         end
 
-        return bestEgg, bestZone, bestDistance
+        return
+            bestEgg,
+            bestZone,
+            bestDistance
     end
 
     -- Result pet
