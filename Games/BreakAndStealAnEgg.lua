@@ -11,6 +11,7 @@
 -- Pickup: qualifying hatch teleports directly to the pet before pickup
 -- Auto Steal: optional Bat-based normal melee automation for players carrying pets; dropped pet still passes filters
 -- Auto Steal precheck: identify and validate carried pet before selecting/chasing a player
+-- Auto Steal carry fix: correct ChaseState.IsCarrying call and nearest-carried-pickup fallback
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
@@ -30,7 +31,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: AUTOSTEAL_PRECHECK")
+    print("[CHLISE HUB] BreakAndSteal module build: AUTOSTEAL_CARRY_FIX_V2")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -6595,8 +6596,7 @@ return function(Context)
             carrying =
             pcall(function()
                 return
-                    ChaseState:
-                    IsCarrying(
+                    ChaseState.IsCarrying(
                         player
                     )
             end)
@@ -6632,7 +6632,14 @@ return function(Context)
         local character =
             player.Character
 
-        -- First choice: a replicated pet model attached to the carrier.
+        local targetHRP =
+            character
+            and character:
+                FindFirstChild(
+                    "HumanoidRootPart"
+                )
+
+        -- 1) Replicated pet model parented under the carrier.
         if character then
             for _, object
                 in ipairs(
@@ -6654,8 +6661,7 @@ return function(Context)
             end
         end
 
-        -- Some game versions keep the carried pet under AnimalPickups and
-        -- expose a carrier/holder attribute instead of parenting it to Character.
+        -- 2) Pickup explicitly identifies its holder/carrier.
         local carrierKeys = {
             "CarrierUserId",
             "CarryingUserId",
@@ -6663,7 +6669,8 @@ return function(Context)
             "CarriedByUserId",
             "Carrier",
             "CarriedBy",
-            "Holder"
+            "Holder",
+            "OwnerUserId"
         }
 
         for _, animal
@@ -6701,8 +6708,7 @@ return function(Context)
             end
         end
 
-        -- Last explicit identity fallback: if Carrying itself stores a
-        -- HatchId/animal identifier instead of just a boolean.
+        -- 3) Carrying attribute may itself contain HatchId/name.
         local carryingAttribute =
             ChaseState.CarryingAttribute
             or "Carrying"
@@ -6752,6 +6758,63 @@ return function(Context)
             end
         end
 
+        -- 4) Fallback for this game version:
+        -- while a player is carrying, the pet can remain under AnimalPickups
+        -- without any carrier attribute. Choose the nearest HATCHED pickup
+        -- around that carrier before deciding whether to chase.
+        if targetHRP then
+            local nearest
+            local nearestDistance =
+                math.huge
+
+            for _, animal
+                in ipairs(
+                    Pickups:GetChildren()
+                )
+            do
+                if animal:IsA("Model")
+                    and animal:GetAttribute(
+                        "Hatched"
+                    ) == true
+                then
+                    local ok,
+                        position =
+                        pcall(function()
+                            return
+                                animal:
+                                GetPivot().Position
+                        end)
+
+                    if ok
+                        and position
+                    then
+                        local distance =
+                            (
+                                position
+                                - targetHRP.Position
+                            ).Magnitude
+
+                        -- A carried pet should stay very close to the carrier.
+                        -- Keep this tight so a random ground pet is not mistaken
+                        -- for the one they are holding.
+                        if distance <= 10
+                            and distance
+                                < nearestDistance
+                        then
+                            nearest =
+                                animal
+                            nearestDistance =
+                                distance
+                        end
+                    end
+                end
+            end
+
+            if nearest then
+                return nearest
+            end
+        end
+
         return nil
     end
 
@@ -6769,9 +6832,12 @@ return function(Context)
                 player
             )
 
-        -- Important: if we cannot identify what pet the player is carrying,
-        -- do NOT chase them. The pet must be checked first.
         if not animal then
+            Extra.log(
+                "Auto Steal skip:",
+                player.Name,
+                "| carried pet object unresolved"
+            )
             return false, nil
         end
 
@@ -6785,6 +6851,12 @@ return function(Context)
             selectedPets,
             rawName
         ) then
+            Extra.log(
+                "Auto Steal skip:",
+                player.Name,
+                "| Pet filter:",
+                rawName
+            )
             return false, animal
         end
 
@@ -6826,6 +6898,11 @@ return function(Context)
             )
 
         if not animalZone then
+            Extra.log(
+                "Auto Steal skip:",
+                player.Name,
+                "| zone unresolved"
+            )
             return false, animal
         end
 
@@ -6852,31 +6929,97 @@ return function(Context)
             or animalIndex
                 > currentIndex + 1
         then
+            Extra.log(
+                "Auto Steal skip:",
+                player.Name,
+                "| Zone:",
+                animalZone,
+                "| Allowed:",
+                currentZone,
+                "->",
+                currentIndex
+                    and MASTER_ZONES[
+                        currentIndex + 1
+                    ]
+                    or "?"
+            )
             return false, animal
         end
 
-        local speedAllowed =
+        local speedAllowed,
+            speedRequirement =
             Extra.speedAllowsZone(
                 animalZone
             )
 
         if not speedAllowed then
+            Extra.log(
+                "Auto Steal skip:",
+                player.Name,
+                "| Speed insufficient",
+                "| Zone:",
+                animalZone,
+                "| Speed:",
+                Extra.getProgressionSpeed(),
+                "| Required:",
+                speedRequirement
+                    or "Unknown"
+            )
             return false, animal
         end
 
+        local income
+
         if Extra.minimumPetIncome > 0 then
-            local income =
+            income =
                 Extra.getPetIncomePerSecond(
                     animal
                 )
+
+            if income == nil then
+                -- Some carried-pet labels/attributes replicate a little later.
+                income =
+                    Extra.waitForPetIncome(
+                        animal,
+                        0.6
+                    )
+            end
 
             if income == nil
                 or income
                     < Extra.minimumPetIncome
             then
+                Extra.log(
+                    "Auto Steal skip:",
+                    player.Name,
+                    "| Pet:",
+                    rawName,
+                    "| Income/s:",
+                    income
+                        or "Unresolved",
+                    "| Minimum:",
+                    Extra.minimumPetIncome
+                )
                 return false, animal
             end
+        else
+            income =
+                Extra.getPetIncomePerSecond(
+                    animal
+                )
         end
+
+        Extra.log(
+            "Auto Steal precheck PASS:",
+            player.Name,
+            "| Pet:",
+            rawName,
+            "| Zone:",
+            animalZone,
+            "| Income/s:",
+            income
+                or "N/A"
+        )
 
         return true, animal
     end
