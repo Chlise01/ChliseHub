@@ -14,14 +14,14 @@
 -- Sell: Auto Sell resolves BackpackSellController config from GC table/upvalues and uses ToolValue / PetIncomeSeconds
 -- Sell safety: GC candidate probing uses rawget to avoid proxy __index errors (GoodSignal/Connection tables)
 -- Progression: Auto Next Zone checks speed, 15-hit break test, then waits for next PickaxeTier and rechecks requirement
--- Priority: Titanic Egg > timed Farm/Treadmill cycle; both ON alternate by timer
+-- Priority: Titanic Egg > Farm first > Treadmill; both ON alternate by timer
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: ANTIAFK_NEXTZONE_15HIT_FIX1")
+    print("[CHLISE HUB] BreakAndSteal module build: FARM_FIRST_TIMER_CYCLE")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -75,33 +75,12 @@ return function(Context)
 
     -- Anti AFK
     pcall(function()
-        LocalPlayer.Idled:
-        Connect(function()
+        local VirtualUser = game:GetService("VirtualUser")
+
+        LocalPlayer.Idled:Connect(function()
             pcall(function()
-                local virtualUser =
-                    game:GetService(
-                        "VirtualUser"
-                    )
-
-                virtualUser:
-                    Button2Down(
-                        Vector2.new(
-                            0,
-                            0
-                        ),
-                        Workspace.CurrentCamera.CFrame
-                    )
-
-                task.wait(0.1)
-
-                virtualUser:
-                    Button2Up(
-                        Vector2.new(
-                            0,
-                            0
-                        ),
-                        Workspace.CurrentCamera.CFrame
-                    )
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new(0, 0))
             end)
         end)
     end)
@@ -7167,17 +7146,10 @@ return function(Context)
                     )
                 end
 
-                if currentActivity == nil then
-                    Extra.setActivity("Farm")
-                elseif currentActivity
-                    == "Treadmill"
-                then
-                    -- Keep treadmill phase running.
-                    -- Farm starts when treadmill timer expires.
-                    Extra.refreshActivityDeadline()
-                else
-                    Extra.setActivity("Farm")
-                end
+                -- Farm is always the first phase whenever Auto Farm is ON.
+                -- This also makes autoload order irrelevant: if Treadmill was
+                -- enabled first, enabling Farm immediately switches to Farm.
+                Extra.setActivity("Farm")
             else
                 if currentActivity == "Farm" then
                     if autoTreadmillEnabled then
@@ -7264,11 +7236,17 @@ return function(Context)
                 state
 
             if state then
-                -- Auto Treadmill ON always enters
-                -- the treadmill immediately.
-                Extra.setActivity(
-                    "Treadmill"
-                )
+                -- If Farm is also enabled, Farm must always be the first phase.
+                -- Treadmill waits until the Farm timer expires.
+                if autoFarmEnabled then
+                    if currentActivity ~= "Farm" then
+                        Extra.setActivity("Farm")
+                    else
+                        Extra.refreshActivityDeadline()
+                    end
+                else
+                    Extra.setActivity("Treadmill")
+                end
             else
                 if currentActivity
                     == "Treadmill"
