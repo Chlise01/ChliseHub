@@ -7,6 +7,10 @@
 -- Titanic: absolute priority over treadmill, timers, filters, normal eggs, and normal pending hatches
 -- Titanic detection: standalone priority + event-driven physical index; no repeated full Workspace scan
 -- Titanic movement: target is locked until that exact egg is invalid/broken, preventing back-and-forth retargeting
+-- Titanic lock fix: current locked Titanic is never excluded/replaced while still valid
+-- Pickup: qualifying hatch teleports directly to the pet before pickup
+-- Auto Steal: optional Bat-based normal melee automation for players carrying pets; dropped pet still passes filters
+-- Auto Steal precheck: identify and validate carried pet before selecting/chasing a player
 -- Titanic timeout: ignore locked target after 20s if still unbroken
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
@@ -16,7 +20,6 @@
 -- Progression: Auto Next Zone checks speed, 15-hit break test, then waits for next PickaxeTier and rechecks requirement
 -- Farm fallback: when current safe-zone eggs are empty, temporarily try the next eligible zone while waiting for respawn
 -- Next-zone safety: detect actual current zone by zone bounds and only ever advance exactly +1 zone
--- Next-zone lock: selected/current zone is authoritative; unknown requirements are rejected; max one promotion per PickaxeTier
 -- Priority: Titanic Egg > Farm first > Treadmill; both ON alternate by timer
 -- Farm filter: Minimum Pet Income/s now reads live hatch/UI income and rejects unresolved live income
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
@@ -27,7 +30,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: ANTIAFK_V3_NEXTZONE_LOCK")
+    print("[CHLISE HUB] BreakAndSteal module build: AUTOSTEAL_PRECHECK")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -80,9 +83,7 @@ return function(Context)
     local CollectionService = game:GetService("CollectionService")
 
     -- Anti AFK
-    -- Do not rely only on LocalPlayer.Idled. Some executors/games still
-    -- disconnect even when that callback is hooked, so send harmless input
-    -- periodically as well.
+    -- Event + periodic input. This avoids depending only on LocalPlayer.Idled.
     pcall(function()
         local VirtualUser =
             game:GetService(
@@ -164,7 +165,6 @@ return function(Context)
             end
         end
 
-        -- Immediate activity so the anti-AFK worker is known to be alive.
         sendAntiAFKInput()
 
         LocalPlayer.Idled:
@@ -307,6 +307,11 @@ return function(Context)
         autoNextZoneBlockedPickaxeTier = nil,
         autoNextZoneTrialHits = 0,
         autoNextZonePromotedPickaxeTier = nil,
+
+        autoStealEnabled = false,
+        autoStealBusy = false,
+        autoStealWorkerRunning = false,
+        autoStealBatWarned = false,
 
         globalPickupScanAt = 0,
         globalPickupCached = nil
@@ -2969,7 +2974,6 @@ return function(Context)
             Extra.titanicLockedEgg
 
         if not egg
-            or egg == excludedEgg
             or not egg.Parent
             or not Extra.validEgg(
                 egg
@@ -3587,8 +3591,7 @@ return function(Context)
             )
 
         if not requirement then
-            -- Never guess. If the requirement cannot be resolved, stay in the
-            -- current safe zone instead of accidentally walking to the last zone.
+            -- Never guess an unknown gate requirement.
             return false, nil
         end
 
@@ -3746,6 +3749,12 @@ return function(Context)
     end
 
     function Extra.getSelectedCurrentZone()
+        if Extra.selectionEmpty(
+            selectedZones
+        ) then
+            return nil
+        end
+
         local selected =
             {}
 
@@ -3757,9 +3766,6 @@ return function(Context)
             if Extra.isSelected(
                 selectedZones,
                 zoneName
-            )
-            and not Extra.selectionEmpty(
-                selectedZones
             )
             then
                 table.insert(
@@ -3809,11 +3815,9 @@ return function(Context)
                 end
             end
 
-            if best then
-                return best
-            end
-
-            return selected[1]
+            return
+                best
+                or selected[1]
         end
 
         return nil
@@ -3895,8 +3899,6 @@ return function(Context)
             and currentPickaxeTier
                 <= promotedTier
         then
-            -- A zone was already promoted on this exact pickaxe tier.
-            -- Stay there and do NOT immediately chain to another zone.
             return safe
         end
 
@@ -5582,6 +5584,16 @@ return function(Context)
                 return false
             end
 
+            if Extra.titanicLockedEgg == egg
+                and egg
+                and egg.Parent
+                and Extra.validEgg(
+                    egg
+                )
+            then
+                return false
+            end
+
             local titanic =
                 Extra.findTitanicEgg(
                     egg
@@ -5610,6 +5622,7 @@ return function(Context)
                 or checkTitanicSwitch()
                 or Extra.isCarrying()
                 or Extra.isBeingChased()
+                or Extra.autoStealBusy
                 or not autoFarmActive
                 or currentActivity
                     ~= "Farm"
@@ -6487,6 +6500,796 @@ return function(Context)
         return false
     end
 
+    function Extra.findBatTool()
+        local character =
+            LocalPlayer.Character
+
+        local backpack =
+            LocalPlayer:
+                FindFirstChildOfClass(
+                    "Backpack"
+                )
+
+        local function search(
+            container
+        )
+            if not container then
+                return nil
+            end
+
+            for _, child
+                in ipairs(
+                    container:GetChildren()
+                )
+            do
+                if child:IsA("Tool")
+                    and child.Name:
+                        lower():
+                        find(
+                            "bat",
+                            1,
+                            true
+                        )
+                then
+                    return child
+                end
+            end
+
+            return nil
+        end
+
+        return
+            search(character)
+            or search(backpack)
+    end
+
+    function Extra.ensureBatEquipped()
+        local bat =
+            Extra.findBatTool()
+
+        if not bat then
+            if not Extra.autoStealBatWarned then
+                Extra.autoStealBatWarned =
+                    true
+
+                warn(
+                    "[CHLISE HUB] Auto Steal: Bat tool not found in Backpack/Character."
+                )
+            end
+
+            return nil
+        end
+
+        local character,
+            humanoid =
+            Extra.getCharacter()
+
+        if bat.Parent ~= character then
+            humanoid:
+                EquipTool(
+                    bat
+                )
+
+            task.wait(0.08)
+        end
+
+        if bat.Parent == character then
+            Extra.autoStealBatWarned =
+                false
+            return bat
+        end
+
+        return nil
+    end
+
+    function Extra.playerIsCarryingPet(
+        player
+    )
+        if not player
+            or player == LocalPlayer
+        then
+            return false
+        end
+
+        local ok,
+            carrying =
+            pcall(function()
+                return
+                    ChaseState:
+                    IsCarrying(
+                        player
+                    )
+            end)
+
+        if ok
+            and carrying == true
+        then
+            return true
+        end
+
+        local attribute =
+            ChaseState.CarryingAttribute
+            or "Carrying"
+
+        return
+            player:GetAttribute(
+                attribute
+            ) ~= nil
+            and player:GetAttribute(
+                attribute
+            ) ~= false
+    end
+
+    function Extra.getCarriedPetObject(
+        player
+    )
+        if not player
+            or player == LocalPlayer
+        then
+            return nil
+        end
+
+        local character =
+            player.Character
+
+        -- First choice: a replicated pet model attached to the carrier.
+        if character then
+            for _, object
+                in ipairs(
+                    character:GetDescendants()
+                )
+            do
+                if object:IsA("Model")
+                    and (
+                        object:GetAttribute(
+                            "AnimalName"
+                        ) ~= nil
+                        or object:GetAttribute(
+                            "HatchId"
+                        ) ~= nil
+                    )
+                then
+                    return object
+                end
+            end
+        end
+
+        -- Some game versions keep the carried pet under AnimalPickups and
+        -- expose a carrier/holder attribute instead of parenting it to Character.
+        local carrierKeys = {
+            "CarrierUserId",
+            "CarryingUserId",
+            "HolderUserId",
+            "CarriedByUserId",
+            "Carrier",
+            "CarriedBy",
+            "Holder"
+        }
+
+        for _, animal
+            in ipairs(
+                Pickups:GetChildren()
+            )
+        do
+            if animal:IsA("Model") then
+                for _, key
+                    in ipairs(
+                        carrierKeys
+                    )
+                do
+                    local value =
+                        animal:GetAttribute(
+                            key
+                        )
+
+                    if value ~= nil then
+                        local matches =
+                            tostring(value)
+                                == tostring(
+                                    player.UserId
+                                )
+                            or tostring(value)
+                                == tostring(
+                                    player.Name
+                                )
+
+                        if matches then
+                            return animal
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Last explicit identity fallback: if Carrying itself stores a
+        -- HatchId/animal identifier instead of just a boolean.
+        local carryingAttribute =
+            ChaseState.CarryingAttribute
+            or "Carrying"
+
+        local carryingValue =
+            player:GetAttribute(
+                carryingAttribute
+            )
+
+        if carryingValue ~= nil
+            and type(carryingValue)
+                ~= "boolean"
+        then
+            local wanted =
+                tostring(
+                    carryingValue
+                )
+
+            for _, animal
+                in ipairs(
+                    Pickups:GetChildren()
+                )
+            do
+                if animal:IsA("Model") then
+                    local hatchId =
+                        animal:GetAttribute(
+                            "HatchId"
+                        )
+
+                    local animalName =
+                        animal:GetAttribute(
+                            "AnimalName"
+                        )
+                        or animal.Name
+
+                    if (
+                        hatchId ~= nil
+                        and tostring(hatchId)
+                            == wanted
+                    )
+                        or tostring(animalName)
+                            == wanted
+                    then
+                        return animal
+                    end
+                end
+            end
+        end
+
+        return nil
+    end
+
+    function Extra.carriedPetPassesAutoSteal(
+        player
+    )
+        if not Extra.playerIsCarryingPet(
+            player
+        ) then
+            return false, nil
+        end
+
+        local animal =
+            Extra.getCarriedPetObject(
+                player
+            )
+
+        -- Important: if we cannot identify what pet the player is carrying,
+        -- do NOT chase them. The pet must be checked first.
+        if not animal then
+            return false, nil
+        end
+
+        local rawName =
+            animal:GetAttribute(
+                "AnimalName"
+            )
+            or animal.Name
+
+        if not Extra.isSelected(
+            selectedPets,
+            rawName
+        ) then
+            return false, animal
+        end
+
+        local position
+        pcall(function()
+            position =
+                animal:GetPivot().Position
+        end)
+
+        if not position then
+            local character =
+                player.Character
+
+            local hrp =
+                character
+                and character:
+                    FindFirstChild(
+                        "HumanoidRootPart"
+                    )
+
+            position =
+                hrp
+                and hrp.Position
+                or nil
+        end
+
+        if not position then
+            return false, animal
+        end
+
+        local animalZone =
+            Extra.normalizeZone(
+                animal:GetAttribute(
+                    "ZoneId"
+                )
+            )
+            or Extra.detectZoneAtPosition(
+                position
+            )
+
+        if not animalZone then
+            return false, animal
+        end
+
+        Extra.initializeAutoNextZone()
+
+        local currentZone =
+            Extra.autoNextZoneSafeZone
+            or Extra.detectCurrentZone()
+
+        local currentIndex =
+            Extra.zoneIndex(
+                currentZone
+            )
+
+        local animalIndex =
+            Extra.zoneIndex(
+                animalZone
+            )
+
+        if not currentIndex
+            or not animalIndex
+            or animalIndex
+                < currentIndex
+            or animalIndex
+                > currentIndex + 1
+        then
+            return false, animal
+        end
+
+        local speedAllowed =
+            Extra.speedAllowsZone(
+                animalZone
+            )
+
+        if not speedAllowed then
+            return false, animal
+        end
+
+        if Extra.minimumPetIncome > 0 then
+            local income =
+                Extra.getPetIncomePerSecond(
+                    animal
+                )
+
+            if income == nil
+                or income
+                    < Extra.minimumPetIncome
+            then
+                return false, animal
+            end
+        end
+
+        return true, animal
+    end
+
+    function Extra.findAutoStealTarget()
+        local _, _, localHRP =
+            Extra.getCharacter()
+
+        local bestPlayer
+        local bestHRP
+        local bestAnimal
+        local bestDistance =
+            math.huge
+
+        for _, player
+            in ipairs(
+                Players:GetPlayers()
+            )
+        do
+            if player ~= LocalPlayer
+                and Extra.playerIsCarryingPet(
+                    player
+                )
+            then
+                -- Check the carried pet FIRST.
+                -- Only qualifying players become chase targets.
+                local accepted,
+                    carriedAnimal =
+                    Extra.carriedPetPassesAutoSteal(
+                        player
+                    )
+
+                if accepted then
+                    local character =
+                        player.Character
+
+                    local humanoid =
+                        character
+                        and character:
+                            FindFirstChildOfClass(
+                                "Humanoid"
+                            )
+
+                    local hrp =
+                        character
+                        and character:
+                            FindFirstChild(
+                                "HumanoidRootPart"
+                            )
+
+                    if humanoid
+                        and humanoid.Health > 0
+                        and hrp
+                    then
+                        local distance =
+                            (
+                                localHRP.Position
+                                - hrp.Position
+                            ).Magnitude
+
+                        if distance
+                            < bestDistance
+                        then
+                            bestPlayer =
+                                player
+                            bestHRP =
+                                hrp
+                            bestAnimal =
+                                carriedAnimal
+                            bestDistance =
+                                distance
+                        end
+                    end
+                end
+            end
+        end
+
+        return
+            bestPlayer,
+            bestHRP,
+            bestDistance,
+            bestAnimal
+    end
+
+    function Extra.findAcceptedPickupNear(
+        origin,
+        radius
+    )
+        if typeof(origin)
+            ~= "Vector3"
+        then
+            return nil
+        end
+
+        radius =
+            tonumber(radius)
+            or 18
+
+        Extra.initializeAutoNextZone()
+
+        local currentZone =
+            Extra.autoNextZoneSafeZone
+            or Extra.detectCurrentZone()
+
+        local currentIndex =
+            Extra.zoneIndex(
+                currentZone
+            )
+
+        local maxIndex =
+            currentIndex
+            and math.min(
+                #MASTER_ZONES,
+                currentIndex + 1
+            )
+            or nil
+
+        local best
+        local bestDistance =
+            math.huge
+
+        for _, animal
+            in ipairs(
+                Pickups:GetChildren()
+            )
+        do
+            if animal:IsA("Model")
+                and animal:GetAttribute(
+                    "Hatched"
+                ) == true
+            then
+                local position =
+                    animal:GetPivot().Position
+
+                local distance =
+                    (
+                        position
+                        - origin
+                    ).Magnitude
+
+                if distance <= radius then
+                    local animalZone =
+                        Extra.normalizeZone(
+                            animal:GetAttribute(
+                                "ZoneId"
+                            )
+                        )
+                        or Extra.detectZoneAtPosition(
+                            position
+                        )
+
+                    local animalIndex =
+                        Extra.zoneIndex(
+                            animalZone
+                        )
+
+                    local inRange =
+                        currentIndex ~= nil
+                        and maxIndex ~= nil
+                        and animalIndex ~= nil
+                        and animalIndex
+                            >= currentIndex
+                        and animalIndex
+                            <= maxIndex
+
+                    if inRange then
+                        local speedAllowed =
+                            Extra.speedAllowsZone(
+                                animalZone
+                            )
+
+                        if speedAllowed then
+                            local income
+
+                            if Extra.minimumPetIncome > 0 then
+                                income =
+                                    Extra.getPetIncomePerSecond(
+                                        animal
+                                    )
+                            end
+
+                            if Extra.petMatchesFilter(
+                                animal,
+                                income
+                            )
+                                and distance
+                                    < bestDistance
+                            then
+                                best =
+                                    animal
+                                bestDistance =
+                                    distance
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        return best
+    end
+
+    function Extra.runAutoStealWorker()
+        if Extra.autoStealWorkerRunning then
+            return
+        end
+
+        Extra.autoStealWorkerRunning =
+            true
+
+        task.spawn(function()
+            while Extra.autoStealEnabled
+                and not Window.Destroyed
+            do
+                local ok,
+                    err =
+                    pcall(function()
+                        if not autoFarmActive
+                            or currentActivity
+                                ~= "Farm"
+                            or Extra.isCarrying()
+                            or Extra.isBeingChased()
+                        then
+                            task.wait(0.15)
+                            return
+                        end
+
+                        local targetPlayer,
+                            targetHRP,
+                            _,
+                            targetAnimal =
+                            Extra.findAutoStealTarget()
+
+                        if not targetPlayer
+                            or not targetHRP
+                            or not targetAnimal
+                        then
+                            task.wait(0.2)
+                            return
+                        end
+
+                        Extra.log(
+                            "Auto Steal target accepted BEFORE chase:",
+                            targetPlayer.Name,
+                            "| Pet:",
+                            targetAnimal:GetAttribute(
+                                "AnimalName"
+                            )
+                                or targetAnimal.Name,
+                            "| Income/s:",
+                            Extra.getPetIncomePerSecond(
+                                targetAnimal
+                            )
+                                or "N/A"
+                        )
+
+                        local bat =
+                            Extra.ensureBatEquipped()
+
+                        if not bat then
+                            task.wait(0.5)
+                            return
+                        end
+
+                        Extra.autoStealBusy =
+                            true
+
+                        Extra.stopMoving()
+
+                        local lastPosition =
+                            targetHRP.Position
+
+                        local deadline =
+                            os.clock() + 8
+
+                        while Extra.autoStealEnabled
+                            and autoFarmActive
+                            and currentActivity
+                                == "Farm"
+                            and os.clock()
+                                < deadline
+                            and targetPlayer.Parent
+                            and Extra.playerIsCarryingPet(
+                                targetPlayer
+                            )
+                        do
+                            local stillAccepted =
+                                Extra.carriedPetPassesAutoSteal(
+                                    targetPlayer
+                                )
+
+                            if not stillAccepted then
+                                Extra.log(
+                                    "Auto Steal target no longer qualifies:",
+                                    targetPlayer.Name
+                                )
+                                break
+                            end
+                            local _,
+                                _,
+                                localHRP =
+                                Extra.getCharacter()
+
+                            if not targetHRP.Parent then
+                                break
+                            end
+
+                            lastPosition =
+                                targetHRP.Position
+
+                            local distance =
+                                (
+                                    localHRP.Position
+                                    - targetHRP.Position
+                                ).Magnitude
+
+                            if distance > 7 then
+                                Extra.moveTo(
+                                    Extra.getApproachPosition(
+                                        targetHRP.Position,
+                                        4
+                                    ),
+                                    2,
+                                    1.2,
+                                    function()
+                                        return
+                                            not targetHRP.Parent
+                                            or not Extra.playerIsCarryingPet(
+                                                targetPlayer
+                                            )
+                                    end
+                                )
+                            else
+                                bat =
+                                    Extra.ensureBatEquipped()
+
+                                if bat
+                                    and bat.Parent
+                                        == LocalPlayer.Character
+                                then
+                                    bat:
+                                        Activate()
+                                end
+
+                                task.wait(0.25)
+                            end
+                        end
+
+                        if not Extra.playerIsCarryingPet(
+                            targetPlayer
+                        )
+                        then
+                            local dropDeadline =
+                                os.clock() + 3
+
+                            local dropped
+
+                            repeat
+                                dropped =
+                                    Extra.findAcceptedPickupNear(
+                                        lastPosition,
+                                        20
+                                    )
+
+                                if dropped then
+                                    break
+                                end
+
+                                task.wait(0.05)
+                            until os.clock()
+                                >= dropDeadline
+
+                            if dropped
+                                and dropped.Parent
+                            then
+                                Extra.log(
+                                    "Auto Steal dropped pet accepted:",
+                                    dropped:GetAttribute(
+                                        "AnimalName"
+                                    )
+                                        or dropped.Name
+                                )
+
+                                Extra.stealAndBank(
+                                    dropped
+                                )
+                            end
+                        end
+
+                        Extra.autoStealBusy =
+                            false
+                    end)
+
+                Extra.autoStealBusy =
+                    false
+
+                if not ok then
+                    warn(
+                        "[CHLISE HUB] Auto Steal error:",
+                        err
+                    )
+
+                    task.wait(0.5)
+                end
+            end
+
+            Extra.autoStealBusy =
+                false
+            Extra.autoStealWorkerRunning =
+                false
+        end)
+    end
+
     function Extra.stealAndBank(animal)
         if Extra.globalPickupCached == animal then
             Extra.globalPickupCached = nil
@@ -6539,6 +7342,67 @@ return function(Context)
             "| HatchId:",
             signature.HatchId
         )
+
+        -- Accepted pets are time-sensitive. Teleport directly to the pickup
+        -- instead of using the configured Walk/Tween movement mode.
+        pcall(function()
+            local _, _, pickupHRP =
+                Extra.getCharacter()
+
+            local petPosition =
+                animal:GetPivot().Position
+
+            local direction =
+                pickupHRP.Position
+                - petPosition
+
+            direction =
+                Vector3.new(
+                    direction.X,
+                    0,
+                    direction.Z
+                )
+
+            if direction.Magnitude < 0.1 then
+                direction =
+                    Vector3.new(
+                        0,
+                        0,
+                        1
+                    )
+            else
+                direction =
+                    direction.Unit
+            end
+
+            local destination =
+                petPosition
+                + direction * 2
+
+            pickupHRP.CFrame =
+                CFrame.lookAt(
+                    Vector3.new(
+                        destination.X,
+                        pickupHRP.Position.Y,
+                        destination.Z
+                    ),
+                    Vector3.new(
+                        petPosition.X,
+                        pickupHRP.Position.Y,
+                        petPosition.Z
+                    )
+                )
+
+            pickupHRP.AssemblyLinearVelocity =
+                Vector3.zero
+            pickupHRP.AssemblyAngularVelocity =
+                Vector3.zero
+
+            Extra.log(
+                "Accepted pet -> instant teleport:",
+                animalName
+            )
+        end)
 
         local banked = false
 
@@ -6768,6 +7632,12 @@ return function(Context)
                 and not Window.Destroyed
             do
                 local ok, err = pcall(function()
+                    if Extra.autoStealBusy then
+                        Extra.stopMoving()
+                        task.wait(0.08)
+                        return
+                    end
+
                     if Extra.isBeingChased() or Extra.isCarrying() then
                         Extra.stopMoving()
                         task.wait(HOME_RETRY_WAIT)
@@ -7897,6 +8767,32 @@ return function(Context)
             else
                 Extra.log(
                     "Auto Next Zone OFF"
+                )
+            end
+        end
+    )
+
+    FarmSection:AddToggle(
+        "BSAEAutoSteal",
+        "Auto Steal Carried Pet",
+        false,
+
+        function(state)
+            Extra.autoStealEnabled =
+                state == true
+
+            if Extra.autoStealEnabled then
+                Extra.runAutoStealWorker()
+
+                Extra.log(
+                    "Auto Steal ON"
+                )
+            else
+                Extra.autoStealBusy =
+                    false
+
+                Extra.log(
+                    "Auto Steal OFF"
                 )
             end
         end
