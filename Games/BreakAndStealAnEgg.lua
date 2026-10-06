@@ -9,6 +9,7 @@
 -- Upgrades: event-driven Auto Upgrade Pen/Treadmill; only requests when Cash is sufficient
 -- Shop: event-driven Auto Buy Pickaxe/Trail with confirmation + anti-spam
 -- Utility: Equip Best Pet + Auto Claim Index, event-driven with debounce
+-- Sell: Auto Sell pet tools below configured Income/s through BackpackSellRemote
 -- Recovery: robust dropped-pet reacquire using HatchId + name/zone/weight fallback
 -- Farm state: self-recovers if activity says Farm but worker stopped
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
@@ -58,6 +59,7 @@ return function(Context)
     local TrailShopRequest = ReplicatedStorage:WaitForChild("TrailShopRequest")
     local PetsInventoryRemote = ReplicatedStorage:WaitForChild("PetsInventoryRemote")
     local IndexRemote = ReplicatedStorage:WaitForChild("IndexRemote")
+    local BackpackSellRemote = ReplicatedStorage:WaitForChild("BackpackSellRemote")
 
     local Build = Workspace:WaitForChild(ZonesConfig.BuildFolderName or "Build")
     local ZoneBuilds = Build:WaitForChild(ZonesConfig.ZoneBuildsName or "ZoneBuilds")
@@ -122,37 +124,6 @@ return function(Context)
     local penUpgradeRetryAt = 0
     local treadmillUpgradeRetryAt = 0
 
-    local Extra = {
-        Extra.autoBuyPickaxe = false,
-        Extra.autoBuyTrail = false,
-
-        Extra.pickaxeBuyWorkerRunning = false,
-        Extra.trailBuyWorkerRunning = false,
-
-        Extra.pickaxeBuyRetryAt = 0,
-        Extra.trailBuyRetryAt = 0,
-
-        Extra.equipBestPetEnabled = false,
-        Extra.autoClaimIndex = false,
-
-        Extra.equipBestPetBusy = false,
-        Extra.autoClaimIndexBusy = false,
-
-        Extra.lastEquipBestPetAt = 0,
-        Extra.lastAutoClaimIndexAt = 0,
-
-        Extra.minimumPetIncome = 0,
-
-        Extra.PET_INCOME_ATTRIBUTE_KEYS = {
-            "IncomePerSecond",
-            "CashPerSecond",
-            "Income",
-            "CashPerSec",
-            "CPS",
-            "EarningsPerSecond",
-            "MoneyPerSecond"
-        }
-    }
 
     -- Titanic is allowed to temporarily override the normal Farm/Treadmill
     -- schedule. We preserve the previous activity + remaining timer so it can
@@ -173,21 +144,48 @@ return function(Context)
 
     local movementMode = "Walk"
 
-    local function log(...)
+    local Extra = {
+        autoBuyPickaxe = false,
+        autoBuyTrail = false,
+
+        pickaxeBuyWorkerRunning = false,
+        trailBuyWorkerRunning = false,
+
+        pickaxeBuyRetryAt = 0,
+        trailBuyRetryAt = 0,
+
+        equipBestPetEnabled = false,
+        autoClaimIndex = false,
+
+        equipBestPetBusy = false,
+        autoClaimIndexBusy = false,
+
+        lastEquipBestPetAt = 0,
+        lastAutoClaimIndexAt = 0,
+
+        minimumPetIncome = 0,
+
+        autoSellEnabled = false,
+        autoSellBelowIncome = 0,
+        autoSellBusy = false,
+        lastAutoSellAt = 0
+    }
+
+    function Extra.log(...)
         if debugEnabled then
             print("[CHLISE HUB][BREAK & STEAL]", ...)
         end
     end
 
-    local function getCharacter()
+    function Extra.getCharacter()
         local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
         local humanoid = character:WaitForChild("Humanoid")
         local hrp = character:WaitForChild("HumanoidRootPart")
         return character, humanoid, hrp
     end
 
-    local function getCurrentMoveSpeed()
-        local _, humanoid = getCharacter()
+    function Extra.getCurrentMoveSpeed()
+        local _, humanoid = Extra.getCharacter()
 
         local speed =
             tonumber(humanoid.WalkSpeed)
@@ -204,7 +202,7 @@ return function(Context)
     end
 
     -- Selection helpers
-    local function selectionEmpty(selection)
+    function Extra.selectionEmpty(selection)
         if type(selection) ~= "table" then
             return true
         end
@@ -222,8 +220,8 @@ return function(Context)
         return true
     end
 
-    local function isSelected(selection, wanted)
-        if selectionEmpty(selection) then
+    function Extra.isSelected(selection, wanted)
+        if Extra.selectionEmpty(selection) then
             return true
         end
 
@@ -240,7 +238,7 @@ return function(Context)
         return false
     end
 
-    local function normalizeZone(value)
+    function Extra.normalizeZone(value)
         if typeof(value) == "number" then
             return "Zone" .. tostring(value)
         end
@@ -272,7 +270,7 @@ return function(Context)
 
     -- UI labels are separate from raw names used by the game.
     local zoneLabels, petLabels, eggLabels = {}, {}, {}
-    local function displayName(raw)
+    function Extra.displayName(raw)
         local name = (EggRewards.DisplayNames or {})[raw] or tostring(raw)
         name = name:gsub("_", " "):gsub("(%l)(%u)", "%1 %2")
             :gsub("(%u)(%u%l)", "%1 %2")
@@ -282,7 +280,7 @@ return function(Context)
         end))
     end
 
-    local function decodeSelection(value, labels)
+    function Extra.decodeSelection(value, labels)
         local result = {}
         if type(value) == "string" then
             result[labels[value] or value] = true
@@ -308,7 +306,7 @@ return function(Context)
         table.insert(ZONE_OPTIONS, label)
     end
 
-    local function buildPetList()
+    function Extra.buildPetList()
         local rows, found = {}, {}
         local rarityOrder = {}
         for i, rarity in ipairs({
@@ -319,7 +317,7 @@ return function(Context)
             if type(raw) ~= "string" or raw == "" or found[raw] then return end
             found[raw] = true
             table.insert(rows, {
-                raw = raw, name = displayName(raw),
+                raw = raw, name = Extra.displayName(raw),
                 zone = tonumber(zone), rarity = rarity or "Unknown"
             })
         end
@@ -358,10 +356,10 @@ return function(Context)
         return result
     end
 
-    local MASTER_PETS = buildPetList()
+    local MASTER_PETS = Extra.buildPetList()
 
     -- Owned plot / home
-    local function getOwnedPlotHitbox()
+    function Extra.getOwnedPlotHitbox()
         local hitbox = SafeZoneQuery.GetOwnedPlotHitbox(LocalPlayer.UserId)
 
         if hitbox and hitbox.Parent and hitbox:IsA("BasePart") then
@@ -371,7 +369,7 @@ return function(Context)
         return nil
     end
 
-    local function isBankablePosition(position)
+    function Extra.isBankablePosition(position)
         local ok, result = pcall(function()
             return SafeZoneQuery.IsBankable(LocalPlayer.UserId, position)
         end)
@@ -379,7 +377,7 @@ return function(Context)
         return ok and result == true
     end
 
-    local function durationToSeconds(value, unit)
+    function Extra.durationToSeconds(value, unit)
         local amount = tonumber(value)
 
         if not amount or amount <= 0 then
@@ -393,16 +391,16 @@ return function(Context)
         return amount * 60
     end
 
-    local function getActivityDuration(activity)
+    function Extra.getActivityDuration(activity)
         if activity == "Farm" then
-            return durationToSeconds(
+            return Extra.durationToSeconds(
                 farmTimerValue,
                 farmTimerUnit
             )
         end
 
         if activity == "Treadmill" then
-            return durationToSeconds(
+            return Extra.durationToSeconds(
                 treadmillTimerValue,
                 treadmillTimerUnit
             )
@@ -411,7 +409,7 @@ return function(Context)
         return nil
     end
 
-    local function otherActivityEnabled(activity)
+    function Extra.otherActivityEnabled(activity)
         if activity == "Farm" then
             return autoTreadmillEnabled
         end
@@ -423,16 +421,16 @@ return function(Context)
         return false
     end
 
-    local function refreshActivityDeadline()
+    function Extra.refreshActivityDeadline()
         if not currentActivity
-            or not otherActivityEnabled(currentActivity)
+            or not Extra.otherActivityEnabled(currentActivity)
         then
             activityDeadline = nil
             return
         end
 
         local duration =
-            getActivityDuration(currentActivity)
+            Extra.getActivityDuration(currentActivity)
 
         if duration then
             activityDeadline =
@@ -442,9 +440,9 @@ return function(Context)
         end
     end
 
-    local function getOwnedPlot()
+    function Extra.getOwnedPlot()
         local hitbox =
-            getOwnedPlotHitbox()
+            Extra.getOwnedPlotHitbox()
 
         if not hitbox then
             return nil
@@ -482,7 +480,7 @@ return function(Context)
 
     -- Exact plot ownership for upgrade systems.
     -- This does not depend on SafeZoneQuery/hitbox state.
-    local function getOwnedPlotExact()
+    function Extra.getOwnedPlotExact()
         local plots =
             Workspace:
             FindFirstChild(
@@ -512,7 +510,7 @@ return function(Context)
         return nil
     end
 
-    local function getCash()
+    function Extra.getCash()
         return
             tonumber(
                 LocalPlayer:GetAttribute(
@@ -522,7 +520,7 @@ return function(Context)
             or 0
     end
 
-    local function getNextPenUpgradeCost(
+    function Extra.getNextPenUpgradeCost(
         plot
     )
         if not plot then
@@ -584,7 +582,7 @@ return function(Context)
         return cost, level
     end
 
-    local function getNextTreadmillUpgradeCost(
+    function Extra.getNextTreadmillUpgradeCost(
         plot
     )
         if not plot then
@@ -651,7 +649,7 @@ return function(Context)
         return cost, level
     end
 
-    local function waitForUpgradeLevel(
+    function Extra.waitForUpgradeLevel(
         plot,
         attributeName,
         oldLevel,
@@ -687,7 +685,7 @@ return function(Context)
         return false, oldLevel
     end
 
-    local function runAutoUpgradePen()
+    function Extra.runAutoUpgradePen()
         if penUpgradeWorkerRunning then
             return
         end
@@ -699,19 +697,19 @@ return function(Context)
                 and not Window.Destroyed
             do
                 local plot =
-                    getOwnedPlotExact()
+                    Extra.getOwnedPlotExact()
 
                 if not plot then
                     break
                 end
 
                 local cost, level =
-                    getNextPenUpgradeCost(
+                    Extra.getNextPenUpgradeCost(
                         plot
                     )
 
                 if not cost then
-                    log(
+                    Extra.log(
                         "Auto Upgrade Pen:",
                         "MAX LEVEL",
                         "| Level:",
@@ -722,10 +720,10 @@ return function(Context)
                 end
 
                 local cash =
-                    getCash()
+                    Extra.getCash()
 
                 if cash < cost then
-                    log(
+                    Extra.log(
                         "Auto Upgrade Pen waiting",
                         "| Level:",
                         level,
@@ -744,7 +742,7 @@ return function(Context)
                     break
                 end
 
-                log(
+                Extra.log(
                     "Auto Upgrade Pen request",
                     "| Level:",
                     level,
@@ -761,7 +759,7 @@ return function(Context)
 
                 local confirmed,
                     newLevel =
-                    waitForUpgradeLevel(
+                    Extra.waitForUpgradeLevel(
                         plot,
                         "PlotLevel",
                         level,
@@ -774,7 +772,7 @@ return function(Context)
                     penUpgradeRetryAt =
                         os.clock() + 10
 
-                    log(
+                    Extra.log(
                         "Auto Upgrade Pen:",
                         "no level confirmation; cooldown 10s"
                     )
@@ -784,7 +782,7 @@ return function(Context)
 
                 penUpgradeRetryAt = 0
 
-                log(
+                Extra.log(
                     "Auto Upgrade Pen confirmed",
                     "| Level:",
                     newLevel
@@ -800,7 +798,7 @@ return function(Context)
         end)
     end
 
-    local function runAutoUpgradeTreadmill()
+    function Extra.runAutoUpgradeTreadmill()
         if treadmillUpgradeWorkerRunning then
             return
         end
@@ -812,7 +810,7 @@ return function(Context)
                 and not Window.Destroyed
             do
                 local plot =
-                    getOwnedPlotExact()
+                    Extra.getOwnedPlotExact()
 
                 if not plot then
                     break
@@ -822,7 +820,7 @@ return function(Context)
                     "TreadmillUnlocked"
                 ) ~= true
                 then
-                    log(
+                    Extra.log(
                         "Auto Upgrade Treadmill:",
                         "treadmill is locked"
                     )
@@ -831,12 +829,12 @@ return function(Context)
                 end
 
                 local cost, level =
-                    getNextTreadmillUpgradeCost(
+                    Extra.getNextTreadmillUpgradeCost(
                         plot
                     )
 
                 if not cost then
-                    log(
+                    Extra.log(
                         "Auto Upgrade Treadmill:",
                         "MAX LEVEL",
                         "| Level:",
@@ -847,10 +845,10 @@ return function(Context)
                 end
 
                 local cash =
-                    getCash()
+                    Extra.getCash()
 
                 if cash < cost then
-                    log(
+                    Extra.log(
                         "Auto Upgrade Treadmill waiting",
                         "| Level:",
                         level,
@@ -869,7 +867,7 @@ return function(Context)
                     break
                 end
 
-                log(
+                Extra.log(
                     "Auto Upgrade Treadmill request",
                     "| Level:",
                     level,
@@ -886,7 +884,7 @@ return function(Context)
 
                 local confirmed,
                     newLevel =
-                    waitForUpgradeLevel(
+                    Extra.waitForUpgradeLevel(
                         plot,
                         "TreadmillLevel",
                         level,
@@ -897,7 +895,7 @@ return function(Context)
                     treadmillUpgradeRetryAt =
                         os.clock() + 10
 
-                    log(
+                    Extra.log(
                         "Auto Upgrade Treadmill:",
                         "no level confirmation; cooldown 10s"
                     )
@@ -907,7 +905,7 @@ return function(Context)
 
                 treadmillUpgradeRetryAt = 0
 
-                log(
+                Extra.log(
                     "Auto Upgrade Treadmill confirmed",
                     "| Level:",
                     newLevel
@@ -1157,7 +1155,7 @@ return function(Context)
                     Extra.getNextPickaxePurchase()
 
                 if not nextPurchase then
-                    log(
+                    Extra.log(
                         "Auto Buy Pickaxe:",
                         "MAX TIER",
                         "| Tier:",
@@ -1168,12 +1166,12 @@ return function(Context)
                 end
 
                 local cash =
-                    getCash()
+                    Extra.getCash()
 
                 if cash
                     < nextPurchase.Price
                 then
-                    log(
+                    Extra.log(
                         "Auto Buy Pickaxe waiting",
                         "| Current:",
                         currentTier,
@@ -1194,7 +1192,7 @@ return function(Context)
                     break
                 end
 
-                log(
+                Extra.log(
                     "Auto Buy Pickaxe request",
                     "| Tier:",
                     currentTier,
@@ -1223,7 +1221,7 @@ return function(Context)
                     Extra.pickaxeBuyRetryAt =
                         os.clock() + 10
 
-                    log(
+                    Extra.log(
                         "Auto Buy Pickaxe:",
                         "no tier confirmation; cooldown 10s"
                     )
@@ -1233,7 +1231,7 @@ return function(Context)
 
                 Extra.pickaxeBuyRetryAt = 0
 
-                log(
+                Extra.log(
                     "Auto Buy Pickaxe confirmed",
                     "| Tier:",
                     newTier
@@ -1262,7 +1260,7 @@ return function(Context)
                     Extra.getNextTrailPurchase()
 
                 if not nextPurchase then
-                    log(
+                    Extra.log(
                         "Auto Buy Trail:",
                         "ALL OWNED"
                     )
@@ -1271,12 +1269,12 @@ return function(Context)
                 end
 
                 local cash =
-                    getCash()
+                    Extra.getCash()
 
                 if cash
                     < nextPurchase.Price
                 then
-                    log(
+                    Extra.log(
                         "Auto Buy Trail waiting",
                         "| Next ID:",
                         nextPurchase.Id,
@@ -1297,7 +1295,7 @@ return function(Context)
                     break
                 end
 
-                log(
+                Extra.log(
                     "Auto Buy Trail request",
                     "| ID:",
                     nextPurchase.Id,
@@ -1325,7 +1323,7 @@ return function(Context)
                     Extra.trailBuyRetryAt =
                         os.clock() + 10
 
-                    log(
+                    Extra.log(
                         "Auto Buy Trail:",
                         "no ownership confirmation; cooldown 10s"
                     )
@@ -1335,7 +1333,7 @@ return function(Context)
 
                 Extra.trailBuyRetryAt = 0
 
-                log(
+                Extra.log(
                     "Auto Buy Trail confirmed",
                     "| ID:",
                     nextPurchase.Id
@@ -1393,7 +1391,7 @@ return function(Context)
         Extra.lastEquipBestPetAt = now
 
         task.spawn(function()
-            log(
+            Extra.log(
                 "Equip Best Pet request"
             )
 
@@ -1432,7 +1430,7 @@ return function(Context)
         Extra.lastAutoClaimIndexAt = now
 
         task.spawn(function()
-            log(
+            Extra.log(
                 "Auto Claim Index request"
             )
 
@@ -1465,13 +1463,13 @@ return function(Context)
         end
     end
 
-    local function triggerAutoUpgrades()
+    function Extra.triggerAutoUpgrades()
         if autoUpgradePen then
-            runAutoUpgradePen()
+            Extra.runAutoUpgradePen()
         end
 
         if autoUpgradeTreadmill then
-            runAutoUpgradeTreadmill()
+            Extra.runAutoUpgradeTreadmill()
         end
     end
 
@@ -1481,11 +1479,11 @@ return function(Context)
         "Cash"
     ):
     Connect(function()
-        triggerAutoUpgrades()
+        Extra.triggerAutoUpgrades()
         Extra.triggerAutoPurchases()
     end)
 
-    local function treadmillMultiplier(object)
+    function Extra.treadmillMultiplier(object)
         local current = object
 
         while current do
@@ -1506,7 +1504,7 @@ return function(Context)
         return 1
     end
 
-    local function findTreadmillPart(container)
+    function Extra.findTreadmillPart(container)
         if not container then
             return nil
         end
@@ -1557,9 +1555,9 @@ return function(Context)
         return nil
     end
 
-    local function getPlotTreadmill()
+    function Extra.getPlotTreadmill()
         local plot =
-            getOwnedPlot()
+            Extra.getOwnedPlot()
 
         if not plot then
             return nil, nil, nil, nil
@@ -1593,11 +1591,11 @@ return function(Context)
                 )
             then
                 local part =
-                    findTreadmillPart(child)
+                    Extra.findTreadmillPart(child)
 
                 if part then
                     local multiplier =
-                        treadmillMultiplier(child)
+                        Extra.treadmillMultiplier(child)
 
                     if multiplier
                         > bestMultiplier
@@ -1635,11 +1633,11 @@ return function(Context)
                     )
                 then
                     local part =
-                        findTreadmillPart(object)
+                        Extra.findTreadmillPart(object)
 
                     if part then
                         local multiplier =
-                            treadmillMultiplier(
+                            Extra.treadmillMultiplier(
                                 object
                             )
 
@@ -1663,9 +1661,9 @@ return function(Context)
             bestMultiplier
     end
 
-    local function getTreadmillStandCFrame(part)
+    function Extra.getTreadmillStandCFrame(part)
         local _, humanoid, hrp =
-            getCharacter()
+            Extra.getCharacter()
 
         local rootHalfHeight =
             hrp.Size.Y * 0.5
@@ -1685,12 +1683,12 @@ return function(Context)
             )
     end
 
-    local function teleportToTreadmill()
+    function Extra.teleportToTreadmill()
         local plot,
             model,
             part,
             multiplier =
-            getPlotTreadmill()
+            Extra.getPlotTreadmill()
 
         if not plot then
             warn(
@@ -1710,7 +1708,7 @@ return function(Context)
         end
 
         local _, humanoid, hrp =
-            getCharacter()
+            Extra.getCharacter()
 
         humanoid:Move(
             Vector3.zero,
@@ -1718,7 +1716,7 @@ return function(Context)
         )
 
         local standCF =
-            getTreadmillStandCFrame(
+            Extra.getTreadmillStandCFrame(
                 part
             )
 
@@ -1731,7 +1729,7 @@ return function(Context)
         hrp.CFrame =
             standCF
 
-        log(
+        Extra.log(
             "Auto Treadmill teleport",
             "| Plot:",
             plot.Name,
@@ -1746,7 +1744,7 @@ return function(Context)
         return true
     end
 
-    local function isOnTreadmill(part)
+    function Extra.isOnTreadmill(part)
         if not part
             or not part.Parent
         then
@@ -1754,7 +1752,7 @@ return function(Context)
         end
 
         local _, _, hrp =
-            getCharacter()
+            Extra.getCharacter()
 
         local localPosition =
             part.CFrame:
@@ -1790,24 +1788,22 @@ return function(Context)
             and verticalDistance <= 8
     end
 
-    local isCarrying
-    local isBeingChased
 
-    local startAutoFarm
-    local startAutoTreadmill
-    local setActivity
+
+
+
 
     -- Normal character movement.
     -- This intentionally does NOT raw-CFrame teleport long distances.
-    local function stopMoving()
+    function Extra.stopMoving()
         local character = LocalPlayer.Character
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
         if humanoid then humanoid:Move(Vector3.zero, false) end
     end
 
-    local function walkTo(targetPosition, stopDistance, timeout, extraCheck, speedLimit)
+    function Extra.walkTo(targetPosition, stopDistance, timeout, extraCheck, speedLimit)
         stopDistance = tonumber(stopDistance) or 3
-        local character, humanoid, hrp = getCharacter()
+        local character, humanoid, hrp = Extra.getCharacter()
         local deadline = os.clock() + (tonumber(timeout) or 30)
         local lastPosition, lastProgress = hrp.Position, os.clock()
         local arrived = false
@@ -1862,10 +1858,10 @@ return function(Context)
         return arrived
     end
 
-    local function teleportTo(targetPosition, stopDistance, extraCheck, timeout)
+    function Extra.teleportTo(targetPosition, stopDistance, extraCheck, timeout)
         stopDistance = tonumber(stopDistance) or 3
         if not autoFarmActive then return false end
-        local _, humanoid, hrp = getCharacter()
+        local _, humanoid, hrp = Extra.getCharacter()
         if not hrp.Parent or humanoid.Health <= 0 then return false end
         if type(extraCheck) == "function" and extraCheck() then return true end
 
@@ -1883,11 +1879,11 @@ return function(Context)
         return (hrp.Position - finalPosition).Magnitude <= stopDistance
     end
 
-    local function tweenTo(targetPosition, stopDistance, timeout, extraCheck)
+    function Extra.tweenTo(targetPosition, stopDistance, timeout, extraCheck)
         stopDistance = tonumber(stopDistance) or 3
         timeout = tonumber(timeout) or 30
 
-        local _, humanoid, hrp = getCharacter()
+        local _, humanoid, hrp = Extra.getCharacter()
 
         humanoid:Move(Vector3.zero, false)
 
@@ -1897,7 +1893,7 @@ return function(Context)
             return true
         end
 
-        local syncedSpeed = getCurrentMoveSpeed()
+        local syncedSpeed = Extra.getCurrentMoveSpeed()
         local travelSpeed = math.max(
             syncedSpeed * TWEEN_SPEED_MULTIPLIER,
             TWEEN_MIN_SPEED
@@ -1915,7 +1911,7 @@ return function(Context)
                 timeout
             )
 
-        log(
+        Extra.log(
             "Tween travel speed",
             "| WalkSpeed:", syncedSpeed,
             "| TravelSpeed:", travelSpeed,
@@ -1991,11 +1987,11 @@ return function(Context)
             <= stopDistance
     end
 
-    local function moveTo(targetPosition, stopDistance, timeout, extraCheck)
-        log("Movement:", movementMode)
+    function Extra.moveTo(targetPosition, stopDistance, timeout, extraCheck)
+        Extra.log("Movement:", movementMode)
 
         if movementMode == "Teleport" then
-            return teleportTo(
+            return Extra.teleportTo(
                 targetPosition,
                 stopDistance,
                 extraCheck,
@@ -2004,7 +2000,7 @@ return function(Context)
         end
 
         if movementMode == "Tween" then
-            return tweenTo(
+            return Extra.tweenTo(
                 targetPosition,
                 stopDistance,
                 timeout,
@@ -2012,7 +2008,7 @@ return function(Context)
             )
         end
 
-        return walkTo(
+        return Extra.walkTo(
             targetPosition,
             stopDistance,
             timeout,
@@ -2020,8 +2016,8 @@ return function(Context)
         )
     end
 
-    local function getApproachPosition(targetPosition, desiredDistance)
-        local _, _, hrp = getCharacter()
+    function Extra.getApproachPosition(targetPosition, desiredDistance)
+        local _, _, hrp = Extra.getCharacter()
 
         local direction = hrp.Position - targetPosition
         direction = Vector3.new(direction.X, 0, direction.Z)
@@ -2041,12 +2037,12 @@ return function(Context)
         )
     end
 
-    local function walkNear(targetPosition, desiredDistance, timeout)
-        local approachPosition = getApproachPosition(targetPosition, desiredDistance)
-        return moveTo(approachPosition, 2, timeout)
+    function Extra.walkNear(targetPosition, desiredDistance, timeout)
+        local approachPosition = Extra.getApproachPosition(targetPosition, desiredDistance)
+        return Extra.moveTo(approachPosition, 2, timeout)
     end
 
-    local function getMapSafeZonePart()
+    function Extra.getMapSafeZonePart()
         local build =
             Workspace:
             FindFirstChild(
@@ -2084,11 +2080,11 @@ return function(Context)
         return nil
     end
 
-    local function getHomeTargetPosition(
+    function Extra.getHomeTargetPosition(
         fromPosition
     )
         local safeZone =
-            getMapSafeZonePart()
+            Extra.getMapSafeZonePart()
 
         if not safeZone then
             return nil
@@ -2103,9 +2099,9 @@ return function(Context)
         )
     end
 
-    local function walkHome(isBanked)
+    function Extra.walkHome(isBanked)
         local hitbox =
-            getOwnedPlotHitbox()
+            Extra.getOwnedPlotHitbox()
 
         if not hitbox then
             warn(
@@ -2122,7 +2118,7 @@ return function(Context)
 
         local function inOwnedPlot()
             local _, _, hrp =
-                getCharacter()
+                Extra.getCharacter()
 
             return
                 SafeZoneQuery.
@@ -2135,14 +2131,14 @@ return function(Context)
         local function interrupted()
             return
                 bankedNow()
-                or not isCarrying()
+                or not Extra.isCarrying()
         end
 
         local _, _, hrp =
-            getCharacter()
+            Extra.getCharacter()
 
         local centerPosition =
-            getHomeTargetPosition(
+            Extra.getHomeTargetPosition(
                 hrp.Position
             )
 
@@ -2157,13 +2153,13 @@ return function(Context)
         -- If already inside the safe zone, stop immediately and let
         -- the normal bank event finish. Do not walk deeper into the plot.
         if inOwnedPlot() then
-            stopMoving()
+            Extra.stopMoving()
         else
             local reached = false
 
             if movementMode == "Tween" then
                 reached =
-                    tweenTo(
+                    Extra.tweenTo(
                         centerPosition,
                         2,
                         60,
@@ -2172,7 +2168,7 @@ return function(Context)
 
             elseif movementMode == "Teleport" then
                 reached =
-                    teleportTo(
+                    Extra.teleportTo(
                         centerPosition,
                         2,
                         interrupted,
@@ -2183,7 +2179,7 @@ return function(Context)
                 -- Walk in one straight direction toward the fixed safe-zone target.
                 -- No speed cap: keep the player's current/boosted WalkSpeed.
                 reached =
-                    walkTo(
+                    Extra.walkTo(
                         centerPosition,
                         2,
                         60,
@@ -2192,7 +2188,7 @@ return function(Context)
             end
 
             if not reached
-                and isCarrying()
+                and Extra.isCarrying()
                 and not bankedNow()
                 and not inOwnedPlot()
             then
@@ -2210,15 +2206,15 @@ return function(Context)
             and os.clock() < deadline
         do
             if bankedNow() then
-                stopMoving()
+                Extra.stopMoving()
                 return "banked"
             end
 
             local owned =
                 inOwnedPlot()
 
-            if not isCarrying() then
-                stopMoving()
+            if not Extra.isCarrying() then
+                Extra.stopMoving()
 
                 if not owned then
                     return "dropped"
@@ -2241,15 +2237,15 @@ return function(Context)
                 if owned then
                     -- Already in the safe zone. Do not keep steering toward
                     -- the plot/center; stand still and wait for bank.
-                    stopMoving()
+                    Extra.stopMoving()
                 else
                     -- If knocked back out, simply head straight to the
                     -- safe-zone center again.
                     local _, _, currentHRP =
-                        getCharacter()
+                        Extra.getCharacter()
 
                     local retryCenter =
-                        getHomeTargetPosition(
+                        Extra.getHomeTargetPosition(
                             currentHRP.Position
                         )
 
@@ -2257,7 +2253,7 @@ return function(Context)
                         return "failed"
                     end
 
-                    walkTo(
+                    Extra.walkTo(
                         retryCenter,
                         2,
                         math.min(
@@ -2278,7 +2274,7 @@ return function(Context)
             )
         end
 
-        stopMoving()
+        Extra.stopMoving()
 
         return
             bankedNow()
@@ -2287,8 +2283,8 @@ return function(Context)
     end
 
     -- Pickaxe
-    local function ensurePickaxe()
-        local character, humanoid = getCharacter()
+    function Extra.ensurePickaxe()
+        local character, humanoid = Extra.getCharacter()
 
         local equipped = character:FindFirstChild("Pickaxe")
 
@@ -2310,7 +2306,7 @@ return function(Context)
 
         while autoFarmActive and os.clock() < deadline do
             if pickaxe.Parent == character then
-                log(
+                Extra.log(
                     "Pickaxe equipped",
                     "| Tier:",
                     LocalPlayer:GetAttribute("PickaxeTier") or 1
@@ -2324,8 +2320,8 @@ return function(Context)
         return nil
     end
 
-    local function usePickaxe()
-        local pickaxe = ensurePickaxe()
+    function Extra.usePickaxe()
+        local pickaxe = Extra.ensurePickaxe()
 
         if not pickaxe then
             return false
@@ -2341,7 +2337,7 @@ return function(Context)
     end
 
     -- Egg helpers
-    local function resolveEgg(container)
+    function Extra.resolveEgg(container)
         if container:IsA("BasePart")
             and typeof(container:GetAttribute("Health")) == "number"
         then
@@ -2369,7 +2365,7 @@ return function(Context)
         return nil
     end
 
-    local function getEggName(egg)
+    function Extra.getEggName(egg)
         local eggType = egg:GetAttribute("EggType")
 
         if typeof(eggType) == "string" and eggType ~= "" then
@@ -2383,7 +2379,7 @@ return function(Context)
         return egg.Name
     end
 
-    local function validEgg(egg)
+    function Extra.validEgg(egg)
         if not egg or not egg.Parent then
             return false
         end
@@ -2396,13 +2392,13 @@ return function(Context)
             and egg:GetAttribute("Broken") ~= true
     end
 
-    local function buildEggList()
+    function Extra.buildEggList()
         local result, found = {}, {}
         local function add(zoneName, raw)
             if type(raw) ~= "string" or found[raw] then return end
             found[raw] = true
             local label = "Zone " .. (zoneName:match("%d+") or zoneName)
-                .. " • " .. displayName(raw)
+                .. " • " .. Extra.displayName(raw)
             eggLabels[label] = raw
             table.insert(result, label)
         end
@@ -2413,25 +2409,25 @@ return function(Context)
             local eggs = zone and zone:FindFirstChild("Eggs")
             if eggs then
                 for _, container in ipairs(eggs:GetChildren()) do
-                    local egg = resolveEgg(container)
-                    if egg then add(zoneName, getEggName(egg)) end
+                    local egg = Extra.resolveEgg(container)
+                    if egg then add(zoneName, Extra.getEggName(egg)) end
                 end
             end
         end
         return result
     end
 
-    local MASTER_EGGS = buildEggList()
+    local MASTER_EGGS = Extra.buildEggList()
 
     -- Titanic event state is replicated directly on Workspace.
-    local function normalizeEggKey(value)
+    function Extra.normalizeEggKey(value)
         return tostring(value or "")
             :gsub("^%d+:%s*", "")
             :lower()
             :gsub("[^%w]", "")
     end
 
-    local function getTitanicState()
+    function Extra.getTitanicState()
         local nextAt =
             tonumber(
                 Workspace:GetAttribute(
@@ -2490,18 +2486,18 @@ return function(Context)
         }
     end
 
-    local function isTitanicPriorityActive()
+    function Extra.isTitanicPriorityActive()
         if not prioritizeTitanicEgg then
             return false
         end
 
         local state =
-            getTitanicState()
+            Extra.getTitanicState()
 
         return state.Active == true
     end
 
-    local function pendingIsFromTitanic(
+    function Extra.pendingIsFromTitanic(
         pending,
         state
     )
@@ -2513,15 +2509,15 @@ return function(Context)
         end
 
         return
-            normalizeEggKey(
+            Extra.normalizeEggKey(
                 pending.EggName
             )
-            == normalizeEggKey(
+            == Extra.normalizeEggKey(
                 state.EggName
             )
     end
 
-    local function objectLooksTitanic(
+    function Extra.objectLooksTitanic(
         object
     )
         local current = object
@@ -2532,7 +2528,7 @@ return function(Context)
             end
 
             local normalized =
-                normalizeEggKey(
+                Extra.normalizeEggKey(
                     current.Name
                 )
 
@@ -2553,7 +2549,7 @@ return function(Context)
         return false
     end
 
-    local function isTitanicEggObject(
+    function Extra.isTitanicEggObject(
         egg,
         state
     )
@@ -2567,9 +2563,9 @@ return function(Context)
                 == "string"
             and state.EggName ~= ""
         then
-            if normalizeEggKey(
-                getEggName(egg)
-            ) == normalizeEggKey(
+            if Extra.normalizeEggKey(
+                Extra.getEggName(egg)
+            ) == Extra.normalizeEggKey(
                 state.EggName
             )
             then
@@ -2579,15 +2575,15 @@ return function(Context)
 
         -- Fallback for game updates where Titanic workspace attributes are
         -- late/missing but the event egg is already physically spawned.
-        if objectLooksTitanic(
+        if Extra.objectLooksTitanic(
             egg
         ) then
             return true
         end
 
         local eggName =
-            normalizeEggKey(
-                getEggName(egg)
+            Extra.normalizeEggKey(
+                Extra.getEggName(egg)
             )
 
         return
@@ -2605,7 +2601,7 @@ return function(Context)
     local cachedTitanicDistance = nil
     local cachedTitanicState = nil
 
-    local function findTitanicEgg(
+    function Extra.findTitanicEgg(
         excludedEgg
     )
         if not prioritizeTitanicEgg then
@@ -2624,7 +2620,7 @@ return function(Context)
             and cachedTitanicEgg.Parent
             and cachedTitanicEgg
                 ~= excludedEgg
-            and validEgg(
+            and Extra.validEgg(
                 cachedTitanicEgg
             )
         then
@@ -2639,10 +2635,10 @@ return function(Context)
             nowClock
 
         local state =
-            getTitanicState()
+            Extra.getTitanicState()
 
         local _, _, hrp =
-            getCharacter()
+            Extra.getCharacter()
 
         local best
         local bestZone
@@ -2686,10 +2682,10 @@ return function(Context)
         )
             if not egg
                 or egg == excludedEgg
-                or not validEgg(
+                or not Extra.validEgg(
                     egg
                 )
-                or not isTitanicEggObject(
+                or not Extra.isTitanicEggObject(
                     egg,
                     state
                 )
@@ -2744,7 +2740,7 @@ return function(Context)
                     )
                 do
                     consider(
-                        resolveEgg(
+                        Extra.resolveEgg(
                             container
                         )
                     )
@@ -2774,7 +2770,7 @@ return function(Context)
                         )
                     do
                         consider(
-                            resolveEgg(
+                            Extra.resolveEgg(
                                 container
                             )
                         )
@@ -2800,8 +2796,8 @@ return function(Context)
         return nil
     end
 
-    local function getEggPriority(egg, zoneName)
-        local eggName = getEggName(egg)
+    function Extra.getEggPriority(egg, zoneName)
+        local eggName = Extra.getEggName(egg)
         local zoneInfo = ZonesConfig.Get(zoneName)
         local rarity = egg:GetAttribute("Rarity")
         local rank = EggRarity.IndexOf(rarity)
@@ -2813,18 +2809,18 @@ return function(Context)
         return rank, tonumber(tier) or 0
     end
 
-    local function findBestEgg(excludedEgg)
+    function Extra.findBestEgg(excludedEgg)
         local titanicEgg,
             titanicZone,
             titanicDistance =
-            findTitanicEgg(
+            Extra.findTitanicEgg(
                 excludedEgg
             )
 
         if titanicEgg then
-            log(
+            Extra.log(
                 "Titanic priority target:",
-                getEggName(titanicEgg),
+                Extra.getEggName(titanicEgg),
                 "| Zone:",
                 titanicZone,
                 "| Distance:",
@@ -2840,7 +2836,7 @@ return function(Context)
                 titanicDistance
         end
 
-        local _, _, hrp = getCharacter()
+        local _, _, hrp = Extra.getCharacter()
 
         local bestEgg
         local bestZone
@@ -2848,21 +2844,21 @@ return function(Context)
         local bestRarity, bestTier = -1, -1
 
         for _, zoneName in ipairs(MASTER_ZONES) do
-            if isSelected(selectedZones, zoneName) then
+            if Extra.isSelected(selectedZones, zoneName) then
                 local zone = ZoneBuilds:FindFirstChild(zoneName)
                 local eggs = zone and zone:FindFirstChild("Eggs")
 
                 if eggs then
                     for _, container in ipairs(eggs:GetChildren()) do
-                        local egg = resolveEgg(container)
+                        local egg = Extra.resolveEgg(container)
 
-                        if egg ~= excludedEgg and validEgg(egg) then
-                            local eggName = getEggName(egg)
+                        if egg ~= excludedEgg and Extra.validEgg(egg) then
+                            local eggName = Extra.getEggName(egg)
 
-                            if isSelected(selectedEggs, eggName) then
+                            if Extra.isSelected(selectedEggs, eggName) then
                                 local distance = (hrp.Position - egg.Position).Magnitude
 
-                                local rarity, tier = getEggPriority(egg, zoneName)
+                                local rarity, tier = Extra.getEggPriority(egg, zoneName)
                                 if rarity > bestRarity
                                     or (rarity == bestRarity and tier > bestTier)
                                     or (rarity == bestRarity and tier == bestTier
@@ -2883,7 +2879,7 @@ return function(Context)
     end
 
     -- Result pet
-    local function snapshotPickups()
+    function Extra.snapshotPickups()
         local snapshot = {}
 
         for _, animal in ipairs(Pickups:GetChildren()) do
@@ -2892,6 +2888,16 @@ return function(Context)
 
         return snapshot
     end
+
+    local PET_INCOME_ATTRIBUTE_KEYS = {
+        "IncomePerSecond",
+        "CashPerSecond",
+        "Income",
+        "CashPerSec",
+        "CPS",
+        "EarningsPerSecond",
+        "MoneyPerSecond"
+    }
 
     function Extra.parseCompactNumber(value)
         local raw =
@@ -2963,7 +2969,7 @@ return function(Context)
 
         for _, key
             in ipairs(
-                Extra.PET_INCOME_ATTRIBUTE_KEYS
+                PET_INCOME_ATTRIBUTE_KEYS
             )
         do
             local parsed =
@@ -2989,7 +2995,7 @@ return function(Context)
         -- First prefer a replicated value on the actual hatch result.
         for _, key
             in ipairs(
-                Extra.PET_INCOME_ATTRIBUTE_KEYS
+                PET_INCOME_ATTRIBUTE_KEYS
             )
         do
             local value =
@@ -3173,7 +3179,7 @@ return function(Context)
             )
             or animal.Name
 
-        if not isSelected(
+        if not Extra.isSelected(
             selectedPets,
             rawName
         )
@@ -3216,7 +3222,7 @@ return function(Context)
     -- Every broken egg is tracked until its hatch result resolves or times out.
     local pendingHatches = {}
 
-    local function makePendingHatch(
+    function Extra.makePendingHatch(
         before,
         zoneName,
         eggPosition,
@@ -3235,11 +3241,11 @@ return function(Context)
         }
     end
 
-    local function scanPendingHatches()
+    function Extra.scanPendingHatches()
         local index = 1
 
         local titanicState =
-            getTitanicState()
+            Extra.getTitanicState()
 
         local suppressNormalAccepted =
             prioritizeTitanicEgg
@@ -3265,7 +3271,7 @@ return function(Context)
                     ) == true
                 then
                     local animalZone =
-                        normalizeZone(
+                        Extra.normalizeZone(
                             animal:GetAttribute(
                                 "ZoneId"
                             )
@@ -3324,7 +3330,7 @@ return function(Context)
                 -- Give replicated income metadata a brief moment to arrive
                 -- only when the user actually enabled the minimum-income filter.
                 if Extra.minimumPetIncome > 0
-                    and isSelected(
+                    and Extra.isSelected(
                         selectedPets,
                         rawName
                     )
@@ -3353,7 +3359,7 @@ return function(Context)
                     resolvedIncome
                 ) then
                         if suppressNormalAccepted
-                            and not pendingIsFromTitanic(
+                            and not Extra.pendingIsFromTitanic(
                                 pending,
                                 titanicState
                             )
@@ -3366,14 +3372,14 @@ return function(Context)
                                 pending
                             )
 
-                            log(
+                            Extra.log(
                                 "Pending hatch deferred for Titanic:",
                                 rawName,
                                 "| From:",
                                 pending.EggName
                             )
                         else
-                            log(
+                            Extra.log(
                                 "Pending hatch accepted:",
                                 rawName,
                                 "| From:",
@@ -3385,7 +3391,7 @@ return function(Context)
                             return best
                         end
                     else
-                        log(
+                        Extra.log(
                             "Pending hatch rejected:",
                             rawName,
                             "| From:",
@@ -3397,7 +3403,7 @@ return function(Context)
             elseif os.clock()
                     >= pending.Deadline
             then
-                log(
+                Extra.log(
                     "Pending hatch timed out:",
                     pending.EggName
                 )
@@ -3415,7 +3421,7 @@ return function(Context)
         return nil
     end
 
-    local function waitHitDelayWatchingPending(
+    function Extra.waitHitDelayWatchingPending(
         duration
     )
         local deadline =
@@ -3427,7 +3433,7 @@ return function(Context)
             and os.clock() < deadline
         do
             local accepted =
-                scanPendingHatches()
+                Extra.scanPendingHatches()
 
             if accepted then
                 return accepted
@@ -3439,16 +3445,16 @@ return function(Context)
         return nil
     end
 
-    local function attackEggWhileWatchingPending(
+    function Extra.attackEggWhileWatchingPending(
         egg,
         zoneName
     )
-        if not validEgg(egg) then
+        if not Extra.validEgg(egg) then
             return nil, false
         end
 
         local before =
-            snapshotPickups()
+            Extra.snapshotPickups()
 
         local eggPosition =
             egg.Position
@@ -3459,7 +3465,7 @@ return function(Context)
             )
 
         local eggName =
-            getEggName(egg)
+            Extra.getEggName(egg)
 
         local acceptedDuringMove
         local titanicSwitchRequested = false
@@ -3470,7 +3476,7 @@ return function(Context)
             end
 
             local titanic =
-                findTitanicEgg(
+                Extra.findTitanicEgg(
                     egg
                 )
 
@@ -3486,19 +3492,19 @@ return function(Context)
 
         local function interruptForPending()
             acceptedDuringMove =
-                scanPendingHatches()
+                Extra.scanPendingHatches()
 
             return acceptedDuringMove ~= nil
                 or checkTitanicSwitch()
-                or isCarrying()
-                or isBeingChased()
+                or Extra.isCarrying()
+                or Extra.isBeingChased()
                 or not autoFarmActive
                 or currentActivity
                     ~= "Farm"
         end
 
         local _, _, hrp =
-            getCharacter()
+            Extra.getCharacter()
 
         local distance =
             (
@@ -3506,7 +3512,7 @@ return function(Context)
                 - eggPosition
             ).Magnitude
 
-        log(
+        Extra.log(
             "Target:",
             eggName,
             "| HP:",
@@ -3523,8 +3529,8 @@ return function(Context)
         )
 
         if distance > HIT_DISTANCE then
-            moveTo(
-                getApproachPosition(
+            Extra.moveTo(
+                Extra.getApproachPosition(
                     eggPosition,
                     EGG_APPROACH_DISTANCE
                 ),
@@ -3540,7 +3546,7 @@ return function(Context)
             end
 
             if titanicSwitchRequested then
-                log(
+                Extra.log(
                     "Titanic spawned while travelling; switching target."
                 )
 
@@ -3556,7 +3562,7 @@ return function(Context)
         end
 
         local acceptedBeforeEquip =
-            scanPendingHatches()
+            Extra.scanPendingHatches()
 
         if acceptedBeforeEquip then
             return
@@ -3564,38 +3570,38 @@ return function(Context)
                 false
         end
 
-        if not ensurePickaxe() then
+        if not Extra.ensurePickaxe() then
             return nil, false
         end
 
-        if not usePickaxe() then
+        if not Extra.usePickaxe() then
             return nil, false
         end
 
         while autoFarmActive
             and currentActivity == "Farm"
-            and validEgg(egg)
+            and Extra.validEgg(egg)
         do
             local titanicNow =
-                findTitanicEgg(
+                Extra.findTitanicEgg(
                     egg
                 )
 
             if titanicNow then
-                log(
+                Extra.log(
                     "Titanic spawned; interrupting normal egg:",
                     eggName
                 )
 
-                stopMoving()
+                Extra.stopMoving()
                 return nil, false
             end
 
             local accepted =
-                scanPendingHatches()
+                Extra.scanPendingHatches()
 
             if accepted then
-                stopMoving()
+                Extra.stopMoving()
 
                 return
                     accepted,
@@ -3603,7 +3609,7 @@ return function(Context)
             end
 
             local _, _, currentHRP =
-                getCharacter()
+                Extra.getCharacter()
 
             local currentDistance =
                 (
@@ -3616,8 +3622,8 @@ return function(Context)
             then
                 acceptedDuringMove = nil
 
-                moveTo(
-                    getApproachPosition(
+                Extra.moveTo(
+                    Extra.getApproachPosition(
                         egg.Position,
                         EGG_APPROACH_DISTANCE
                     ),
@@ -3633,14 +3639,14 @@ return function(Context)
                 end
 
                 if titanicSwitchRequested then
-                    log(
+                    Extra.log(
                         "Titanic spawned during re-approach; switching target."
                     )
 
                     return nil, false
                 end
 
-                if not validEgg(egg) then
+                if not Extra.validEgg(egg) then
                     break
                 end
             end
@@ -3656,7 +3662,7 @@ return function(Context)
                 tier
             )
 
-            log(
+            Extra.log(
                 "Hit",
                 "| Egg:",
                 eggName,
@@ -3671,12 +3677,12 @@ return function(Context)
             )
 
             local acceptedDuringDelay =
-                waitHitDelayWatchingPending(
+                Extra.waitHitDelayWatchingPending(
                     HIT_DELAY
                 )
 
             if acceptedDuringDelay then
-                stopMoving()
+                Extra.stopMoving()
 
                 return
                     acceptedDuringDelay,
@@ -3690,11 +3696,11 @@ return function(Context)
             return nil, false
         end
 
-        if validEgg(egg) then
+        if Extra.validEgg(egg) then
             return nil, false
         end
 
-        log(
+        Extra.log(
             "Egg done:",
             eggName,
             "| Queue hatch result",
@@ -3703,19 +3709,19 @@ return function(Context)
         )
 
         local titanicStateAtBreak =
-            getTitanicState()
+            Extra.getTitanicState()
 
         if titanicStateAtBreak.Active
             and titanicStateAtBreak.EggName
-            and normalizeEggKey(eggName)
-                == normalizeEggKey(
+            and Extra.normalizeEggKey(eggName)
+                == Extra.normalizeEggKey(
                     titanicStateAtBreak.EggName
                 )
         then
             titanicOverrideSpawnId =
                 titanicStateAtBreak.SpawnId
 
-            log(
+            Extra.log(
                 "Titanic egg broken:",
                 eggName,
                 "| SpawnId:",
@@ -3725,7 +3731,7 @@ return function(Context)
 
         table.insert(
             pendingHatches,
-            makePendingHatch(
+            Extra.makePendingHatch(
                 before,
                 zoneName,
                 eggPosition,
@@ -3741,7 +3747,7 @@ return function(Context)
         return nil, true
     end
 
-    local function breakEgg(
+    function Extra.breakEgg(
         initialEgg,
         initialZoneName
     )
@@ -3759,11 +3765,11 @@ return function(Context)
             -- normal egg filters, normal rarity priority, and timers.
             local titanicEgg,
                 titanicZone =
-                findTitanicEgg()
+                Extra.findTitanicEgg()
 
             if titanicEgg then
                 if targetEgg ~= titanicEgg then
-                    stopMoving()
+                    Extra.stopMoving()
 
                     targetEgg =
                         titanicEgg
@@ -3771,9 +3777,9 @@ return function(Context)
                     targetZone =
                         titanicZone
 
-                    log(
+                    Extra.log(
                         "ABSOLUTE TITANIC PRIORITY ->",
-                        getEggName(
+                        Extra.getEggName(
                             titanicEgg
                         ),
                         "| Zone:",
@@ -3782,20 +3788,20 @@ return function(Context)
                 end
             else
                 local accepted =
-                    scanPendingHatches()
+                    Extra.scanPendingHatches()
 
                 if accepted then
-                    stopMoving()
+                    Extra.stopMoving()
                     return accepted
                 end
             end
 
             if not targetEgg
-                or not validEgg(targetEgg)
+                or not Extra.validEgg(targetEgg)
             then
                 targetEgg,
                 targetZone =
-                    findBestEgg()
+                    Extra.findBestEgg()
             end
 
             if not targetEgg then
@@ -3811,7 +3817,7 @@ return function(Context)
 
             local acceptedWhileBreaking,
                 brokeTarget =
-                attackEggWhileWatchingPending(
+                Extra.attackEggWhileWatchingPending(
                     targetEgg,
                     targetZone
                 )
@@ -3835,7 +3841,7 @@ return function(Context)
     end
 
     -- Prompt helpers
-    local function getPromptPosition(prompt)
+    function Extra.getPromptPosition(prompt)
         if not prompt or not prompt.Parent then
             return nil
         end
@@ -3854,7 +3860,7 @@ return function(Context)
         return part and part.Position or nil
     end
 
-    local function modelDistanceToPoint(model, point)
+    function Extra.modelDistanceToPoint(model, point)
         local ok, cf, size = pcall(function()
             return model:GetBoundingBox()
         end)
@@ -3873,19 +3879,19 @@ return function(Context)
         return Vector3.new(dx, dy, dz).Magnitude
     end
 
-    local function normalizeText(text)
+    function Extra.normalizeText(text)
         return tostring(text or "")
             :gsub("<.->", "")
             :lower()
             :gsub("[^%w]", "")
     end
 
-    local function promptKg(prompt)
+    function Extra.promptKg(prompt)
         local text = tostring(prompt.ObjectText or ""):gsub("<.->", "")
         return tonumber(text:match("%[([%d%.]+)%s*[Kk][Gg]%]"))
     end
 
-    local function promptMatchesAnimal(prompt, animal)
+    function Extra.promptMatchesAnimal(prompt, animal)
         if not prompt
             or not prompt.Parent
             or not animal
@@ -3904,23 +3910,23 @@ return function(Context)
             return true
         end
 
-        local position = getPromptPosition(prompt)
+        local position = Extra.getPromptPosition(prompt)
 
         if not position then
             return false
         end
 
-        local distance = modelDistanceToPoint(animal, position)
+        local distance = Extra.modelDistanceToPoint(animal, position)
 
         if distance > 6 then return false end
         local name = animal:GetAttribute("AnimalName") or animal.Name
-        local objectText = normalizeText(prompt.ObjectText)
-        local targetText = normalizeText(displayName(name))
-        local rawText = normalizeText(name)
+        local objectText = Extra.normalizeText(prompt.ObjectText)
+        local targetText = Extra.normalizeText(Extra.displayName(name))
+        local rawText = Extra.normalizeText(name)
         local nameMatches = objectText:find(targetText, 1, true)
             or objectText:find(rawText, 1, true)
         local weight = tonumber(animal:GetAttribute("WeightKg"))
-        local shownWeight = promptKg(prompt)
+        local shownWeight = Extra.promptKg(prompt)
         if nameMatches then
             return not weight or not shownWeight or math.abs(weight - shownWeight) <= 1.1
         end
@@ -3928,7 +3934,7 @@ return function(Context)
         return objectText == "" and distance <= 1.5
     end
 
-    local function findCurrentPrompt(animal)
+    function Extra.findCurrentPrompt(animal)
         local candidates = {}
         for _, object in ipairs(animal:GetDescendants()) do
             if object:IsA("ProximityPrompt") then candidates[object] = true end
@@ -3944,11 +3950,11 @@ return function(Context)
                 end
             end
         end
-        local _, _, hrp = getCharacter()
+        local _, _, hrp = Extra.getCharacter()
         local best, bestDistance = nil, math.huge
         for prompt in pairs(candidates) do
-            if prompt.Enabled and promptMatchesAnimal(prompt, animal) then
-                local position = getPromptPosition(prompt)
+            if prompt.Enabled and Extra.promptMatchesAnimal(prompt, animal) then
+                local position = Extra.getPromptPosition(prompt)
                 local distance = position and (position - hrp.Position).Magnitude or math.huge
                 if distance < bestDistance then best, bestDistance = prompt, distance end
             end
@@ -3956,17 +3962,17 @@ return function(Context)
         return best
     end
 
-    local function waitStealPrompt(animal)
+    function Extra.waitStealPrompt(animal)
         local foundPrompt
 
         local shownConnection =
             ProximityPromptService.PromptShown:
             Connect(function(prompt)
                 if not foundPrompt
-                    and promptMatchesAnimal(prompt, animal)
+                    and Extra.promptMatchesAnimal(prompt, animal)
                 then
                     foundPrompt = prompt
-                    log("Prompt shown:", prompt:GetFullName())
+                    Extra.log("Prompt shown:", prompt:GetFullName())
                 end
             end)
 
@@ -3977,7 +3983,7 @@ return function(Context)
             and os.clock() < deadline
             and not foundPrompt
         do
-            foundPrompt = findCurrentPrompt(animal)
+            foundPrompt = Extra.findCurrentPrompt(animal)
 
             if foundPrompt then
                 break
@@ -3992,7 +3998,7 @@ return function(Context)
     end
 
     -- Carry state from the game's own ChaseState module.
-    isCarrying = function()
+    Extra.isCarrying = function()
         local ok, carrying = pcall(function()
             return ChaseState.IsCarrying(LocalPlayer)
         end)
@@ -4000,17 +4006,17 @@ return function(Context)
         return ok and carrying == true
     end
 
-    isBeingChased = function()
+    Extra.isBeingChased = function()
         -- IsActive also includes Carrying; only this attribute identifies chase.
         local attribute = ChaseState.ChasedAttribute or "BeingChased"
         return LocalPlayer:GetAttribute(attribute) ~= nil
     end
 
-    local function waitUntilCarrying(timeout)
+    function Extra.waitUntilCarrying(timeout)
         local deadline = os.clock() + (timeout or CARRY_TIMEOUT)
 
         while autoFarmActive and os.clock() < deadline do
-            if isCarrying() then
+            if Extra.isCarrying() then
                 return true
             end
 
@@ -4020,7 +4026,7 @@ return function(Context)
         return false
     end
 
-    local function getAnimalSignature(animal)
+    function Extra.getAnimalSignature(animal)
         return {
             HatchId = animal:GetAttribute("HatchId"),
             AnimalName =
@@ -4031,13 +4037,13 @@ return function(Context)
                     animal:GetAttribute("WeightKg")
                 ),
             ZoneId =
-                normalizeZone(
+                Extra.normalizeZone(
                     animal:GetAttribute("ZoneId")
                 )
         }
     end
 
-    local function matchesAnimalSignature(
+    function Extra.matchesAnimalSignature(
         animal,
         signature,
         allowMissingHatchId
@@ -4084,7 +4090,7 @@ return function(Context)
         end
 
         local zone =
-            normalizeZone(
+            Extra.normalizeZone(
                 animal:GetAttribute(
                     "ZoneId"
                 )
@@ -4117,7 +4123,7 @@ return function(Context)
         return true
     end
 
-    local function waitForDroppedAnimal(
+    function Extra.waitForDroppedAnimal(
         signature,
         expectedPosition
     )
@@ -4135,7 +4141,7 @@ return function(Context)
             and os.clock() < deadline
         do
             local _, _, hrp =
-                getCharacter()
+                Extra.getCharacter()
 
             local origin =
                 expectedPosition
@@ -4150,7 +4156,7 @@ return function(Context)
                     Pickups:GetChildren()
                 )
             do
-                if matchesAnimalSignature(
+                if Extra.matchesAnimalSignature(
                     candidate,
                     signature,
                     true
@@ -4208,7 +4214,7 @@ return function(Context)
             end
 
             if best then
-                log(
+                Extra.log(
                     "Dropped pet found:",
                     signature.AnimalName,
                     "| HatchId:",
@@ -4228,26 +4234,26 @@ return function(Context)
         return nil
     end
 
-    local function pickUpAnimal(animal, animalName)
+    function Extra.pickUpAnimal(animal, animalName)
         if not animal or not animal.Parent then return false end
-        local signature = getAnimalSignature(animal)
+        local signature = Extra.getAnimalSignature(animal)
         local deadline = os.clock() + 35
         while autoFarmActive and os.clock() < deadline do
-            if isCarrying() then return true end
+            if Extra.isCarrying() then return true end
             if not animal:IsDescendantOf(Pickups) then
                 local replacement
                 local replacementDistance =
                     math.huge
 
                 local _, _, replacementHRP =
-                    getCharacter()
+                    Extra.getCharacter()
 
                 for _, candidate
                     in ipairs(
                         Pickups:GetChildren()
                     )
                 do
-                    if matchesAnimalSignature(
+                    if Extra.matchesAnimalSignature(
                         candidate,
                         signature,
                         true
@@ -4274,7 +4280,7 @@ return function(Context)
                     return false
                 end
 
-                log(
+                Extra.log(
                     "Pickup instance replaced:",
                     animalName,
                     "| Distance:",
@@ -4287,44 +4293,44 @@ return function(Context)
                 animal = replacement
             end
             local targetPosition = animal:GetPivot().Position
-            local prompt = findCurrentPrompt(animal)
-            local promptPosition = prompt and getPromptPosition(prompt)
-            local _, _, hrp = getCharacter()
+            local prompt = Extra.findCurrentPrompt(animal)
+            local promptPosition = prompt and Extra.getPromptPosition(prompt)
+            local _, _, hrp = Extra.getCharacter()
             local range = prompt and prompt.MaxActivationDistance or PET_APPROACH_DISTANCE
             local distance = promptPosition and (hrp.Position - promptPosition).Magnitude
-                or modelDistanceToPoint(animal, hrp.Position)
+                or Extra.modelDistanceToPoint(animal, hrp.Position)
             if distance > math.max(1, range - 0.5) then
                 -- Short approaches refresh position when the ragdoll rolls or slides.
-                local approach = getApproachPosition(promptPosition or targetPosition, 2)
-                moveTo(approach, 1, math.min(2, deadline - os.clock()), function()
-                    return isCarrying() or not animal:IsDescendantOf(Pickups)
+                local approach = Extra.getApproachPosition(promptPosition or targetPosition, 2)
+                Extra.moveTo(approach, 1, math.min(2, deadline - os.clock()), function()
+                    return Extra.isCarrying() or not animal:IsDescendantOf(Pickups)
                         or (animal:GetPivot().Position - targetPosition).Magnitude > 2
                 end)
             elseif prompt and prompt.Parent and prompt.Enabled
-                and promptMatchesAnimal(prompt, animal) then
+                and Extra.promptMatchesAnimal(prompt, animal) then
                 if type(fireproximityprompt) ~= "function" then
                     warn("[CHLISE HUB] Prompt activation is unavailable.")
                     return false
                 end
                 local ok, err = pcall(fireproximityprompt, prompt)
-                if not ok then log("Pickup retry:", err) end
-                if waitUntilCarrying(math.min(0.6, math.max(0, deadline - os.clock()))) then
+                if not ok then Extra.log("Pickup retry:", err) end
+                if Extra.waitUntilCarrying(math.min(0.6, math.max(0, deadline - os.clock()))) then
                     return true
                 end
             end
             task.wait(0.1)
         end
-        log("Pickup timed out:", animalName)
+        Extra.log("Pickup timed out:", animalName)
         return false
     end
 
-    local function stealAndBank(animal)
+    function Extra.stealAndBank(animal)
         if not animal or not animal.Parent then
             return false
         end
 
         local signature =
-            getAnimalSignature(animal)
+            Extra.getAnimalSignature(animal)
 
         local animalName =
             signature.AnimalName
@@ -4348,7 +4354,7 @@ return function(Context)
             animal,
             income
         ) then
-            log(
+            Extra.log(
                 "Discard hatch result:",
                 animalName,
                 "| Filter mismatch",
@@ -4358,7 +4364,7 @@ return function(Context)
             return false
         end
 
-        log(
+        Extra.log(
             "Pet accepted:",
             animalName,
             "| Income/s:",
@@ -4382,7 +4388,7 @@ return function(Context)
                     then
                         banked = true
 
-                        log(
+                        Extra.log(
                             "Banked:",
                             info.Name,
                             "| Count:",
@@ -4399,15 +4405,15 @@ return function(Context)
         end
 
         local recoveryOK, recoveryError = pcall(function()
-            if not pickUpAnimal(animal, animalName) then return false end
+            if not Extra.pickUpAnimal(animal, animalName) then return false end
         -- If the guardian knocks the pet out of our hands,
         -- locate the same HatchId and pick it up again.
         while autoFarmActive
             and not banked
         do
-            if not isCarrying() then
-                local _, _, currentHRP = getCharacter()
-                if isBankablePosition(currentHRP.Position) then
+            if not Extra.isCarrying() then
+                local _, _, currentHRP = Extra.getCharacter()
+                if Extra.isBankablePosition(currentHRP.Position) then
                     local graceDeadline = os.clock() + BANK_GRACE_SECONDS
                     while autoFarmActive and not banked and os.clock() < graceDeadline do
                         task.wait(0.03)
@@ -4418,7 +4424,7 @@ return function(Context)
                     currentHRP.Position
 
                 local dropped =
-                    waitForDroppedAnimal(
+                    Extra.waitForDroppedAnimal(
                         signature,
                         dropPosition
                     )
@@ -4433,16 +4439,16 @@ return function(Context)
                     return false
                 end
 
-                log(
+                Extra.log(
                     "Retry pickup:",
                     animalName
                 )
 
-                if not pickUpAnimal(
+                if not Extra.pickUpAnimal(
                     dropped,
                     animalName
                 ) then
-                    log(
+                    Extra.log(
                         "Dropped pet pickup failed, retrying:",
                         animalName
                     )
@@ -4451,14 +4457,14 @@ return function(Context)
                     continue
                 end
 
-                log(
+                Extra.log(
                     "Dropped pet recovered, returning home:",
                     animalName
                 )
             end
 
             local homeState =
-                walkHome(
+                Extra.walkHome(
                     bankedNow
                 )
 
@@ -4467,7 +4473,7 @@ return function(Context)
             end
 
             if homeState == "dropped" then
-                log(
+                Extra.log(
                     "Pet dropped on return, recovering:",
                     animalName
                 )
@@ -4485,17 +4491,17 @@ return function(Context)
 
                 while autoFarmActive
                     and not banked
-                    and isCarrying()
-                    and not isBeingChased()
+                    and Extra.isCarrying()
+                    and not Extra.isBeingChased()
                     and os.clock() < deadline
                 do
                     task.wait(0.03)
                 end
 
-                if not isCarrying()
+                if not Extra.isCarrying()
                     and not banked
                 then
-                    log(
+                    Extra.log(
                         "Pet dropped inside/near safe zone, recovering:",
                         animalName
                     )
@@ -4518,11 +4524,11 @@ return function(Context)
         if not recoveryOK then error(recoveryError, 0) end
 
         if banked then
-            stopMoving()
-            while autoFarmActive and isBeingChased() do
+            Extra.stopMoving()
+            while autoFarmActive and Extra.isBeingChased() do
                 task.wait(HOME_RETRY_WAIT)
             end
-            log(
+            Extra.log(
                 "Cycle complete:",
                 animalName
             )
@@ -4553,7 +4559,7 @@ return function(Context)
             lastTreadmillSession =
                 os.clock()
 
-            log(
+            Extra.log(
                 "Treadmill session detected",
                 "| Speed:",
                 speed,
@@ -4564,7 +4570,7 @@ return function(Context)
     end
 
     -- Farm loop
-    startAutoFarm = function()
+    Extra.startAutoFarm = function()
         if farmLoopRunning then
             task.spawn(function()
                 local deadline =
@@ -4580,7 +4586,7 @@ return function(Context)
                     and currentActivity == "Farm"
                     and not farmLoopRunning
                 then
-                    startAutoFarm()
+                    Extra.startAutoFarm()
                 end
             end)
 
@@ -4595,42 +4601,42 @@ return function(Context)
                 and not Window.Destroyed
             do
                 local ok, err = pcall(function()
-                    if isBeingChased() or isCarrying() then
-                        stopMoving()
+                    if Extra.isBeingChased() or Extra.isCarrying() then
+                        Extra.stopMoving()
                         task.wait(HOME_RETRY_WAIT)
                         return
                     end
-                    local egg, zoneName, distance = findBestEgg()
+                    local egg, zoneName, distance = Extra.findBestEgg()
 
                     if not egg then
                         task.wait(0.25)
                         return
                     end
 
-                    log(
+                    Extra.log(
                         "Selected egg:",
-                        getEggName(egg),
+                        Extra.getEggName(egg),
                         "| Zone:",
                         zoneName,
                         "| Distance:",
                         string.format("%.2f", distance)
                     )
 
-                    local animal = breakEgg(egg, zoneName)
+                    local animal = Extra.breakEgg(egg, zoneName)
 
                     if not autoFarmActive then
                         return
                     end
 
                     if animal and animal.Parent then
-                        log(
+                        Extra.log(
                             "Hatched:",
                             animal:GetAttribute("AnimalName") or animal.Name
                         )
 
-                        stealAndBank(animal)
+                        Extra.stealAndBank(animal)
                     else
-                        log("No matching hatch; continue farming.")
+                        Extra.log("No matching hatch; continue farming.")
                     end
                 end)
 
@@ -4643,14 +4649,14 @@ return function(Context)
             if currentActivity == "Farm"
                 or currentActivity == nil
             then
-                stopMoving()
+                Extra.stopMoving()
             end
 
             farmLoopRunning = false
         end)
     end
 
-    startAutoTreadmill = function()
+    Extra.startAutoTreadmill = function()
         if treadmillLoopRunning then
             return
         end
@@ -4668,25 +4674,25 @@ return function(Context)
                         local _,
                             _,
                             part =
-                            getPlotTreadmill()
+                            Extra.getPlotTreadmill()
 
                         if not part then
-                            teleportToTreadmill()
+                            Extra.teleportToTreadmill()
                             task.wait(0.5)
                             return
                         end
 
-                        if not isOnTreadmill(
+                        if not Extra.isOnTreadmill(
                             part
                         ) then
-                            teleportToTreadmill()
+                            Extra.teleportToTreadmill()
                             task.wait(0.25)
                             return
                         end
 
                         local _,
                             humanoid =
-                            getCharacter()
+                            Extra.getCharacter()
 
                         -- Treadmill itself handles the session.
                         -- Do not force a running direction.
@@ -4713,7 +4719,7 @@ return function(Context)
         end)
     end
 
-    setActivity = function(activity)
+    Extra.setActivity = function(activity)
         local sameActivity =
             activity == currentActivity
 
@@ -4727,47 +4733,47 @@ return function(Context)
             activity == "Treadmill"
 
         if not sameActivity then
-            stopMoving()
+            Extra.stopMoving()
         end
 
         if activity == "Farm" then
-            log(
+            Extra.log(
                 "Activity -> Auto Farm Egg"
             )
 
             if titanicOverrideActive then
                 activityDeadline = nil
             else
-                refreshActivityDeadline()
+                Extra.refreshActivityDeadline()
             end
 
-            startAutoFarm()
+            Extra.startAutoFarm()
 
         elseif activity == "Treadmill" then
-            log(
+            Extra.log(
                 "Activity -> Auto Treadmill"
             )
 
-            refreshActivityDeadline()
+            Extra.refreshActivityDeadline()
 
-            teleportToTreadmill()
-            startAutoTreadmill()
+            Extra.teleportToTreadmill()
+            Extra.startAutoTreadmill()
 
         else
             activityDeadline = nil
-            log("Activity -> Idle")
+            Extra.log("Activity -> Idle")
         end
     end
 
-    local function beginTitanicOverride()
+    function Extra.beginTitanicOverride()
         if titanicOverrideActive then
             return
         end
 
         -- Do not throw away a pet already in our hands.
         -- Finish banking/recovery first, then Titanic takes over.
-        if isCarrying()
-            or isBeingChased()
+        if Extra.isCarrying()
+            or Extra.isBeingChased()
         then
             titanicOverrideRequested =
                 true
@@ -4797,12 +4803,12 @@ return function(Context)
             true
 
         local state =
-            getTitanicState()
+            Extra.getTitanicState()
 
         titanicOverrideSpawnId =
             state.SpawnId
 
-        log(
+        Extra.log(
             "TITANIC OVERRIDE START",
             "| Previous:",
             titanicResumeActivity,
@@ -4814,17 +4820,17 @@ return function(Context)
         -- is not enabled. This temporary Farm activity exists only to
         -- attack the Titanic event egg.
         if currentActivity ~= "Farm" then
-            setActivity("Farm")
+            Extra.setActivity("Farm")
         else
             autoFarmActive = true
             activityDeadline = nil
-            startAutoFarm()
+            Extra.startAutoFarm()
         end
 
         activityDeadline = nil
     end
 
-    local function restoreAfterTitanic()
+    function Extra.restoreAfterTitanic()
         if not titanicOverrideActive then
             titanicOverrideRequested =
                 false
@@ -4867,19 +4873,19 @@ return function(Context)
             desired = nil
         end
 
-        log(
+        Extra.log(
             "TITANIC OVERRIDE END",
             "| Resume:",
             desired
         )
 
-        setActivity(desired)
+        Extra.setActivity(desired)
 
         if desired
             and resumeActivity == desired
             and resumeRemaining
             and resumeRemaining > 0
-            and otherActivityEnabled(
+            and Extra.otherActivityEnabled(
                 desired
             )
         then
@@ -4899,7 +4905,7 @@ return function(Context)
     task.spawn(function()
         while not Window.Destroyed do
             local state =
-                getTitanicState()
+                Extra.getTitanicState()
 
             local automationEnabled =
                 autoFarmEnabled
@@ -4913,7 +4919,7 @@ return function(Context)
                 and automationEnabled
             then
                 local target =
-                    findTitanicEgg()
+                    Extra.findTitanicEgg()
 
                 titanicTargetExists =
                     target ~= nil
@@ -4921,27 +4927,27 @@ return function(Context)
 
             if titanicTargetExists then
                 if not titanicOverrideActive then
-                    beginTitanicOverride()
+                    Extra.beginTitanicOverride()
                 end
 
             elseif titanicOverrideActive then
                 -- The Titanic egg is gone/broken. Return to the exact activity
                 -- that was interrupted and restore its remaining timer.
-                restoreAfterTitanic()
+                Extra.restoreAfterTitanic()
 
             elseif titanicOverrideRequested
-                and not isCarrying()
-                and not isBeingChased()
+                and not Extra.isCarrying()
+                and not Extra.isBeingChased()
             then
                 -- We were waiting for a carried pet to finish banking.
                 local target =
                     prioritizeTitanicEgg
                     and state.Active
-                    and findTitanicEgg()
+                    and Extra.findTitanicEgg()
                     or nil
 
                 if target then
-                    beginTitanicOverride()
+                    Extra.beginTitanicOverride()
                 else
                     titanicOverrideRequested =
                         false
@@ -4960,7 +4966,7 @@ return function(Context)
                     == "Treadmill"
                 then
                     if autoFarmEnabled then
-                        setActivity("Farm")
+                        Extra.setActivity("Farm")
                     else
                         activityDeadline = nil
                     end
@@ -4969,10 +4975,10 @@ return function(Context)
                     == "Farm"
                 then
                     if autoTreadmillEnabled then
-                        if not isCarrying()
-                            and not isBeingChased()
+                        if not Extra.isCarrying()
+                            and not Extra.isBeingChased()
                         then
-                            setActivity(
+                            Extra.setActivity(
                                 "Treadmill"
                             )
                         end
@@ -4986,19 +4992,19 @@ return function(Context)
         end
     end)
 
-    local function logTitanicEventState()
+    function Extra.logTitanicEventState()
         local state =
-            getTitanicState()
+            Extra.getTitanicState()
 
         local physicalTarget =
             prioritizeTitanicEgg
-            and findTitanicEgg()
+            and Extra.findTitanicEgg()
             or nil
 
         if state.Active
             or physicalTarget
         then
-            log(
+            Extra.log(
                 "Titanic ACTIVE",
                 "| Egg:",
                 state.EggName,
@@ -5012,7 +5018,7 @@ return function(Context)
                 state.SpawnByAdmin
             )
         else
-            log(
+            Extra.log(
                 "Titanic waiting",
                 "| NextAt:",
                 state.NextAt,
@@ -5037,7 +5043,7 @@ return function(Context)
             attributeName
         ):
         Connect(function()
-            logTitanicEventState()
+            Extra.logTitanicEventState()
         end)
     end
 
@@ -5048,7 +5054,7 @@ return function(Context)
                 and autoFarmActive
                 and not farmLoopRunning
             then
-                startAutoFarm()
+                Extra.startAutoFarm()
             end
 
             if currentActivity == "Treadmill"
@@ -5056,7 +5062,7 @@ return function(Context)
                 and autoTreadmillActive
                 and not treadmillLoopRunning
             then
-                startAutoTreadmill()
+                Extra.startAutoTreadmill()
             end
 
             task.wait(0.5)
@@ -5132,13 +5138,123 @@ return function(Context)
 
         while not Window.Destroyed do
             bindPlot(
-                getOwnedPlotExact()
+                Extra.getOwnedPlotExact()
             )
 
             task.wait(1)
         end
 
         clearPlotConnections()
+    end)
+
+    function Extra.getSellablePetIncome(tool)
+        if not tool or not tool:IsA("Tool") then
+            return nil
+        end
+
+        local isAnimalTool =
+            CollectionService:HasTag(tool, "AnimalTool")
+            or tool:GetAttribute("AnimalName") ~= nil
+            or tool:GetAttribute("PetName") ~= nil
+
+        if not isAnimalTool then
+            return nil
+        end
+
+        return Extra.getPetIncomePerSecond(tool)
+    end
+
+    function Extra.collectAutoSellTools()
+        local threshold = tonumber(Extra.autoSellBelowIncome) or 0
+
+        if threshold <= 0 then
+            return {}
+        end
+
+        local backpack =
+            LocalPlayer:FindFirstChildOfClass("Backpack")
+            or LocalPlayer:FindFirstChild("Backpack")
+
+        if not backpack then
+            return {}
+        end
+
+        local selected = {}
+
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if #selected >= 200 then
+                break
+            end
+
+            if tool:IsA("Tool") then
+                local income = Extra.getSellablePetIncome(tool)
+
+                if income ~= nil and income < threshold then
+                    table.insert(selected, tool)
+                end
+            end
+        end
+
+        return selected
+    end
+
+    function Extra.runAutoSell()
+        if not Extra.autoSellEnabled
+            or Extra.autoSellBusy
+            or Window.Destroyed
+        then
+            return
+        end
+
+        local threshold = tonumber(Extra.autoSellBelowIncome) or 0
+
+        if threshold <= 0 then
+            return
+        end
+
+        if os.clock() - Extra.lastAutoSellAt < 1.5 then
+            return
+        end
+
+        local tools = Extra.collectAutoSellTools()
+
+        if #tools == 0 then
+            return
+        end
+
+        Extra.autoSellBusy = true
+        Extra.lastAutoSellAt = os.clock()
+
+        task.spawn(function()
+            local ok, result = pcall(function()
+                return BackpackSellRemote:InvokeServer(tools)
+            end)
+
+            if ok then
+                Extra.log(
+                    "Auto Sell:",
+                    #tools,
+                    "pet(s) below",
+                    threshold,
+                    "income/s"
+                )
+            else
+                Extra.log("Auto Sell failed:", result)
+            end
+
+            task.wait(1)
+            Extra.autoSellBusy = false
+        end)
+    end
+
+    task.spawn(function()
+        while not Window.Destroyed do
+            if Extra.autoSellEnabled and Extra.autoSellBelowIncome > 0 then
+                Extra.runAutoSell()
+            end
+
+            task.wait(1)
+        end
     end)
 
     -- UI - uses the same template/API as Ride A Pet.
@@ -5174,7 +5290,7 @@ return function(Context)
         selectedZones,
 
         function(value)
-            selectedZones = decodeSelection(value, zoneLabels)
+            selectedZones = Extra.decodeSelection(value, zoneLabels)
         end
     )
 
@@ -5186,7 +5302,7 @@ return function(Context)
         selectedEggs,
 
         function(value)
-            selectedEggs = decodeSelection(value, eggLabels)
+            selectedEggs = Extra.decodeSelection(value, eggLabels)
         end
     )
 
@@ -5202,13 +5318,13 @@ return function(Context)
             if not prioritizeTitanicEgg
                 and titanicOverrideActive
             then
-                restoreAfterTitanic()
+                Extra.restoreAfterTitanic()
             end
 
             local titanicState =
-                getTitanicState()
+                Extra.getTitanicState()
 
-            log(
+            Extra.log(
                 "Prioritize Titanic:",
                 prioritizeTitanicEgg,
                 "| Active:",
@@ -5227,7 +5343,7 @@ return function(Context)
         selectedPets,
 
         function(value)
-            selectedPets = decodeSelection(value, petLabels)
+            selectedPets = Extra.decodeSelection(value, petLabels)
         end
     )
 
@@ -5248,7 +5364,7 @@ return function(Context)
                 or value == "Teleport"
             then
                 movementMode = value
-                log("Movement mode changed:", movementMode)
+                Extra.log("Movement mode changed:", movementMode)
             end
         end
     )
@@ -5274,7 +5390,7 @@ return function(Context)
                     0
             end
 
-            log(
+            Extra.log(
                 "Minimum Pet Income/s:",
                 Extra.minimumPetIncome > 0
                     and Extra.minimumPetIncome
@@ -5305,7 +5421,7 @@ return function(Context)
                 if currentActivity
                     == "Farm"
                 then
-                    refreshActivityDeadline()
+                    Extra.refreshActivityDeadline()
                 end
             end
         end
@@ -5331,7 +5447,7 @@ return function(Context)
                 if currentActivity
                     == "Farm"
                 then
-                    refreshActivityDeadline()
+                    Extra.refreshActivityDeadline()
                 end
             end
         end
@@ -5348,14 +5464,14 @@ return function(Context)
 
             if state then
                 local homeHitbox =
-                    getOwnedPlotHitbox()
+                    Extra.getOwnedPlotHitbox()
 
                 if homeHitbox then
-                    log(
+                    Extra.log(
                         "Owned plot:",
                         homeHitbox:GetFullName(),
                         "| WalkSpeed:",
-                        getCurrentMoveSpeed(),
+                        Extra.getCurrentMoveSpeed(),
                         "| PetFilters:",
                         #MASTER_PETS
                     )
@@ -5366,27 +5482,27 @@ return function(Context)
                 end
 
                 if currentActivity == nil then
-                    setActivity("Farm")
+                    Extra.setActivity("Farm")
                 elseif currentActivity
                     == "Treadmill"
                 then
                     -- Keep treadmill phase running.
                     -- Farm starts when treadmill timer expires.
-                    refreshActivityDeadline()
+                    Extra.refreshActivityDeadline()
                 else
-                    setActivity("Farm")
+                    Extra.setActivity("Farm")
                 end
             else
                 if currentActivity == "Farm" then
                     if autoTreadmillEnabled then
-                        setActivity(
+                        Extra.setActivity(
                             "Treadmill"
                         )
                     else
-                        setActivity(nil)
+                        Extra.setActivity(nil)
                     end
                 else
-                    refreshActivityDeadline()
+                    Extra.refreshActivityDeadline()
                 end
             end
         end
@@ -5420,7 +5536,7 @@ return function(Context)
                 if currentActivity
                     == "Treadmill"
                 then
-                    refreshActivityDeadline()
+                    Extra.refreshActivityDeadline()
                 end
             end
         end
@@ -5446,7 +5562,7 @@ return function(Context)
                 if currentActivity
                     == "Treadmill"
                 then
-                    refreshActivityDeadline()
+                    Extra.refreshActivityDeadline()
                 end
             end
         end
@@ -5464,7 +5580,7 @@ return function(Context)
             if state then
                 -- Auto Treadmill ON always enters
                 -- the treadmill immediately.
-                setActivity(
+                Extra.setActivity(
                     "Treadmill"
                 )
             else
@@ -5472,12 +5588,12 @@ return function(Context)
                     == "Treadmill"
                 then
                     if autoFarmEnabled then
-                        setActivity("Farm")
+                        Extra.setActivity("Farm")
                     else
-                        setActivity(nil)
+                        Extra.setActivity(nil)
                     end
                 else
-                    refreshActivityDeadline()
+                    Extra.refreshActivityDeadline()
                 end
             end
         end
@@ -5500,7 +5616,7 @@ return function(Context)
 
             if autoUpgradePen then
                 penUpgradeRetryAt = 0
-                runAutoUpgradePen()
+                Extra.runAutoUpgradePen()
             end
         end
     )
@@ -5516,7 +5632,7 @@ return function(Context)
 
             if autoUpgradeTreadmill then
                 treadmillUpgradeRetryAt = 0
-                runAutoUpgradeTreadmill()
+                Extra.runAutoUpgradeTreadmill()
             end
         end
     )
@@ -5581,6 +5697,55 @@ return function(Context)
             if Extra.autoClaimIndex then
                 Extra.lastAutoClaimIndexAt = 0
                 Extra.claimAllIndex()
+            end
+        end
+    )
+
+    local SellSection =
+        Window:AddSection(
+            FarmTab,
+            "Sell"
+        )
+
+    SellSection:AddTextbox(
+        "BSAEAutoSellIncome",
+        "Sell Below Income/s",
+        "Empty / 0 = Off",
+
+        function(value)
+            local parsed = Extra.parseCompactNumber(value)
+
+            if parsed and parsed > 0 then
+                Extra.autoSellBelowIncome = parsed
+            else
+                Extra.autoSellBelowIncome = 0
+            end
+
+            Extra.log(
+                "Auto Sell Below Income/s:",
+                Extra.autoSellBelowIncome > 0
+                    and Extra.autoSellBelowIncome
+                    or "OFF"
+            )
+
+            if Extra.autoSellEnabled then
+                Extra.lastAutoSellAt = 0
+                Extra.runAutoSell()
+            end
+        end
+    )
+
+    SellSection:AddToggle(
+        "BSAEAutoSell",
+        "Auto Sell",
+        false,
+
+        function(state)
+            Extra.autoSellEnabled = state == true
+
+            if Extra.autoSellEnabled then
+                Extra.lastAutoSellAt = 0
+                Extra.runAutoSell()
             end
         end
     )
