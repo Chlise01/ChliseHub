@@ -36,7 +36,7 @@
 -- Return home: dynamically targets Workspace.Build.ZoneHitboxes.SafeZone; uses current WalkSpeed
 
 return function(Context)
-    print("[CHLISE HUB] BreakAndSteal module build: AUTOSELL_CONTROLLER_FINAL")
+    print("[CHLISE HUB] BreakAndSteal module build: AUTOSELL_CONTROLLER_V2_UIFIX")
     local Window = Context.Window
     local Runtime = Context.Runtime
 
@@ -8910,10 +8910,73 @@ return function(Context)
     )
         if not tool
             or not tool:IsA("Tool")
+            or not CollectionService:
+                HasTag(
+                    tool,
+                    "AnimalTool"
+                )
         then
             return nil
         end
 
+        local animalName =
+            tool:GetAttribute(
+                "AnimalName"
+            )
+
+        local weightKg =
+            tonumber(
+                tool:GetAttribute(
+                    "WeightKg"
+                )
+            )
+
+        local sizeMult =
+            tonumber(
+                tool:GetAttribute(
+                    "SizeMult"
+                )
+            )
+
+        -- Primary path: exact pet income does not require BackpackSellConfig.
+        -- This avoids Auto Sell silently doing nothing if GC config discovery
+        -- is delayed or unavailable.
+        if animalName
+            and weightKg
+            and sizeMult
+            and type(
+                EggRewards.PlacedCashPerSecond
+            ) == "function"
+        then
+            local okIncome,
+                result =
+                pcall(
+                    EggRewards.PlacedCashPerSecond,
+                    animalName,
+                    weightKg,
+                    sizeMult
+                )
+
+            local income =
+                okIncome
+                and tonumber(result)
+                or nil
+
+            if income then
+                Extra.log(
+                    "Auto Sell income:",
+                    animalName,
+                    "| Income/s:",
+                    income,
+                    "| Method: PlacedCashPerSecond"
+                )
+
+                return income
+            end
+        end
+
+        -- Fallback only: use config.ToolValue if the controller config can
+        -- be resolved. Auto Sell no longer depends on this path.
         local config =
             Extra.getBackpackSellConfig()
 
@@ -8942,80 +9005,8 @@ return function(Context)
             then
                 return nil
             end
-        elseif not CollectionService:
-            HasTag(
-                tool,
-                "AnimalTool"
-            )
-        then
-            return nil
         end
 
-        local animalName =
-            tool:GetAttribute(
-                "AnimalName"
-            )
-
-        local weightKg =
-            tonumber(
-                tool:GetAttribute(
-                    "WeightKg"
-                )
-            )
-
-        local sizeMult =
-            tonumber(
-                tool:GetAttribute(
-                    "SizeMult"
-                )
-            )
-
-        -- The game's real pet income function was traced from
-        -- ReplicatedStorage.Shared.EggRewards:
-        -- PlacedCashPerSecond(name, kg, sizeMult, ...)
-        -- The first three arguments are sufficient for normal pets.
-        if animalName
-            and weightKg
-            and sizeMult
-            and type(
-                EggRewards.PlacedCashPerSecond
-            ) == "function"
-        then
-            local okIncome,
-                income =
-                pcall(
-                    EggRewards.PlacedCashPerSecond,
-                    animalName,
-                    weightKg,
-                    sizeMult
-                )
-
-            income =
-                okIncome
-                and tonumber(income)
-                or nil
-
-            if income
-                and income >= 0
-            then
-                Extra.log(
-                    "Auto Sell income:",
-                    animalName,
-                    "| Kg:",
-                    weightKg,
-                    "| Size:",
-                    sizeMult,
-                    "| Income/s:",
-                    income,
-                    "| Method: PlacedCashPerSecond"
-                )
-
-                return income
-            end
-        end
-
-        -- Compatibility fallback: use the game's ToolValue calculation
-        -- on the real tagged Tool, then convert sell value back to income/s.
         local toolValue =
             rawget(
                 config,
@@ -9035,31 +9026,10 @@ return function(Context)
                 tool
             )
 
-        if not ok then
-            Extra.log(
-                "ToolValue failed:",
-                tool.Name,
-                result
-            )
-
-            return nil
-        end
-
         local value =
-            tonumber(result)
-
-        if not value
-            and type(result)
-                == "table"
-        then
-            value =
-                tonumber(
-                    result.Value
-                    or result.SellValue
-                    or result.Cash
-                    or result.Amount
-                )
-        end
+            ok
+            and tonumber(result)
+            or nil
 
         if not value then
             return nil
@@ -9078,20 +9048,7 @@ return function(Context)
             return nil
         end
 
-        local income =
-            value / seconds
-
-        Extra.log(
-            "Auto Sell income:",
-            animalName
-                or tool.Name,
-            "| Income/s:",
-            income,
-            "| Method: ToolValue/"
-                .. tostring(seconds)
-        )
-
-        return income
+        return value / seconds
     end
 
     function Extra.getDebugFunction(
@@ -9397,7 +9354,9 @@ return function(Context)
         return cached
     end
 
-    function Extra.collectAutoSellTools()
+    function Extra.collectAutoSellTools(
+        maxPerRequest
+    )
         local threshold =
             tonumber(
                 Extra.autoSellBelowIncome
@@ -9408,27 +9367,14 @@ return function(Context)
             return {}
         end
 
-        local config =
-            Extra.getBackpackSellConfig()
-
-        if not config then
-            return {}
-        end
-
-        local maxPerRequest =
-            tonumber(
-                rawget(
-                    config,
-                    "MaxPerRequest"
-                )
-            )
-            or 200
-
         maxPerRequest =
             math.max(
                 1,
                 math.floor(
-                    maxPerRequest
+                    tonumber(
+                        maxPerRequest
+                    )
+                    or 200
                 )
             )
 
@@ -9455,6 +9401,11 @@ return function(Context)
 
                 if tool:IsA("Tool")
                     and not seen[tool]
+                    and CollectionService:
+                        HasTag(
+                            tool,
+                            "AnimalTool"
+                        )
                 then
                     seen[tool] = true
 
@@ -9536,11 +9487,6 @@ return function(Context)
             return
         end
 
-        if force then
-            Extra.lastAutoSellAt =
-                0
-        end
-
         if Extra.autoSellBusy then
             return
         end
@@ -9566,30 +9512,23 @@ return function(Context)
                     true
 
                 warn(
-                    "[CHLISE HUB][AUTO SELL][CONTROLLER] ",
+                    "[CHLISE HUB][AUTO SELL] Controller unresolved:",
                     controllerError
-                        or "controller unavailable"
+                        or "unknown"
                 )
             end
 
             Extra.autoSellController =
                 nil
+
             return
         end
 
         Extra.autoSellControllerWarned =
             false
 
-        local tools =
-            Extra.collectAutoSellTools()
-
-        if #tools == 0 then
-            return
-        end
-
         local config =
             controller.Config
-            or Extra.getBackpackSellConfig()
 
         local maxPerRequest =
             type(config)
@@ -9611,6 +9550,15 @@ return function(Context)
                 )
             )
 
+        local tools =
+            Extra.collectAutoSellTools(
+                maxPerRequest
+            )
+
+        if #tools == 0 then
+            return
+        end
+
         Extra.autoSellBusy =
             true
 
@@ -9625,12 +9573,10 @@ return function(Context)
                         ~= "table"
                     then
                         error(
-                            "controller selection table missing"
+                            "selection table missing"
                         )
                     end
 
-                    -- Always begin with a clean controller selection,
-                    -- exactly like opening a fresh manual sell session.
                     table.clear(
                         selected
                     )
@@ -9661,9 +9607,16 @@ return function(Context)
                                     tool
                                 )
 
+                            -- V8 tracing proved the real controller stores
+                            -- the selected Tool as a key in the shared table.
+                            local controllerSelected =
+                                selected[tool]
+                                    == true
+
                             if okClick
                                 and clickResult
                                     ~= false
+                                and controllerSelected
                             then
                                 table.insert(
                                     selectedTools,
@@ -9671,7 +9624,7 @@ return function(Context)
                                 )
 
                                 Extra.log(
-                                    "Auto Sell controller selected:",
+                                    "Auto Sell selected:",
                                     tool:GetAttribute(
                                         "AnimalName"
                                     )
@@ -9679,10 +9632,13 @@ return function(Context)
                                 )
                             else
                                 Extra.log(
-                                    "Auto Sell controller skip:",
+                                    "Auto Sell selection rejected:",
                                     tool.Name,
                                     "| onClick:",
-                                    clickResult
+                                    okClick,
+                                    clickResult,
+                                    "| selected:",
+                                    controllerSelected
                                 )
                             end
                         end
@@ -9695,15 +9651,15 @@ return function(Context)
                             selected
                         )
 
-                        return
+                        error(
+                            "controller selected 0 candidates"
+                        )
                     end
 
                     Extra.log(
-                        "Auto Sell confirm:",
+                        "Auto Sell confirming:",
                         #selectedTools,
-                        "pet(s)",
-                        "| Threshold:",
-                        threshold
+                        "pet(s)"
                     )
 
                     local okConfirm,
@@ -9714,13 +9670,14 @@ return function(Context)
 
                     if not okConfirm then
                         error(
-                            tostring(
+                            "confirmSell failed: "
+                            .. tostring(
                                 confirmResult
                             )
                         )
                     end
 
-                    task.wait(0.2)
+                    task.wait(0.35)
 
                     local soldCount =
                         0
@@ -9736,17 +9693,13 @@ return function(Context)
                     end
 
                     Extra.log(
-                        "Auto Sell controller result:",
+                        "Auto Sell result:",
                         soldCount,
                         "/",
                         #selectedTools,
-                        "removed",
-                        "| confirm:",
-                        confirmResult
+                        "sold"
                     )
 
-                    -- The real controller normally clears this after confirm.
-                    -- Clear defensively so the next automated batch is fresh.
                     table.clear(
                         selected
                     )
@@ -9754,7 +9707,7 @@ return function(Context)
 
             if not okBatch then
                 warn(
-                    "[CHLISE HUB][AUTO SELL][CONTROLLER] batch failed:",
+                    "[CHLISE HUB][AUTO SELL] ",
                     batchError
                 )
 
@@ -9770,8 +9723,6 @@ return function(Context)
                     end
                 end)
 
-                -- Re-resolve on the next scan in case the UI/controller
-                -- was rebuilt after respawn or inventory refresh.
                 Extra.autoSellController =
                     nil
             end
@@ -9784,7 +9735,7 @@ return function(Context)
                     > 0
             then
                 task.delay(
-                    0.25,
+                    0.3,
                     function()
                         if Extra.autoSellEnabled
                             and not Window.Destroyed
@@ -10087,35 +10038,84 @@ return function(Context)
         end
     )
 
-    FarmSection:AddTextbox(
-        "BSAEMinimumPetIncome",
-        "Minimum Pet Income/s",
-        "Empty / 0 = Off",
+    local MinimumIncomeControl
 
-        function(value)
-            local parsed =
-                Extra.parseCompactNumber(
-                    value
+    MinimumIncomeControl =
+        FarmSection:AddTextbox(
+            "BSAEMinimumPetIncome",
+            "Minimum Pet Income/s",
+            "Empty / 0 = Off",
+
+            function(value)
+                local parsed =
+                    Extra.parseCompactNumber(
+                        value
+                    )
+
+                if parsed
+                    and parsed > 0
+                then
+                    Extra.minimumPetIncome =
+                        parsed
+                else
+                    Extra.minimumPetIncome =
+                        0
+                end
+
+                Extra.log(
+                    "Minimum Pet Income/s:",
+                    Extra.minimumPetIncome > 0
+                        and Extra.minimumPetIncome
+                        or "OFF"
                 )
 
-            if parsed
-                and parsed > 0
-            then
-                Extra.minimumPetIncome =
-                    parsed
-            else
-                Extra.minimumPetIncome =
-                    0
+                if MinimumIncomeControl then
+                    MinimumIncomeControl.Set(
+                        Extra.formatCompactNumber(
+                            Extra.minimumPetIncome
+                        ),
+                        false
+                    )
+                end
             end
+        )
 
-            Extra.log(
-                "Minimum Pet Income/s:",
-                Extra.minimumPetIncome > 0
-                    and Extra.minimumPetIncome
-                    or "OFF"
+    if MinimumIncomeControl
+        and MinimumIncomeControl.Textbox
+    then
+        MinimumIncomeControl.Textbox.Focused:
+        Connect(function()
+            MinimumIncomeControl.Set(
+                Extra.formatFullNumber(
+                    Extra.minimumPetIncome
+                ),
+                false
             )
-        end
-    )
+
+            task.defer(function()
+                if MinimumIncomeControl.Textbox
+                    and MinimumIncomeControl.Textbox:
+                        IsFocused()
+                then
+                    MinimumIncomeControl.Textbox.CursorPosition =
+                        #MinimumIncomeControl.Textbox.Text
+                        + 1
+                end
+            end)
+        end)
+
+        MinimumIncomeControl.Textbox.FocusLost:
+        Connect(function()
+            task.defer(function()
+                MinimumIncomeControl.Set(
+                    Extra.formatCompactNumber(
+                        Extra.minimumPetIncome
+                    ),
+                    false
+                )
+            end)
+        end)
+    end
 
     FarmSection:AddTextbox(
         "BSAEFarmTimer",
@@ -10424,38 +10424,97 @@ return function(Context)
             "Sell"
         )
 
-    SellSection:AddTextbox(
-        "BSAEAutoSellIncome",
-        "Sell Below Income/s",
-        "Empty / 0 = Off",
+    local AutoSellIncomeControl
 
-        function(value)
-            local parsed = Extra.parseCompactNumber(value)
+    AutoSellIncomeControl =
+        SellSection:AddTextbox(
+            "BSAEAutoSellIncome",
+            "Sell Below Income/s",
+            "Empty / 0 = Off",
 
-            if parsed and parsed > 0 then
-                Extra.autoSellBelowIncome = parsed
-            else
-                Extra.autoSellBelowIncome = 0
+            function(value)
+                local parsed =
+                    Extra.parseCompactNumber(
+                        value
+                    )
+
+                if parsed
+                    and parsed > 0
+                then
+                    Extra.autoSellBelowIncome =
+                        parsed
+                else
+                    Extra.autoSellBelowIncome =
+                        0
+                end
+
+                Extra.log(
+                    "Auto Sell Below Income/s:",
+                    Extra.autoSellBelowIncome > 0
+                        and Extra.autoSellBelowIncome
+                        or "OFF"
+                )
+
+                if AutoSellIncomeControl then
+                    AutoSellIncomeControl.Set(
+                        Extra.formatCompactNumber(
+                            Extra.autoSellBelowIncome
+                        ),
+                        false
+                    )
+                end
+
+                if Extra.autoSellEnabled then
+                    Extra.autoSellBusy =
+                        false
+                    Extra.lastAutoSellAt =
+                        0
+                    Extra.autoSellController =
+                        nil
+
+                    Extra.queueAutoSell(
+                        0.05
+                    )
+                end
             end
+        )
 
-            Extra.log(
-                "Auto Sell Below Income/s:",
-                Extra.autoSellBelowIncome > 0
-                    and Extra.autoSellBelowIncome
-                    or "OFF"
+    if AutoSellIncomeControl
+        and AutoSellIncomeControl.Textbox
+    then
+        AutoSellIncomeControl.Textbox.Focused:
+        Connect(function()
+            AutoSellIncomeControl.Set(
+                Extra.formatFullNumber(
+                    Extra.autoSellBelowIncome
+                ),
+                false
             )
 
-            if Extra.autoSellEnabled then
-                Extra.autoSellBusy =
+            task.defer(function()
+                if AutoSellIncomeControl.Textbox
+                    and AutoSellIncomeControl.Textbox:
+                        IsFocused()
+                then
+                    AutoSellIncomeControl.Textbox.CursorPosition =
+                        #AutoSellIncomeControl.Textbox.Text
+                        + 1
+                end
+            end)
+        end)
+
+        AutoSellIncomeControl.Textbox.FocusLost:
+        Connect(function()
+            task.defer(function()
+                AutoSellIncomeControl.Set(
+                    Extra.formatCompactNumber(
+                        Extra.autoSellBelowIncome
+                    ),
                     false
-                Extra.lastAutoSellAt =
-                    0
-                Extra.queueAutoSell(
-                    0.05
                 )
-            end
-        end
-    )
+            end)
+        end)
+    end
 
     SellSection:AddToggle(
         "BSAEAutoSell",
@@ -10480,22 +10539,6 @@ return function(Context)
                     0.05
                 )
             end
-        end
-    )
-
-    Extra.bindCompactIncomeTextbox(
-        "Minimum Pet Income/s",
-        function()
-            return
-                Extra.minimumPetIncome
-        end
-    )
-
-    Extra.bindCompactIncomeTextbox(
-        "Sell Below Income/s",
-        function()
-            return
-                Extra.autoSellBelowIncome
         end
     )
 

@@ -916,7 +916,7 @@ function UI.new(
 
                 Text =
                     config.Version
-                    or "v2.1",
+                    or "v2.0",
 
                 TextColor3 =
                     Color3.fromRGB(
@@ -3307,6 +3307,14 @@ function UI.new(
 
 
             local control = {}
+
+            -- Expose the underlying TextBox for controls that need
+            -- focus-aware display formatting (e.g. 1000000 <-> 1M).
+            control.Textbox =
+                textbox
+
+            control.Input =
+                textbox
 
 
             control.Get =
